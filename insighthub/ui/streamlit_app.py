@@ -2,6 +2,8 @@
 
 import streamlit as st
 import logging
+import hashlib
+import re
 from pathlib import Path
 
 # Add parent directory to path for imports
@@ -13,11 +15,32 @@ from insighthub.services.reddit_client import RedditService
 from insighthub.services.llm import LLMServiceFactory
 from insighthub.analysis.sentiment import VADERSentimentAnalyzer
 from insighthub.analysis.aspect import YAMLAspectDetector
-from insighthub.analysis.scoring import create_analysis_summary, compute_aspect_scores
+from insighthub.analysis.scoring import create_analysis_summary, compute_aspect_scores, aspect_aggregate, overall_rating_wilson, aspect_rating_wilson, crowd_trust_stars
+from insighthub.reporting.data_prep import build_summary_payload
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Helper functions for real comment display
+def _excerpt(s, n=240):
+    s = (s or "").strip().replace("\n", " ")
+    return s if len(s) <= n else s[:n-1] + "…"
+
+def _sig(s: str) -> str:
+    s = re.sub(r"https?://\S+","", s or "").lower()
+    s = re.sub(r"\s+"," ", s).strip()
+    return hashlib.md5(s.encode()).hexdigest()
+
+def _dedupe_keep_order(items, key=lambda x: x):
+    seen, out = set(), []
+    for it in items:
+        k = key(it)
+        if k in seen: 
+            continue
+        seen.add(k)
+        out.append(it)
+    return out
 
 # Page configuration
 st.set_page_config(
@@ -34,6 +57,34 @@ reddit_service = RedditService()
 llm_service = LLMServiceFactory.create()
 sentiment_analyzer = VADERSentimentAnalyzer()
 aspect_detector = YAMLAspectDetector()
+
+# Evidence rendering functions
+def render_section_with_evidence(title, items, reviews_by_id):
+    """Render pros/cons with evidence expanders."""
+    st.subheader(title)
+    for item in items:
+        text = item.get("text") or ""
+        ids = item.get("ids") or []
+        with st.expander(text):
+            if not ids:
+                st.caption("No explicit evidence ids provided.")
+            else:
+                st.caption(f"Evidence comments: {len(ids)}")
+                for rid in ids[:12]:
+                    c = reviews_by_id.get(rid)
+                    if c:
+                        link = getattr(c, "post_url", getattr(c, "permalink", "")) or ""
+                        up = getattr(c, "upvotes", getattr(c, "score", 0)) or 0
+                        st.markdown(f"- [{rid}]({link})  ↑{up}")
+                    else:
+                        st.markdown(f"- {rid}")
+
+def render_coverage_meter(coverage_ids, total_comments):
+    """Render coverage meter."""
+    backed = len(set(coverage_ids or []))
+    total = max(total_comments, 1)
+    pct = int(100 * backed / total)
+    st.write(f"**Coverage:** {backed} / {total} comments referenced ({pct}%)")
 
 # Main UI
 st.title("📈 InsightHub — Review Analysis")
@@ -62,6 +113,9 @@ if run_analysis:
             reviews = reddit_service.scrape(query, limit)
             logger.info(f"Analyzing {len(reviews)} reviews...")
             
+            # Show filtering transparency
+            st.caption(f"🔍 Quality filtering applied: Using {len(reviews)} high-quality comments")
+            
             # Analyze sentiment
             sentiment_results = []
             for review in reviews:
@@ -88,14 +142,42 @@ if run_analysis:
             # Create summary
             summary = create_analysis_summary(query, reviews, sentiment_results, aspect_scores)
             
-            # Generate pros/cons
-            pros_cons = llm_service.generate_pros_cons(reviews, query)
+            # Generate pros/cons using map-reduce pipeline
+            reduce_json = llm_service.summarize_comments_map_reduce(reviews, query)
+            
+            # Create reviews lookup by ID
+            reviews_by_id = {r.id: r for r in reviews}
+            
+            # Build weighted aspects directly from Review.aspect_scores
+            weighted_aspects = aspect_aggregate(reviews)
+            
+            # Build summary payload for UI
+            summary_payload = build_summary_payload(query, reduce_json, reviews_by_id)
+            
+            # Show evidence coverage warning if needed
+            cov = len(summary_payload.get("coverage", []))
+            total = len(reviews or [])
+            if cov == 0 and total > 0:
+                st.warning("Evidence coverage is 0% — showing raw top comments below. Try broadening the query or increasing comments.")
+            
+            # Fallback to old method if map-reduce fails
+            if not reduce_json.get("pros") and not reduce_json.get("cons"):
+                pros_cons = llm_service.generate_pros_cons(reviews, query)
+            else:
+                pros_cons = {"summary": "Analysis completed using evidence-first map-reduce pipeline."}
             
             # Display results
             st.header(f"📊 Analysis Results for '{query}'")
             
+            # Debug mode to see raw comment data
+            if st.checkbox("🔧 Debug: show first 3 raw comments"):
+                import pandas as pd
+                df = pd.DataFrame(reviews[:3])
+                st.dataframe(df[["id","author","upvotes","permalink","text"]])
+            
             # Key metrics
             st.subheader("📈 Key Metrics")
+            
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
@@ -112,6 +194,28 @@ if run_analysis:
                 neg_pct = (summary.neg / summary.total * 100) if summary.total > 0 else 0
                 st.metric("Negative", f"{neg_pct:.1f}%")
             
+            # Fix meaningful_reviews crash
+            total_reviews = len(reviews)
+            meaningful_count = sum(1 for r in reviews if len((r.get("text") or "")) >= 100)
+            
+            st.write(f"**Total Reviews:** {total_reviews}")
+            st.write(f"**Meaningful Reviews (>100 chars):** {meaningful_count}")
+            
+            # Wilson Trust-Weighted Score
+            try:
+                wl_stars = overall_rating_wilson(reviews)
+                st.markdown(f"### 🎯 Crowd-trust score: **{wl_stars} / 5.0**")
+                st.caption("Trust-weighted Wilson lower bound (resistant to brigading)")
+            except Exception as e:
+                logger.warning(f"Wilson scoring failed: {e}")
+            
+            # Crowd Trust Score
+            try:
+                crowd_stars = crowd_trust_stars(reviews)
+                st.markdown(f"🎯 Crowd-trust score: **{crowd_stars} / 5.0**")
+            except Exception as e:
+                logger.warning(f"Crowd trust scoring failed: {e}")
+            
             # Detailed Summary Section
             st.subheader("📝 Detailed Summary")
             
@@ -125,122 +229,146 @@ if run_analysis:
                 st.write(f"Analyzed {len(reviews)} reviews from Reddit. Sentiment distribution: {pos_pct:.1f}% positive, {neg_pct:.1f}% negative, {100-pos_pct-neg_pct:.1f}% neutral.")
                 st.write(f"**Overall Rating:** {summary.avg_stars:.1f}/5 stars based on comprehensive sentiment analysis.")
             
-            # Individual Comments Section - Top 5 positive and 5 negative
-            st.subheader("💬 Individual Comments Analysis")
+            # Real Reddit Comments Section
+            st.subheader("💬 Real Reddit Comments")
             
-            # Filter for meaningful comments (longer than 100 characters)
-            meaningful_reviews = [r for r in reviews if len(r.text) > 100]
+            # Pick by score and stars; use overall_rating if available
+            pos = [r for r in reviews if float(r.get("overall_rating", 0) or 0) >= 4.0]
+            neg = [r for r in reviews if float(r.get("overall_rating", 0) or 0) <= 2.0]
             
-            # Separate positive and negative comments
-            positive_reviews = [r for r in meaningful_reviews if r.sentiment_label == 'POSITIVE']
-            negative_reviews = [r for r in meaningful_reviews if r.sentiment_label == 'NEGATIVE']
+            # Sort by upvotes then rating
+            pos = sorted(pos, key=lambda r: (-(r.get("upvotes",0) or 0), -(r.get("overall_rating",0) or 0)))[:12]
+            neg = sorted(neg, key=lambda r: (-(r.get("upvotes",0) or 0),  (r.get("overall_rating",0) or 0)))[:12]
             
-            # Sort by rating for best examples
-            positive_reviews.sort(key=lambda x: x.stars, reverse=True)
-            negative_reviews.sort(key=lambda x: x.stars)  # Lowest ratings first
+            # Deduplicate to avoid near-duplicates
+            pos = _dedupe_keep_order(pos, key=lambda r: _sig(r.get("text","")))[:5]
+            neg = _dedupe_keep_order(neg, key=lambda r: _sig(r.get("text","")))[:5]
             
-            st.write(f"Showing top 5 positive and 5 negative comments from {len(meaningful_reviews)} meaningful reviews")
-            
-            # Display top 5 positive comments
-            st.write("**🟢 Top 5 Positive Comments:**")
-            pos_col1, pos_col2 = st.columns(2)
-            
-            for i, review in enumerate(positive_reviews[:5]):
-                col = pos_col1 if i % 2 == 0 else pos_col2
-                with col:
-                    # Create small block design
-                    st.markdown(f"""
-                    <div style="background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);border-radius:8px;padding:12px;margin:8px 0">
-                        <div style="font-weight:600;color:#22c55e;margin-bottom:8px">
-                            ⭐ {review.stars:.1f}/5 - {review.sentiment_label}
-                        </div>
-                        <div style="font-size:14px;color:#374151;line-height:1.4;margin-bottom:8px">
-                            {review.text[:150]}{'...' if len(review.text) > 150 else ''}
-                        </div>
-                        <div style="font-size:12px;color:#6b7280">
-                            {len(review.text)} chars
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-            
-            # Display top 5 negative comments
-            st.write("**🔴 Top 5 Negative Comments:**")
-            neg_col1, neg_col2 = st.columns(2)
-            
-            for i, review in enumerate(negative_reviews[:5]):
-                col = neg_col1 if i % 2 == 0 else neg_col2
-                with col:
-                    # Create small block design
-                    st.markdown(f"""
-                    <div style="background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);border-radius:8px;padding:12px;margin:8px 0">
-                        <div style="font-weight:600;color:#ef4444;margin-bottom:8px">
-                            ⭐ {review.stars:.1f}/5 - {review.sentiment_label}
-                        </div>
-                        <div style="font-size:14px;color:#374151;line-height:1.4;margin-bottom:8px">
-                            {review.text[:150]}{'...' if len(review.text) > 150 else ''}
-                        </div>
-                        <div style="font-size:12px;color:#6b7280">
-                            {len(review.text)} chars
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
+            st.markdown("#### 🟢 Top 5 Positive Comments")
+            for r in pos:
+                st.write(f"**⭐ {float(r['overall_rating']):.1f}/5** · ↑{r.get('upvotes',0)} · [{r.get('author','u/unknown')}]({r.get('permalink','')})")
+                st.caption(_excerpt(r.get("text","")))
+
+            st.markdown("#### 🔴 Top 5 Negative Comments")
+            for r in neg:
+                st.write(f"**⭐ {float(r['overall_rating']):.1f}/5** · ↑{r.get('upvotes',0)} · [{r.get('author','u/unknown')}]({r.get('permalink','')})")
+                st.caption(_excerpt(r.get("text","")))
             
             # Show expandable full comments
             with st.expander("📖 View Full Comments", expanded=False):
                 st.write("**Top 5 Positive Comments:**")
-                for i, review in enumerate(positive_reviews[:5]):
+                for i, review in enumerate(pos[:5]):
                     st.write(f"**Comment {i + 1}:**")
-                    st.write(f"**Text:** {review.text}")
-                    st.write(f"**Rating:** {review.stars:.1f}/5 stars")
+                    st.write(f"**Text:** {getattr(review, 'text', getattr(review, 'body', ''))}")
+                    st.write(f"**Rating:** {float(getattr(review, 'overall_rating', 0)):.1f}/5 stars")
                     st.write("---")
                 
                 st.write("**Top 5 Negative Comments:**")
-                for i, review in enumerate(negative_reviews[:5]):
+                for i, review in enumerate(neg[:5]):
                     st.write(f"**Comment {i + 1}:**")
-                    st.write(f"**Text:** {review.text}")
-                    st.write(f"**Rating:** {review.stars:.1f}/5 stars")
+                    st.write(f"**Text:** {getattr(review, 'text', getattr(review, 'body', ''))}")
+                    st.write(f"**Rating:** {float(getattr(review, 'overall_rating', 0)):.1f}/5 stars")
                     st.write("---")
             
-            # Pros & Cons
-            st.subheader("✅ Pros & ❌ Cons")
-            col1, col2 = st.columns(2)
+            # Coverage meter
+            render_coverage_meter(summary_payload.get("coverage", []), len(reviews))
             
-            with col1:
-                st.write("**✅ Positive Aspects:**")
-                pros_data = pros_cons.get('pros', 'No pros identified.')
-                if isinstance(pros_data, list):
-                    pros_list = pros_data
-                else:
-                    pros_list = pros_data.split('. ')
-                for pro in pros_list[:5]:
-                    if pro and str(pro).strip():
-                        st.write(f"• {str(pro).strip()}")
+            # Evidence-based Pros & Cons (only show if coverage > 0%)
+            if cov > 0 and (summary_payload.get("pros") or summary_payload.get("cons")):
+                render_section_with_evidence("✅ Pros", summary_payload.get("pros", []), reviews_by_id)
+                render_section_with_evidence("❌ Cons", summary_payload.get("cons", []), reviews_by_id)
+            elif cov == 0:
+                st.info("⚠️ Evidence coverage is 0% — LLM-generated pros/cons hidden. Showing raw top comments above.")
+            else:
+                # Fallback to old pros/cons display
+                st.subheader("✅ Pros & ❌ Cons")
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.write("**✅ Positive Aspects:**")
+                    # Try structured bullets first
+                    if summary_payload.get("pros"):
+                        for item in summary_payload["pros"][:5]:
+                            st.write(f"• {item['text']}")
+                    else:
+                        pros_data = pros_cons.get('pros', 'No pros identified.')
+                        if isinstance(pros_data, list):
+                            pros_list = pros_data
+                        else:
+                            pros_list = pros_data.split('. ')
+                        for pro in pros_list[:5]:
+                            if pro and str(pro).strip():
+                                st.write(f"• {str(pro).strip()}")
+                
+                with col2:
+                    st.write("**❌ Negative Aspects:**")
+                    # Try structured bullets first
+                    if summary_payload.get("cons"):
+                        for item in summary_payload["cons"][:5]:
+                            st.write(f"• {item['text']}")
+                    else:
+                        cons_data = pros_cons.get('cons', 'No cons identified.')
+                        if isinstance(cons_data, list):
+                            cons_list = cons_data
+                        else:
+                            cons_list = cons_data.split('. ')
+                        for con in cons_list[:5]:
+                            if con and str(con).strip():
+                                st.write(f"• {str(con).strip()}")
             
-            with col2:
-                st.write("**❌ Negative Aspects:**")
-                cons_data = pros_cons.get('cons', 'No cons identified.')
-                if isinstance(cons_data, list):
-                    cons_list = cons_data
-                else:
-                    cons_list = cons_data.split('. ')
-                for con in cons_list[:5]:
-                    if con and str(con).strip():
-                        st.write(f"• {str(con).strip()}")
+            # Aspect Analysis - Prefer structured aspects from map-reduce, fallback to weighted
+            st.subheader("🎯 Aspect Analysis")
             
-            # Aspect Analysis - Top 5 aspects
-            st.subheader("🎯 Top 5 Aspect Analysis")
-            if aspect_scores:
-                # Sort aspects by rating and take top 5
+            # Prefer structured aspects from the map-reduce output; if missing, use weighted ones
+            ui_aspects = summary_payload.get("aspects") or [
+                {"name": a["name"], "score": a["score"], "count": a.get("count", 0)}
+                for a in weighted_aspects
+            ]
+            
+            if ui_aspects:
+                st.write("**📊 Aspects (score, count):**")
+                for a in ui_aspects[:8]:
+                    score = a.get("score", 3.0)
+                    count = a.get("count", 0)
+                    color = "🟢" if score >= 4 else "🟡" if score >= 3 else "🔴"
+                    st.write(f"- **{a['name']}**: {score} ⭐ · n={count} {color}")
+            elif aspect_scores:
+                # Fallback to old aspect analysis
                 sorted_aspects = sorted(aspect_scores.items(), key=lambda x: x[1], reverse=True)[:5]
                 st.write("Top 5 most relevant aspects based on review analysis:")
                 
                 for i, (aspect, rating) in enumerate(sorted_aspects, 1):
-                    # Create a progress bar for visual appeal
-                    progress = rating / 5.0
                     color = "🟢" if rating >= 4 else "🟡" if rating >= 3 else "🔴"
                     st.write(f"{i}. **{aspect.title()}**: {rating:.1f}/5 {color}")
             else:
                 st.write("No specific aspects detected in the reviews.")
+            
+            # Trust-weighted aspect scores (Wilson LB)
+            try:
+                trust_aspects = aspect_rating_wilson(reviews)
+                if trust_aspects:
+                    with st.expander("🎯 Trust-weighted aspect scores (Wilson LB)"):
+                        st.write("Statistically robust aspect scores weighted by upvotes and recency:")
+                        for a in trust_aspects[:8]:
+                            st.write(f"- **{a['name']}**: {a['score']} ⭐ · eff n={a['count']}")
+            except Exception as e:
+                logger.warning(f"Trust-weighted aspects failed: {e}")
+            
+            # Representative Quotes
+            quotes = summary_payload.get("quotes", [])
+            if quotes:
+                st.subheader("💬 Representative Quotes")
+                st.write("Key quotes from the analysis:")
+                for quote in quotes[:8]:  # Show up to 8 quotes
+                    author = quote.get("author", "Unknown")
+                    upvotes = quote.get("upvotes", 0)
+                    permalink = quote.get("permalink", "")
+                    quote_text = quote.get("quote", "")
+                    
+                    if permalink:
+                        st.markdown(f"**{author}** ↑{upvotes}: [{quote_text[:100]}...]({permalink})")
+                    else:
+                        st.markdown(f"**{author}** ↑{upvotes}: {quote_text[:200]}{'...' if len(quote_text) > 200 else ''}")
             
             # Statistics Summary
             st.subheader("📊 Statistics Summary")

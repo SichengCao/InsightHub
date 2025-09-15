@@ -68,10 +68,12 @@ def cmd_analyze(args):
     sentiment_results = []
     for review in reviews:
         try:
-            result = sentiment_analyzer.analyze(review.text)
+            text = review.get("text") if isinstance(review, dict) else review.text
+            result = sentiment_analyzer.analyze(text)
             sentiment_results.append(result)
         except Exception as e:
-            logger.warning(f"Sentiment analysis failed for review {review.id}: {e}")
+            review_id = review.get("id") if isinstance(review, dict) else review.id
+            logger.warning(f"Sentiment analysis failed for review {review_id}: {e}")
             sentiment_results.append({"compound": 0.0, "label": "NEUTRAL", "stars": 3.0})
     
     # Count sentiments
@@ -84,7 +86,8 @@ def cmd_analyze(args):
     # Detect aspects
     aspect_reviews = {}
     for review, sentiment in zip(reviews, sentiment_results):
-        aspects = aspect_detector.detect_aspects(review.text)
+        text = review.get("text") if isinstance(review, dict) else review.text
+        aspects = aspect_detector.detect_aspects(text)
         for aspect in aspects:
             if aspect not in aspect_reviews:
                 aspect_reviews[aspect] = []
