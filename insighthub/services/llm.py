@@ -32,6 +32,17 @@ def _aspect_hint_for_query(q: str) -> str:
     return ""
 
 # Map-reduce pipeline constants
+MAP_PROMPT = dedent("""
+Return ONLY JSON. Each quote MUST be a verbatim substring (ignoring whitespace/typographic quotes) of one input `text`. For every pro/con bullet, include supporting `ids`; put all contributing ids into `coverage_ids`. If unsure, leave empty. No inventions.
+{
+  "pros":[{"text":str,"ids":[str]}],
+  "cons":[{"text":str,"ids":[str]}],
+  "aspects":[{"name":str,"score":float,"count":int}],
+  "quotes":[{"id":str,"quote":str,"permalink":str}],
+  "coverage_ids":[str]
+}
+""").strip()
+
 SUMMARY_PROMPT = dedent("""
 You will summarize Reddit comments. Be EXTRACTIVE and EVIDENCE-FIRST.
 
