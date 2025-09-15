@@ -30,3 +30,32 @@ Cross-platform review intelligence platform for analyzing Reddit reviews with AI
 - **OpenAI API**: Set `OPENAI_API_KEY` (optional, falls back to mock data)
 - **Aspects**: Configure in `config/aspects/tech_products.yaml`
 - **Weights**: Adjust in `config/weights.yaml`
+
+## Architecture
+
+```
+insighthub/
+├── analysis/          # Sentiment analysis and aspect detection
+├── services/          # Reddit scraping and LLM services
+├── ui/               # Streamlit web interface
+├── reporting/        # Data export and preparation
+├── config/           # YAML configuration files
+└── tests/            # Unit tests
+```
+
+## Technologies
+
+- **Python 3.8+**
+- **Streamlit** - Web UI
+- **OpenAI GPT** - AI analysis
+- **VADER** - Sentiment analysis
+- **PRAW** - Reddit API
+- **Pydantic** - Data validation
+
+## Recent Updates
+
+- ✅ **Precise GPT Summaries**: More specific and detailed analysis
+- ✅ **Simplified Comment Display**: Top 5 positive/negative comments
+- ✅ **Enhanced Mock Data**: 50 comprehensive reviews per analysis
+- ✅ **Glassmorphism UI**: Modern, professional interface
+- ✅ **Production Ready**: Complete modular architecture
