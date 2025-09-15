@@ -11,14 +11,14 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 import openai
 from diskcache import Cache
 from ..config import settings
-# from ..analysis.aspect import get_domain_aspects, aspect_hint_for_query
+from ..analysis.aspect import get_domain_aspects, aspect_hint_for_query
 
 logger = logging.getLogger(__name__)
 
 # Cache for map-reduce results
 _cache = Cache(getattr(settings, "cache_dir", ".cache"))
 
-# Domain-aware helper
+# Domain-aware helper (using imported function)
 def _aspect_hint_for_query(q: str) -> str:
     q = (q or "").lower()
     if any(k in q for k in ("tesla","model y","model 3","ev","car","vehicle","autopilot")):
