@@ -253,12 +253,12 @@ class RedditService:
             pass
         subs = list(dict.fromkeys(subs))[:10] + ["all"]
 
-        # Create more specific comment patterns that require the main query terms
+        # Create more flexible comment patterns that require ANY of the main query terms
         query_words = [w.lower() for w in re.findall(r'\b\w+\b', q) if len(w) > 2]
-        main_patterns = [r"\b(love|hate|recommend|avoid|worth|issue|problem|help)\b"]
+        main_patterns = [r"\b(love|hate|recommend|avoid|worth|issue|problem|help|good|bad|great|terrible|best|worst)\b"]
         if query_words:
-            # Require at least one main query word to appear
-            main_patterns.append(rf"\b({'|'.join(query_words[:3])})\b")
+            # Require at least one main query word to appear (more flexible)
+            main_patterns.append(rf"\b({'|'.join(query_words[:4])})\b")
 
         return SearchPlan(
             terms=terms,
@@ -417,25 +417,22 @@ class RedditService:
             logger.error(f"Reddit scraping failed: {e}")
             return self._scrape_mock(query, limit)
 
-        # Quality + dedupe + pattern filter
+        # Quality + dedupe + pattern filter (more flexible)
         seen, shingles, filtered = set(), set(), []
         ok = self._compile_comment_filter(plan.comment_must_patterns)
         
-        # Additional query relevance check - ensure comment mentions the actual product
+        # Additional query relevance check - ensure comment mentions ANY of the actual product terms
         query_lower = query.lower()
         query_words = [w for w in re.findall(r'\b\w+\b', query_lower) if len(w) > 2]
+        query_patterns = [re.compile(rf'\b{re.escape(w)}\b', re.I) for w in query_words[:3]]  # Top 3 words
         
         for c in raw_comments:
             try:
                 if not _passes_quality(c, query, settings): 
                     continue
                 body = getattr(c, "body", "") or ""
-                if not ok(body): 
-                    continue
-                
-                # Additional relevance check - must mention the main product/service
-                body_lower = body.lower()
-                if not any(word in body_lower for word in query_words):
+                # More flexible filtering: either matches plan patterns OR query words
+                if not ok(body) and not any(p.search(body) for p in query_patterns):
                     continue
                 
                 h = _text_hash(body)

@@ -39,9 +39,14 @@ def cmd_scrape(args):
     if reviews:
         print("\nSample review:")
         sample = reviews[0]
-        print(f"Author: {sample.author}")
-        print(f"Text: {sample.text[:100]}...")
-        print(f"Platform: {sample.platform}")
+        if isinstance(sample, dict):
+            print(f"Author: {sample.get('author', 'Unknown')}")
+            print(f"Text: {sample.get('text', '')[:100]}...")
+            print(f"Source: {sample.get('source', 'Unknown')}")
+        else:
+            print(f"Author: {sample.author}")
+            print(f"Text: {sample.text[:100]}...")
+            print(f"Platform: {sample.platform}")
 
 
 def cmd_analyze(args):
@@ -88,10 +93,11 @@ def cmd_analyze(args):
     for review, sentiment in zip(reviews, sentiment_results):
         text = review.get("text") if isinstance(review, dict) else review.text
         aspects = aspect_detector.detect_aspects(text)
-        for aspect in aspects:
-            if aspect not in aspect_reviews:
-                aspect_reviews[aspect] = []
-            aspect_reviews[aspect].append(sentiment)
+        for aspect_data in aspects:
+            aspect_name = aspect_data.get("aspect") if isinstance(aspect_data, dict) else aspect_data
+            if aspect_name not in aspect_reviews:
+                aspect_reviews[aspect_name] = []
+            aspect_reviews[aspect_name].append(sentiment)
     
     # Compute aspect scores
     aspect_scores = compute_aspect_scores(aspect_reviews)

@@ -1,0 +1,50 @@
+{
+  "query": "iPhone 15",
+  "summary": {
+    "total": 2,
+    "positive": 2,
+    "negative": 0,
+    "neutral": 0,
+    "average_stars": 4.0304,
+    "aspect_averages": {
+      "heat": 4.2972
+    },
+    "detailed_summary": "The reviews highlight positive aspects of the iPhone's flashlight design, with at least two LED's providing a balanced and neutral flash for better picture quality. However, negative aspects include headlines and controversies related to iPhone subscriptions affecting market cap, as well as issues with accessing paywalled Emergency SOS services leading to fatal consequences. These specific user experiences showcase the importance of addressing both technical features and ethical considerations in mobile phone design."
+  },
+  "pros": [
+    "The iPhone flashlight has at least two LED's, a warm color temperature one and a cool one, which attempts to create a neutral flash depending on environment lighting.",
+    "The iPhone camera flash is designed to balance LED's properly for better picture quality."
+  ],
+  "cons": [
+    "Negative headlines and controversies surrounding iPhone subscriptions impacting market cap.",
+    "Issues with accessing paywalled Emergency SOS services on iPhone leading to fatal consequences."
+  ],
+  "reviews": [
+    {
+      "id": "ndc3p79",
+      "platform": "reddit",
+      "author": "MagicZhang",
+      "created_utc": 1757452354.0,
+      "text": "^ this lol, imagine the headlines\n\n“iPhone User Dies After Being Unable to Access Paywalled Emergency SOS”\n\n“iPhone Subscription Controversy Turns Fatal”\n\n“Apple Accused of Putting Profits Over Lives After Emergency SOS Death”\n\nBoom, -X% market cap, probably gonna fund free access to satellite for next 5 years for everyone",
+      "url": "https://reddit.com/r/apple/comments/1nctjw3/apple_is_extending_free_access_to_satellite/ndc3p79/",
+      "meta": {
+        "upvotes": 486
+      }
+    },
+    {
+      "id": "nbcp007",
+      "platform": "reddit",
+      "author": "driftej20",
+      "created_utc": 1756488787.0,
+      "text": "I believe the iPhone flash/flashlight has at least two LED’s; a warm color temperature one and a cool one, and attempts to create a neutral flash depending on environment lighting.\n\nI’m guessing on your phone the LED’s are not balanced properly.",
+      "url": "https://reddit.com/r/iphone/comments/1n394hl/iphone_15_pink_flashlight/nbcp007/",
+      "meta": {
+        "upvotes": 137
+      }
+    }
+  ],
+  "metadata": {
+    "export_timestamp": "2025-09-15T15:05:14.351585",
+    "version": "0.1.0"
+  }
+}

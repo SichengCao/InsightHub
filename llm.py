@@ -10,8 +10,8 @@ from typing import Dict, List, Any
 from tenacity import retry, stop_after_attempt, wait_exponential
 import openai
 from diskcache import Cache
-from ..config import settings
-from ..analysis.aspect import get_domain_aspects, aspect_hint_for_query
+from config import settings
+from aspect import get_domain_aspects, aspect_hint_for_query
 
 # ---- Search planner constants ----
 SEARCH_PLANNER_PROMPT = dedent("""
@@ -30,9 +30,10 @@ Produce:
 - "comment_must_patterns": 0–6 lowercase regexes that should appear in relevant comments - MUST include the main product/service name
 
 Examples:
-- For "Nintendo Switch": terms should include "Nintendo Switch" exactly, patterns should require "nintendo switch"
+- For "Nintendo Switch": terms should include "Nintendo Switch" exactly, patterns should require "nintendo"
 - For "iPhone 15": terms should include "iPhone 15" exactly, patterns should require "iphone"
 - For "Tesla Model Y": terms should include "Tesla Model Y" exactly, patterns should require "tesla"
+- For "best golf course in bay area": patterns should require "golf" OR "bay area" OR "course" (not all together)
 """).strip()
 
 def _safe_json_loads(s: str):

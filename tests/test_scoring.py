@@ -54,3 +54,4 @@ def test_compute_global_clamping():
     
     avg_stars = compute_global(reviews_with_stars)
     assert 1.0 <= avg_stars <= 5.0
+

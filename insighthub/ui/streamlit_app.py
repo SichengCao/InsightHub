@@ -10,13 +10,15 @@ from pathlib import Path
 import sys
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
-from insighthub.config import ensure_config_files
-from insighthub.services.reddit_client import RedditService
-from insighthub.services.llm import LLMServiceFactory
-from insighthub.analysis.sentiment import VADERSentimentAnalyzer
-from insighthub.analysis.aspect import YAMLAspectDetector
-from insighthub.analysis.scoring import create_analysis_summary, compute_aspect_scores, aspect_aggregate, overall_rating_wilson, aspect_rating_wilson, crowd_trust_stars
-from insighthub.reporting.data_prep import build_summary_payload
+# Import from flat modules
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from config import ensure_config_files
+from reddit_client import RedditService
+from llm import LLMServiceFactory
+from sentiment import VADERSentimentAnalyzer
+from aspect import YAMLAspectDetector
+from scoring import create_analysis_summary, compute_aspect_scores, aspect_aggregate, overall_rating_wilson, aspect_rating_wilson, crowd_trust_stars
+from data_prep import build_summary_payload
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -108,6 +110,23 @@ with st.sidebar:
 if run_analysis:
     try:
         with st.spinner("Analyzing reviews..."):
+            # Show Reddit search plan (debug)
+            with st.expander("🔎 Reddit search plan (debug)"):
+                try:
+                    # call the internal planner without hitting the network
+                    plan = reddit_service._plan_search(query)
+                    st.json({
+                        "terms": plan.terms,
+                        "subreddits": plan.subreddits,
+                        "time_filter": plan.time_filter,
+                        "strategies": plan.strategies,
+                        "min_comment_score": plan.min_comment_score,
+                        "per_post_top_n": plan.per_post_top_n,
+                        "comment_must_patterns": plan.comment_must_patterns,
+                    })
+                except Exception as e:
+                    st.caption(f"(plan unavailable) {e}")
+            
             # Scrape reviews
             logger.info(f"Scraping Reddit for '{query}'...")
             reviews = reddit_service.scrape(query, limit)
@@ -134,10 +153,11 @@ if run_analysis:
                 text = review.get("text") if isinstance(review, dict) else review.text
                 stars = review.get("stars") if isinstance(review, dict) else review.stars
                 aspects = aspect_detector.detect_aspects(text, "tech_products")
-                for aspect in aspects:
-                    if aspect not in reviews_by_aspect:
-                        reviews_by_aspect[aspect] = []
-                    reviews_by_aspect[aspect].append({
+                for aspect_data in aspects:
+                    aspect_name = aspect_data.get("aspect") if isinstance(aspect_data, dict) else aspect_data
+                    if aspect_name not in reviews_by_aspect:
+                        reviews_by_aspect[aspect_name] = []
+                    reviews_by_aspect[aspect_name].append({
                         'stars': stars,
                         'text': text
                     })
@@ -147,8 +167,20 @@ if run_analysis:
             # Create summary
             summary = create_analysis_summary(query, reviews, sentiment_results, aspect_scores)
             
-            # Generate pros/cons using map-reduce pipeline
-            reduce_json = llm_service.summarize_comments_map_reduce(reviews, query)
+            # Generate pros/cons using concatenated analysis for better quality
+            # Concatenate all comments for single comprehensive analysis
+            all_texts = []
+            for review in reviews:
+                text = review.get("text") if isinstance(review, dict) else review.text
+                if text and len(text.strip()) > 20:  # Filter out very short texts
+                    all_texts.append(text.strip())
+            
+            # Use concatenated analysis for better quality and faster processing
+            if all_texts:
+                concatenated_text = "\n\n---COMMENT---\n\n".join(all_texts)
+                reduce_json = llm_service.summarize_concatenated_comments(concatenated_text, query, reviews)
+            else:
+                reduce_json = {"pros": [], "cons": [], "quotes": [], "coverage_ids": []}
             
             # Create reviews lookup by ID
             reviews_by_id = {r.get("id") if isinstance(r, dict) else r.id: r for r in reviews}
@@ -169,7 +201,10 @@ if run_analysis:
             if not reduce_json.get("pros") and not reduce_json.get("cons"):
                 pros_cons = llm_service.generate_pros_cons(reviews, query)
             else:
-                pros_cons = {"summary": "Analysis completed using evidence-first map-reduce pipeline."}
+                # Use the summary from concatenated analysis if available
+                pros_cons = {
+                    "summary": reduce_json.get("summary", "Analysis completed using evidence-first map-reduce pipeline.")
+                }
             
             # Display results
             st.header(f"📊 Analysis Results for '{query}'")
