@@ -11,7 +11,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 import openai
 from diskcache import Cache
 from ..config import settings
-from ..analysis.aspect import get_domain_aspects, aspect_hint_for_query
+# from ..analysis.aspect import get_domain_aspects, aspect_hint_for_query
 
 logger = logging.getLogger(__name__)
 
@@ -338,7 +338,7 @@ class OpenAIService:
         partials = []
         
         # Get aspect hint for the query
-        hint = aspect_hint_for_query(query)
+        hint = _aspect_hint_for_query(query)
         map_prompt = (hint + "\n" + MAP_PROMPT).strip() if hint else MAP_PROMPT
         
         for group in _chunk(comments, n=12):
