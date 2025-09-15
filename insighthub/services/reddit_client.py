@@ -181,7 +181,7 @@ class RedditService:
         
         try:
             # Search across multiple subreddits
-            subreddits = ['technology', 'cars', 'iphone', 'android', 'gaming']
+            subreddits = ['teslamotors', 'electricvehicles', 'cars', 'technology', 'tesla']
             
             for subreddit_name in subreddits:
                 if len(raw_comments) >= limit * 2:  # Collect more to account for filtering
@@ -239,7 +239,7 @@ class RedditService:
             except Exception:
                 continue
         
-        logger.info(f"Generated {len(raw_comments)} raw mock comments, filtered to {len(filtered)} quality comments, returning {min(limit, len(filtered))} reviews")
+        logger.info(f"Scraped {len(raw_comments)} raw Reddit comments, filtered to {len(filtered)} quality comments, returning {min(limit, len(filtered))} reviews")
         
         # Convert filtered comments to Review objects with real IDs/links
         def _to_review_obj(comment):
