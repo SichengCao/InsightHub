@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools","wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "insighthub"
+version = "0.1.0"
+dependencies = [
+  "pydantic>=2","pydantic-settings>=2","vaderSentiment","praw","PyYAML",
+  "tenacity","diskcache","streamlit"
+]
+
+[project.scripts]
+insighthub = "insighthub.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["insighthub*"]
+exclude = ["config*", "tests*"]
