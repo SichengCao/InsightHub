@@ -243,19 +243,22 @@ class RedditService:
         
         # Convert filtered comments to Review objects with real IDs/links
         def _to_review_obj(comment):
-            rid = str(getattr(comment, "id", ""))  # e.g. "k3abcd"
+            rid = str(getattr(comment, "id", ""))               # "k3abcd"
             author = getattr(comment, "author", None)
             author_name = getattr(author, "name", None) or (str(author) if author else "u/[deleted]")
-            score = int(getattr(comment, "score", 0) or 0)
-            permalink = f"https://reddit.com{getattr(comment, 'permalink', '')}"
-            body = getattr(comment, "body", "") or ""
+            score = int(getattr(comment, "score", getattr(comment, "upvotes", 0)) or 0)
+            permalink = getattr(comment, "permalink", "") or "" # e.g. "/r/teslamotors/comments/xyz/..."
+            url = getattr(comment, "url", "") or (f"https://reddit.com{permalink}" if permalink else "")
+            body = getattr(comment, "text", getattr(comment, "body", "")) or ""
 
+            # Return a canonical dict (or hydrate your Review dataclass the same way)
             return {
                 "id": rid,
                 "source": "reddit",
-                "text": body,                      # down-stream use 'text'
+                "text": body,
                 "created_utc": getattr(comment, "created_utc", None),
-                "permalink": permalink,
+                "permalink": permalink,   # keep both; UI prefers absolute url, LLM can use either
+                "url": url,
                 "author": author_name,
                 "upvotes": score,
             }
@@ -343,11 +346,15 @@ class RedditService:
             class MockComment:
                 def __init__(self, text, author, score):
                     self.body = text
+                    self.text = text  # alias for compatibility
                     self.author = author
                     self.score = score
+                    self.upvotes = score  # alias for compatibility
                     self.id = f"mock_{comment_id}"
                     self.created_utc = time.time() - random.randint(0, 86400 * 365)
                     self.subreddit = random.choice(['technology', 'cars', 'iphone', 'android', 'gaming'])
+                    self.permalink = f"/r/{self.subreddit}/comments/{self.id}/"
+                    self.url = f"https://reddit.com{self.permalink}"
             
             mock_comment = MockComment(
                 text=variation,

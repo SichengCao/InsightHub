@@ -160,7 +160,7 @@ if run_analysis:
             summary_payload = build_summary_payload(query, reduce_json, reviews_by_id)
             
             # Show evidence coverage warning if needed
-            cov = len(summary_payload.get("coverage", []))
+            cov = len(reduce_json.get("coverage_ids", []))
             total = len(reviews or [])
             if cov == 0 and total > 0:
                 st.warning("Evidence coverage is 0% — showing raw top comments below. Try broadening the query or increasing comments.")
@@ -199,27 +199,23 @@ if run_analysis:
                 neg_pct = (summary.neg / summary.total * 100) if summary.total > 0 else 0
                 st.metric("Negative", f"{neg_pct:.1f}%")
             
-            # Fix meaningful_reviews crash
-            total_reviews = len(reviews)
-            meaningful_count = sum(1 for r in reviews if len((r.get("text") or "")) >= 100)
+            # Compute meaningful_reviews once and use that everywhere
+            meaningful_reviews = [r for r in reviews if len((r.get("text") or "")) >= 100]
+            st.write(f"**Total Reviews:** {len(reviews)}")
+            st.write(f"**Meaningful Reviews (>100 chars):** {len(meaningful_reviews)}")
             
-            st.write(f"**Total Reviews:** {total_reviews}")
-            st.write(f"**Meaningful Reviews (>100 chars):** {meaningful_count}")
-            
-            # Wilson Trust-Weighted Score
+            # Only render one trust score
             try:
-                wl_stars = overall_rating_wilson(reviews)
-                st.markdown(f"### 🎯 Crowd-trust score: **{wl_stars} / 5.0**")
-                st.caption("Trust-weighted Wilson lower bound (resistant to brigading)")
-            except Exception as e:
-                logger.warning(f"Wilson scoring failed: {e}")
-            
-            # Crowd Trust Score
-            try:
-                crowd_stars = crowd_trust_stars(reviews)
+                crowd_stars = crowd_trust_stars(meaningful_reviews)
                 st.markdown(f"🎯 Crowd-trust score: **{crowd_stars} / 5.0**")
             except Exception as e:
                 logger.warning(f"Crowd trust scoring failed: {e}")
+            
+            # Tiny debug switch (helps confirm fields are real)
+            if st.checkbox("🔧 Debug: first 3 raw comments"):
+                import pandas as pd
+                df = pd.DataFrame(meaningful_reviews[:3])
+                st.dataframe(df[["id","author","upvotes","url","permalink","text"]])
             
             # Detailed Summary Section
             st.subheader("📝 Detailed Summary")
@@ -237,13 +233,13 @@ if run_analysis:
             # Real Reddit Comments Section
             st.subheader("💬 Real Reddit Comments")
             
-            # Pick by score and stars; use overall_rating if available
-            pos = [r for r in reviews if float(r.get("overall_rating", 0) or 0) >= 4.0]
-            neg = [r for r in reviews if float(r.get("overall_rating", 0) or 0) <= 2.0]
+            # Pick by score and stars; use meaningful_reviews for better quality
+            pos = [r for r in meaningful_reviews if float(r.get("stars", r.get("overall_rating", 0)) or 0) >= 4.0]
+            neg = [r for r in meaningful_reviews if float(r.get("stars", r.get("overall_rating", 0)) or 0) <= 2.0]
             
             # Sort by upvotes then rating
-            pos = sorted(pos, key=lambda r: (-(r.get("upvotes",0) or 0), -(r.get("overall_rating",0) or 0)))[:12]
-            neg = sorted(neg, key=lambda r: (-(r.get("upvotes",0) or 0),  (r.get("overall_rating",0) or 0)))[:12]
+            pos = sorted(pos, key=lambda r: (-(r.get("upvotes", r.get("score", 0)) or 0), -(r.get("stars", r.get("overall_rating", 0)) or 0)))[:12]
+            neg = sorted(neg, key=lambda r: (-(r.get("upvotes", r.get("score", 0)) or 0),  (r.get("stars", r.get("overall_rating", 0)) or 0)))[:12]
             
             # Deduplicate to avoid near-duplicates
             pos = _dedupe_keep_order(pos, key=lambda r: _sig(r.get("text","")))[:5]
@@ -251,12 +247,14 @@ if run_analysis:
             
             st.markdown("#### 🟢 Top 5 Positive Comments")
             for r in pos:
-                st.write(f"**⭐ {float(r['overall_rating']):.1f}/5** · ↑{r.get('upvotes',0)} · [{r.get('author','u/unknown')}]({r.get('permalink','')})")
+                link = r.get("url") or (f"https://reddit.com{r.get('permalink','')}" if r.get("permalink") else "")
+                st.write(f"**⭐ {float(r.get('stars', r.get('overall_rating', 0))):.1f}/5** · ↑{r.get('upvotes', r.get('score', 0))} · [{r.get('author','u/unknown')}]({link})")
                 st.caption(_excerpt(r.get("text","")))
 
             st.markdown("#### 🔴 Top 5 Negative Comments")
             for r in neg:
-                st.write(f"**⭐ {float(r['overall_rating']):.1f}/5** · ↑{r.get('upvotes',0)} · [{r.get('author','u/unknown')}]({r.get('permalink','')})")
+                link = r.get("url") or (f"https://reddit.com{r.get('permalink','')}" if r.get("permalink") else "")
+                st.write(f"**⭐ {float(r.get('stars', r.get('overall_rating', 0))):.1f}/5** · ↑{r.get('upvotes', r.get('score', 0))} · [{r.get('author','u/unknown')}]({link})")
                 st.caption(_excerpt(r.get("text","")))
             
             # Show expandable full comments
@@ -276,12 +274,21 @@ if run_analysis:
                     st.write("---")
             
             # Coverage meter
-            render_coverage_meter(summary_payload.get("coverage", []), len(reviews))
+            st.write(f"Coverage: {cov} / {total} comments referenced ({cov/total*100:.0f}%)")
             
             # Evidence-based Pros & Cons (only show if coverage > 0%)
-            if cov > 0 and (summary_payload.get("pros") or summary_payload.get("cons")):
-                render_section_with_evidence("✅ Pros", summary_payload.get("pros", []), reviews_by_id)
-                render_section_with_evidence("❌ Cons", summary_payload.get("cons", []), reviews_by_id)
+            if cov > 0 and (reduce_json.get("pros") or reduce_json.get("cons")):
+                st.subheader("✅ Pros")
+                for item in reduce_json.get("pros", [])[:5]:
+                    st.write(f"• {item.get('text', '')}")
+                    if item.get('ids'):
+                        st.caption(f"Sources: {', '.join(item['ids'][:3])}")
+                
+                st.subheader("❌ Cons")
+                for item in reduce_json.get("cons", [])[:5]:
+                    st.write(f"• {item.get('text', '')}")
+                    if item.get('ids'):
+                        st.caption(f"Sources: {', '.join(item['ids'][:3])}")
             elif cov == 0:
                 st.info("⚠️ Evidence coverage is 0% — LLM-generated pros/cons hidden. Showing raw top comments above.")
             else:

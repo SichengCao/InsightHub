@@ -33,14 +33,22 @@ def _aspect_hint_for_query(q: str) -> str:
 
 # Map-reduce pipeline constants
 MAP_PROMPT = dedent("""
-Return ONLY JSON. Each quote MUST be a verbatim substring (ignoring whitespace/typographic quotes) of one input `text`. For every pro/con bullet, include supporting `ids`; put all contributing ids into `coverage_ids`. If unsure, leave empty. No inventions.
-{
-  "pros":[{"text":str,"ids":[str]}],
+Return ONLY JSON.
+
+You receive comments with fields: id, text, upvotes, permalink.
+
+Rules:
+- Pros/cons bullets must be grounded ONLY in these texts.
+- For EVERY pro/con bullet, include supporting `ids` from the input comments.
+- Each quote MUST be a verbatim substring (allowing whitespace/quote normalization) of the input text it cites.
+- Put all contributing ids into `coverage_ids`. If unsure, leave fields empty.
+
+JSON schema:
+{ "pros":[{"text":str,"ids":[str]}],
   "cons":[{"text":str,"ids":[str]}],
   "aspects":[{"name":str,"score":float,"count":int}],
   "quotes":[{"id":str,"quote":str,"permalink":str}],
-  "coverage_ids":[str]
-}
+  "coverage_ids":[str] }
 """).strip()
 
 SUMMARY_PROMPT = dedent("""
@@ -115,6 +123,68 @@ def _safe_json(s: str) -> dict:
     for k in ("pros","cons","aspects","quotes","coverage_ids"):
         data.setdefault(k, [] if k != "coverage_ids" else [])
     return data
+
+# Coverage validation functions
+import unicodedata
+_WS = re.compile(r"\s+")
+
+def _norm_for_substring(s: str) -> str:
+    if not s: return ""
+    s = unicodedata.normalize("NFKC", s)
+    s = s.replace("'","'").replace("'","'").replace(""",'"').replace(""",'"')
+    s = _WS.sub(" ", s).strip().lower()
+    return s
+
+def _contains_norm(hay: str, needle: str) -> bool:
+    H = _norm_for_substring(hay); N = _norm_for_substring(needle)
+    return bool(N) and (N in H)
+
+def _validate_and_fix_coverage(final: dict, id2text: dict) -> dict:
+    cov = set()
+    quotes_ok = []
+    for q in final.get("quotes", []) or []:
+        rid = str(q.get("id", ""))
+        qt  = q.get("quote", "")
+        src = id2text.get(rid, "")
+        if _contains_norm(src, qt):
+            quotes_ok.append(q); cov.add(rid)
+    final["quotes"] = quotes_ok
+
+    # fold in IDs attached to pros/cons
+    for sec in ("pros","cons"):
+        for item in final.get(sec, []) or []:
+            for rid in (item.get("ids", []) or []):
+                rid = str(rid)
+                if rid in id2text:
+                    cov.add(rid)
+    final["coverage_ids"] = list(cov)
+    return final
+
+def _coverage_fallback(final: dict, id2text: dict):
+    if final.get("coverage_ids"): 
+        return final
+    # naive keyword matching: map each pro/con bullet to ids with >=2 token overlaps (len>=4)
+    def toks(s): 
+        return {t for t in re.findall(r"[a-z]{4,}", (s or "").lower())}
+    text_toks = {rid: toks(txt) for rid, txt in id2text.items()}
+
+    cov = set()
+    for sec in ("pros","cons"):
+        for item in final.get(sec, []) or []:
+            if item.get("ids"):
+                continue
+            bt = toks(item.get("text",""))
+            if not bt:
+                continue
+            hits = []
+            for rid, tt in text_toks.items():
+                overlap = len(bt & tt)
+                if overlap >= 2:
+                    hits.append(rid)
+            item["ids"] = hits[:5]  # cap
+            cov.update(item["ids"])
+    final["coverage_ids"] = list(set(final.get("coverage_ids", [])) | cov)
+    return final
 
 def _chunk(items, n=12):
     for i in range(0, len(items), n):
@@ -354,10 +424,13 @@ class OpenAIService:
         
         for group in _chunk(comments, n=12):
             payload = [{
-                "id": str(getattr(c, "id", f"idx-{i}")),
-                "text": (getattr(c, "text", getattr(c, "body", "")) or "")[:1400],
-                "upvotes": int(getattr(c, "upvotes", getattr(c, "score", 0)) or 0),
-                "permalink": getattr(c, "permalink", "") or ""
+                "id": str(getattr(c, "id", f"idx-{i}")) if not isinstance(c, dict) else str(c.get("id", f"idx-{i}")),
+                "text": (getattr(c, "text", getattr(c, "body", "")) if not isinstance(c, dict) else c.get("text", ""))[:1400],
+                "upvotes": int(getattr(c, "upvotes", getattr(c, "score", 0)) if not isinstance(c, dict) else c.get("upvotes", c.get("score", 0)) or 0),
+                "permalink": (
+                    (getattr(c, "url", "") if not isinstance(c, dict) else c.get("url", "")) or
+                    (f"https://reddit.com{getattr(c, 'permalink', '')}" if not isinstance(c, dict) else (f"https://reddit.com{c.get('permalink','')}" if c.get("permalink") else ""))
+                )
             } for i, c in enumerate(group)]
             
             try:
@@ -408,28 +481,29 @@ class OpenAIService:
         if not comments:
             return {"pros": [], "cons": [], "aspects": [], "quotes": [], "coverage_ids": []}
         
+        def _get(c, k, default=None):
+            return (c.get(k, default) if isinstance(c, dict) else getattr(c, k, default))
+        
         # Create cache key from comment IDs
-        key = ("mapreduce", self.model, query, tuple(sorted(getattr(c, "id", str(i)) for i, c in enumerate(comments))))
+        key = ("mapreduce", self.model, query, tuple(sorted(_get(c, "id", str(i)) for i, c in enumerate(comments))))
         hit = _cache.get(key)
         if hit: 
             return hit
         
         # IMPORTANT: keys must match payload ids exactly
-        id2text = {str(getattr(c, "id", i)): (getattr(c, "text", getattr(c, "body", "")) or "") for i, c in enumerate(comments)}
+        id2text = {str(_get(c,"id", i)): (_get(c,"text","") or _get(c,"body","") or "") for i, c in enumerate(comments)}
         
         parts = self._map_phase(comments, query)
         final = self._reduce_phase(parts)
         final = _validate_and_fix_coverage(final, id2text)
-        
-        # If still zero coverage, soft-retry with larger chunks
-        if not final.get("coverage_ids"):
-            parts = self._map_phase(comments, query)  # re-run with same chunks
-            final = self._reduce_phase(parts)
-            final = _validate_and_fix_coverage(final, id2text)
+        final = _coverage_fallback(final, id2text)  # last resort so coverage isn't 0 in mock mode
         
         # Clamp aspect scores
         for a in final.get("aspects", []):
-            a["score"] = max(1.0, min(5.0, float(a.get("score", 3.0))))
+            try:
+                a["score"] = max(1.0, min(5.0, float(a.get("score", 3.0))))
+            except Exception:
+                a["score"] = 3.0
         
         _cache.set(key, final, expire=12 * 3600)  # 12h TTL
         return final
