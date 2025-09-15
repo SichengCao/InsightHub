@@ -55,6 +55,38 @@ def prepare_export(
     return export_data
 
 
+def build_summary_payload(query, reduce_json, reviews_by_id):
+    """Build normalized summary payload for UI rendering."""
+    quotes_out = []
+    for q in reduce_json.get("quotes", []):
+        rid = q.get("id")
+        src = reviews_by_id.get(rid) if reviews_by_id else None
+        if src:
+            author = src.get("author") if isinstance(src, dict) else getattr(src, "author", None)
+            permalink = q.get("permalink") or (src.get("permalink") if isinstance(src, dict) else getattr(src, "permalink", ""))
+            upvotes = src.get("upvotes") if isinstance(src, dict) else getattr(src, "upvotes", getattr(src, "score", 0))
+        else:
+            author = "u/unknown"
+            permalink = q.get("permalink", "")
+            upvotes = 0
+            
+        quotes_out.append({
+            "quote": q.get("quote", ""),
+            "author": author or "u/unknown",
+            "permalink": permalink or "",
+            "upvotes": upvotes or 0
+        })
+    
+    return {
+        "query": query,
+        "pros": reduce_json.get("pros", [])[:8],
+        "cons": reduce_json.get("cons", [])[:8],
+        "aspects": sorted(reduce_json.get("aspects", []), key=lambda a: -a.get("count", 0))[:8],
+        "quotes": quotes_out,
+        "coverage": list({*reduce_json.get("coverage_ids", [])}),
+    }
+
+
 def export_to_json(data: Dict[str, Any], filename: str) -> None:
     """Export data to JSON file."""
     import datetime

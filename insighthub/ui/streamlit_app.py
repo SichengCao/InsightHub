@@ -119,22 +119,27 @@ if run_analysis:
             # Analyze sentiment
             sentiment_results = []
             for review in reviews:
-                result = sentiment_analyzer.analyze(review.text)
-                review.sentiment_compound = result['compound']
-                review.sentiment_label = result['label']
-                review.stars = result['stars']
+                text = review.get("text") if isinstance(review, dict) else review.text
+                result = sentiment_analyzer.analyze(text)
+                # Store results in the review dict
+                review["sentiment_compound"] = result['compound']
+                review["sentiment_label"] = result['label']
+                review["stars"] = result['stars']
+                review["overall_rating"] = result['stars']  # Add overall_rating for UI display
                 sentiment_results.append(result)
             
             # Detect aspects
             reviews_by_aspect = {}
             for review in reviews:
-                aspects = aspect_detector.detect_aspects(review.text, "tech_products")
+                text = review.get("text") if isinstance(review, dict) else review.text
+                stars = review.get("stars") if isinstance(review, dict) else review.stars
+                aspects = aspect_detector.detect_aspects(text, "tech_products")
                 for aspect in aspects:
                     if aspect not in reviews_by_aspect:
                         reviews_by_aspect[aspect] = []
                     reviews_by_aspect[aspect].append({
-                        'stars': review.stars,
-                        'text': review.text
+                        'stars': stars,
+                        'text': text
                     })
             
             aspect_scores = compute_aspect_scores(reviews_by_aspect)
@@ -146,7 +151,7 @@ if run_analysis:
             reduce_json = llm_service.summarize_comments_map_reduce(reviews, query)
             
             # Create reviews lookup by ID
-            reviews_by_id = {r.id: r for r in reviews}
+            reviews_by_id = {r.get("id") if isinstance(r, dict) else r.id: r for r in reviews}
             
             # Build weighted aspects directly from Review.aspect_scores
             weighted_aspects = aspect_aggregate(reviews)
