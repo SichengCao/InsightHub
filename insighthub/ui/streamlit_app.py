@@ -385,7 +385,7 @@ if run_analysis:
             # Statistics Summary
             st.subheader("📊 Statistics Summary")
             st.write(f"**Total Reviews Analyzed:** {len(reviews)}")
-            st.write(f"**Meaningful Reviews (>100 chars):** {meaningful_count}")
+            st.write(f"**Meaningful Reviews (>100 chars):** {len(meaningful_reviews)}")
             st.write(f"**Sentiment Distribution:**")
             st.write(f"- Positive: {summary.pos} ({pos_pct:.1f}%)")
             st.write(f"- Negative: {summary.neg} ({neg_pct:.1f}%)")
