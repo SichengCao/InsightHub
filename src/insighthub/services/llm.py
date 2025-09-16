@@ -315,27 +315,36 @@ class OpenAIService:
             logger.debug(f"Cache hit for LLM request: {cache_key[:8]}...")
             return cached_response
         
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user}
-                ],
-                max_tokens=max_tokens,
-                temperature=temperature,
-                timeout=20
-            )
-            result = response.choices[0].message.content.strip()
-            
-            # Cache the response for 24 hours
-            self.cache.set(cache_key, result, expire=86400)
-            logger.debug(f"Cached LLM response: {cache_key[:8]}...")
-            
-            return result
-        except Exception as e:
-            logger.error(f"Chat failed: {e}")
-            raise
+        # Retry logic with exponential backoff
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user}
+                    ],
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    timeout=60  # Increased timeout for larger batches
+                )
+                result = response.choices[0].message.content.strip()
+                
+                # Cache the response for 24 hours
+                self.cache.set(cache_key, result, expire=86400)
+                logger.debug(f"Cached LLM response: {cache_key[:8]}...")
+                
+                return result
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt  # Exponential backoff
+                    logger.warning(f"Chat attempt {attempt + 1} failed: {e}. Retrying in {wait_time}s...")
+                    import time
+                    time.sleep(wait_time)
+                else:
+                    logger.error(f"Chat failed after {max_retries} attempts: {e}")
+                    raise
     
     def plan_reddit_search(self, query: str) -> dict:
         """Plan Reddit search strategy using LLM."""
@@ -1108,8 +1117,8 @@ Return JSON:
         """Annotate comments with GPT for scoring and entity extraction."""
         annotations = []
         
-        # Process in batches to avoid token limits
-        batch_size = 15  # Increased from 5 to 15 for better efficiency
+        # Process in batches to avoid token limits and timeouts
+        batch_size = 8  # Optimized for reliability and efficiency
         for i in range(0, len(comments), batch_size):
             batch = comments[i:i + batch_size]
             
@@ -1484,8 +1493,9 @@ Return JSON:
         if comments:
             logger.info(f"First comment type: {type(comments[0])}, content: {comments[0]}")
         
-        # Process in batches to avoid token limits
-        batch_size = 15  # Increased from 5 to 15 for better efficiency
+        # Adaptive batch sizing: start with 8, reduce if timeouts occur
+        batch_size = 8
+        timeout_count = 0
         for i in range(0, len(comments), batch_size):
             batch = comments[i:i + batch_size]
             
