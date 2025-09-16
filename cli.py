@@ -10,10 +10,10 @@ from config import settings, ensure_config_files
 from models import Review
 from reddit_client import RedditService
 from llm import LLMServiceFactory
-from sentiment import VADERSentimentAnalyzer
-from aspect import YAMLAspectDetector
-from scoring import create_analysis_summary, compute_aspect_scores
-from data_prep import prepare_export, export_to_json
+from scoring import aggregate_generic, rank_entities
+from data_prep import export_to_json
+import time
+from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
@@ -50,14 +50,12 @@ def cmd_scrape(args):
 
 
 def cmd_analyze(args):
-    """Analyze command."""
+    """Analyze command using GPT-only pipeline."""
     ensure_config_files()
     
     # Initialize services
     reddit_service = RedditService()
     llm_service = LLMServiceFactory.create()
-    sentiment_analyzer = VADERSentimentAnalyzer()
-    aspect_detector = YAMLAspectDetector()
     
     print(f"Analyzing '{args.query}' with limit {args.limit}...")
     
@@ -69,70 +67,158 @@ def cmd_analyze(args):
         print("No reviews found!")
         return
     
-    # Analyze sentiment
-    sentiment_results = []
+    # Detect intent and generate schema
+    intent_schema = llm_service.detect_intent_and_schema(args.query)
+    print(f"Detected intent: {intent_schema.intent}")
+    if intent_schema.entity_type:
+        print(f"Entity type: {intent_schema.entity_type}")
+    print(f"Aspects: {intent_schema.aspects}")
+    
+    # Convert reviews to comment format for annotation
+    comments = []
     for review in reviews:
-        try:
-            text = review.get("text") if isinstance(review, dict) else review.text
-            result = sentiment_analyzer.analyze(text)
-            sentiment_results.append(result)
-        except Exception as e:
-            review_id = review.get("id") if isinstance(review, dict) else review.id
-            logger.warning(f"Sentiment analysis failed for review {review_id}: {e}")
-            sentiment_results.append({"compound": 0.0, "label": "NEUTRAL", "stars": 3.0})
+        comment = {
+            "id": review.get("id") if isinstance(review, dict) else review.id,
+            "text": review.get("text") if isinstance(review, dict) else review.text,
+            "upvotes": review.get("upvotes", 0) if isinstance(review, dict) else getattr(review, "upvotes", 0),
+            "permalink": review.get("permalink", "") if isinstance(review, dict) else getattr(review, "permalink", "")
+        }
+        comments.append(comment)
     
-    # Count sentiments
-    pos_count = sum(1 for r in sentiment_results if r.get('label') == 'POSITIVE')
-    neg_count = sum(1 for r in sentiment_results if r.get('label') == 'NEGATIVE')
-    neu_count = len(sentiment_results) - pos_count - neg_count
+    # Annotate comments with GPT
+    print("Annotating comments with GPT...")
+    annos = llm_service.annotate_comments_with_gpt(comments, intent_schema.aspects, intent_schema.entity_type)
+    print(f"Annotated {len(annos)} comments")
     
-    print(f"Sentiment distribution: {pos_count} positive, {neg_count} negative, {neu_count} neutral")
+    # Debug: show extracted entities (optional)
+    if len(annos) > 0:
+        all_entities = []
+        for anno in annos:
+            all_entities.extend(anno.entities)
+        print(f"Extracted {len(all_entities)} entities")
     
-    # Detect aspects
-    aspect_reviews = {}
-    for review, sentiment in zip(reviews, sentiment_results):
-        text = review.get("text") if isinstance(review, dict) else review.text
-        aspects = aspect_detector.detect_aspects(text)
-        for aspect_data in aspects:
-            aspect_name = aspect_data.get("aspect") if isinstance(aspect_data, dict) else aspect_data
-            if aspect_name not in aspect_reviews:
-                aspect_reviews[aspect_name] = []
-            aspect_reviews[aspect_name].append(sentiment)
+    # Create upvote map for weighting
+    upvote_map = {comment["id"]: comment["upvotes"] for comment in comments}
     
-    # Compute aspect scores
-    aspect_scores = compute_aspect_scores(aspect_reviews)
+    # Process based on intent
+    if intent_schema.intent == "RANKING":
+        # Rank entities
+        ranking = rank_entities(annos, upvote_map, intent_schema.entity_type, min_mentions=1)
+        print(f"Found {len(ranking)} ranked entities")
+        
+        # Attach quotes to ranking items
+        for item in ranking:
+            # Find comments mentioning this entity
+            entity_comments = []
+            for comment in comments:
+                if item.name.lower() in comment["text"].lower():
+                    entity_comments.append(comment["text"][:200] + "...")
+            item.quotes = entity_comments[:3]  # Top 3 quotes
+        
+        # Generate summary
+        summary = llm_service.summarize_generic_with_gpt(
+            args.query, 
+            {item.name: item.overall_stars for item in ranking[:5]}, 
+            sum(item.overall_stars for item in ranking[:5]) / len(ranking[:5]) if ranking else 3.0,
+            [quote for item in ranking[:3] for quote in item.quotes]
+        )
+        
+        # Prepare payload
+        payload = {
+            "query": args.query,
+            "intent": intent_schema.intent,
+            "summary": summary,
+            "metadata": {"timestamp": time.time()},
+            "ranking": [
+                {
+                    "name": item.name,
+                    "overall_stars": item.overall_stars,
+                    "aspect_scores": item.aspect_scores,
+                    "mentions": item.mentions,
+                    "confidence": item.confidence,
+                    "quotes": item.quotes
+                }
+                for item in ranking
+            ]
+        }
+        
+    elif intent_schema.intent == "SOLUTION":
+        # Group by cluster key
+        clusters = defaultdict(list)
+        for anno in annos:
+            if anno.solution_key:
+                clusters[anno.solution_key].append(anno)
+        
+        # Create solution clusters
+        solution_clusters = []
+        for cluster_key, cluster_annos in clusters.items():
+            if len(cluster_annos) >= 2:  # Minimum 2 comments per cluster
+                cluster = {
+                    "title": cluster_key,
+                    "steps": [],  # Would need additional GPT call to extract steps
+                    "caveats": [],  # Would need additional GPT call to extract caveats
+                    "evidence_count": len(cluster_annos)
+                }
+                solution_clusters.append(cluster)
+        
+        # Generate summary
+        summary = llm_service.summarize_solutions_with_gpt(args.query, solution_clusters)
+        
+        # Prepare payload
+        payload = {
+            "query": args.query,
+            "intent": intent_schema.intent,
+            "summary": summary,
+            "metadata": {"timestamp": time.time()},
+            "solutions": solution_clusters
+        }
+        
+    else:  # GENERIC
+        # Aggregate generic results
+        overall, aspect_averages = aggregate_generic(intent_schema.aspects, annos, upvote_map)
+        
+        # Select representative quotes
+        quotes = []
+        for comment in comments[:10]:  # Top 10 comments
+            quotes.append(comment["text"][:200] + "...")
+        
+        # Generate summary
+        summary = llm_service.summarize_generic_with_gpt(args.query, aspect_averages, overall, quotes)
+        
+        # Prepare payload
+        payload = {
+            "query": args.query,
+            "intent": intent_schema.intent,
+            "summary": summary,
+            "metadata": {"timestamp": time.time()},
+            "overall": overall,
+            "aspects": aspect_averages,
+            "quotes": quotes
+        }
     
-    # Create summary
-    summary = create_analysis_summary(args.query, reviews, sentiment_results, aspect_scores)
-    
-    # Calculate baseline for logging
-    baseline = 1.0 + 4.0 * ((pos_count + 0.5 * neu_count) / len(reviews))
-    print(f"Baseline: {baseline:.2f}, Final average: {summary.avg_stars:.2f}")
-    
-    # Generate pros/cons
-    pros_cons = llm_service.generate_pros_cons(reviews, args.query)
-    
-    # Export results
+    # Export to JSON
     if args.out:
-        export_data = prepare_export(reviews, summary, pros_cons)
-        export_to_json(export_data, args.out)
+        export_to_json(payload, args.out)
         print(f"Results exported to {args.out}")
     
     # Print summary
     print(f"\nAnalysis Summary for '{args.query}':")
-    print(f"Total reviews: {summary.total}")
-    print(f"Average rating: {summary.avg_stars:.2f}/5")
-    print(f"Positive: {summary.pos} ({summary.pos/summary.total*100:.1f}%)")
-    print(f"Negative: {summary.neg} ({summary.neg/summary.total*100:.1f}%)")
-    print(f"Neutral: {summary.neu} ({summary.neu/summary.total*100:.1f}%)")
+    print(f"Intent: {intent_schema.intent}")
+    print(f"Summary: {summary[:200]}...")
     
-    if aspect_scores:
-        print("\nAspect scores:")
-        for aspect, score in aspect_scores.items():
-            print(f"  {aspect}: {score:.2f}/5")
-    
-    print(f"\nPros: {pros_cons['pros']}")
-    print(f"Cons: {pros_cons['cons']}")
+    if intent_schema.intent == "RANKING":
+        print(f"\nTop ranked entities:")
+        for i, item in enumerate(ranking[:5], 1):
+            print(f"  {i}. {item.name}: {item.overall_stars:.1f}/5 ({item.mentions} mentions)")
+    elif intent_schema.intent == "SOLUTION":
+        print(f"\nSolution clusters:")
+        for i, cluster in enumerate(solution_clusters, 1):
+            print(f"  {i}. {cluster['title']}: {cluster['evidence_count']} comments")
+    else:
+        print(f"\nOverall rating: {overall:.1f}/5")
+        print(f"Aspect scores:")
+        for aspect, score in aspect_averages.items():
+            print(f"  {aspect}: {score:.1f}/5")
 
 
 def cmd_export(args):

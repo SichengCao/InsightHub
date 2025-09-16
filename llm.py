@@ -12,6 +12,7 @@ import openai
 from diskcache import Cache
 from config import settings
 from aspect import get_domain_aspects, aspect_hint_for_query
+from models import IntentSchema, GPTCommentAnno, EntityRef
 
 # ---- Search planner constants ----
 SEARCH_PLANNER_PROMPT = dedent("""
@@ -41,10 +42,34 @@ def _safe_json_loads(s: str):
     try:
         return json.loads(s)
     except Exception:
-        m = re.search(r"\{.*\}", s, re.S)
-        if not m:
-            raise
-        return json.loads(m.group(0))
+        # Try to extract JSON array first
+        array_match = re.search(r'\[.*\]', s, re.DOTALL)
+        if array_match:
+            try:
+                return json.loads(array_match.group(0))
+            except:
+                pass
+        
+        # Try to extract JSON object
+        obj_match = re.search(r"\{.*\}", s, re.S)
+        if obj_match:
+            try:
+                return json.loads(obj_match.group(0))
+            except:
+                pass
+        
+        # If all else fails, try to clean the string
+        cleaned = s.strip()
+        if cleaned.startswith('```json'):
+            cleaned = cleaned[7:]
+        if cleaned.endswith('```'):
+            cleaned = cleaned[:-3]
+        cleaned = cleaned.strip()
+        
+        try:
+            return json.loads(cleaned)
+        except:
+            raise ValueError(f"Could not parse JSON from: {s[:200]}...")
 
 logger = logging.getLogger(__name__)
 
@@ -659,6 +684,532 @@ class OpenAIService:
         except Exception as e:
             logger.error(f"Concatenated analysis failed: {e}")
             return {"pros": [], "cons": [], "quotes": [], "coverage_ids": []}
+    
+    def generate_aspects_for_query(self, query: str, sample_comments: list) -> dict:
+        """Generate relevant aspects for a query using LLM analysis of sample comments."""
+        try:
+            context_comments = sample_comments[:5] if sample_comments else []
+            context_text = "\n".join([
+                f"- {comment.get('text', '')[:200] if isinstance(comment, dict) else comment.text[:200]}"
+                for comment in context_comments
+            ])
+            
+            prompt = f"""
+            Analyze the query "{query}" and the sample comments below to generate the most relevant aspects for this topic.
+            
+            Sample comments:
+            {context_text}
+            
+            Return ONLY JSON with this exact schema:
+            {{
+                "aspects": [
+                    {{
+                        "name": "aspect_name",
+                        "keywords": ["keyword1", "keyword2", "keyword3"],
+                        "description": "brief description of what this aspect covers"
+                    }}
+                ]
+            }}
+            
+            Rules:
+            - Generate 6-8 relevant aspects based on the query topic and comment content
+            - Use specific, actionable aspect names (e.g., "Course Quality", "Battery Life", "Customer Service")
+            - Include 3-5 relevant keywords for each aspect that would appear in reviews
+            - Focus on aspects that users actually discuss in reviews
+            - Make aspects specific to the query domain (golf courses, tech products, restaurants, etc.)
+            - Avoid generic aspects unless they're truly relevant
+            """
+            
+            response = self.chat(
+                system="You are an expert at analyzing user reviews and identifying key aspects that matter to consumers.",
+                user=prompt,
+                temperature=0.0,
+                max_tokens=800
+            )
+            
+            # Robust JSON parsing
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
+                result = json.loads(json_str)
+            else:
+                result = json.loads(response)
+            
+            aspects = result.get("aspects", [])
+            validated_aspects = {}
+            for aspect in aspects:
+                name = aspect.get("name", "").strip()
+                keywords = aspect.get("keywords", [])
+                if name and keywords:
+                    clean_keywords = [k.strip().lower() for k in keywords if k.strip()]
+                    if clean_keywords:
+                        validated_aspects[name] = clean_keywords
+            
+            logger.info(f"Successfully generated {len(validated_aspects)} aspects")
+            return validated_aspects
+                
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse LLM aspect generation response: {e}")
+            logger.warning(f"Response was: {response[:200]}...")
+            return {}
+                
+        except Exception as e:
+            logger.error(f"LLM aspect generation failed: {e}")
+            return {}
+    
+    def detect_intent_and_schema(self, query: str) -> IntentSchema:
+        """Detect query intent and generate aspect schema."""
+        try:
+            prompt = f"""
+            Analyze the query "{query}" and determine the user's intent and generate relevant aspects.
+            
+            Return ONLY JSON with this exact schema:
+            {{
+                "intent": "RANKING|SOLUTION|GENERIC",
+                "entity_type": "entity_type_for_ranking_or_null",
+                "aspects": ["aspect1", "aspect2", "aspect3"]
+            }}
+            
+            Intent Rules:
+            - RANKING: User wants to compare/rank specific entities (e.g., "best golf courses", "top restaurants", "iPhone vs Samsung")
+            - SOLUTION: User wants solutions/fixes/how-to (e.g., "fix wind noise", "how to improve battery", "troubleshooting")
+            - GENERIC: General product/service review analysis (e.g., "iPhone 15", "Tesla Model Y", "restaurant reviews")
+            
+            Aspect Rules:
+            - Generate 4-8 relevant aspects based on the query domain
+            - Use specific, actionable aspect names
+            - Focus on aspects users actually discuss in reviews
+            - Make aspects specific to the query domain
+            """
+            
+            response = self.chat(
+                system="You are an expert at analyzing user queries and determining their intent for review analysis.",
+                user=prompt,
+                temperature=0.2,
+                max_tokens=600
+            )
+            
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
+                result = json.loads(json_str)
+            else:
+                result = json.loads(response)
+            
+            intent = result.get("intent", "GENERIC")
+            entity_type = result.get("entity_type")
+            aspects = result.get("aspects", [])
+            
+            if intent not in ["RANKING", "SOLUTION", "GENERIC"]:
+                intent = "GENERIC"
+            
+            clean_aspects = [a.strip() for a in aspects if a.strip()][:8]
+            
+            logger.info(f"Detected intent: {intent}, entity_type: {entity_type}, aspects: {len(clean_aspects)}")
+            return IntentSchema(intent=intent, entity_type=entity_type, aspects=clean_aspects)
+                
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse intent detection response: {e}")
+            fallback_aspects = ["Quality", "Performance", "Value", "User Experience"]
+            return IntentSchema(intent="GENERIC", entity_type=None, aspects=fallback_aspects)
+                
+        except Exception as e:
+            logger.error(f"Intent detection failed: {e}")
+            fallback_aspects = ["Quality", "Performance", "Value", "User Experience"]
+            return IntentSchema(intent="GENERIC", entity_type=None, aspects=fallback_aspects)
+    
+    # OLD METHOD REMOVED - using new GPT-only pipeline method below
+    def _old_annotate_comments_with_gpt(self, query: str, aspects: List[str], comments: List[Dict], entity_type: str = None) -> List[GPTCommentAnno]:
+        """Annotate comments with GPT for scoring and entity extraction."""
+        annotations = []
+        
+        # Process in batches of 40 comments
+        batch_size = 40
+        for i in range(0, len(comments), batch_size):
+            batch = comments[i:i + batch_size]
+            batch_annotations = self._annotate_batch(query, aspects, batch, entity_type)
+            annotations.extend(batch_annotations)
+        
+        return annotations
+    
+    def _annotate_batch(self, query: str, aspects: List[str], comments: List[Dict], entity_type: str = None) -> List[GPTCommentAnno]:
+        """Annotate a batch of comments."""
+        try:
+            # Prepare comments for annotation
+            comments_text = []
+            for comment in comments:
+                text = comment.get("text", "")[:500]  # Limit text length
+                comments_text.append(f"ID: {comment.get('id', '')}\nText: {text}")
+            
+            comments_str = "\n\n".join(comments_text)
+            
+            entity_type_instruction = ""
+            if entity_type:
+                entity_type_instruction = f"\nIMPORTANT: For entity extraction, use entity_type = \"{entity_type}\" for all relevant entities."
+            
+            prompt = f"""
+            Analyze these Reddit comments about "{query}" and provide detailed annotations.
+            
+            Comments:
+            {comments_str}
+            
+            Return ONLY JSON with this exact schema:
+            {{
+                "annotations": [
+                    {{
+                        "id": "comment_id",
+                        "overall_stars": 3.5,
+                        "aspects": {{"aspect_name": 4.0, "another_aspect": 2.5}},
+                        "entities": [
+                            {{"name": "entity_name", "entity_type": "type", "confidence": 0.8}}
+                        ],
+                        "cluster_key": "solution_cluster_key_or_null"
+                    }}
+                ]
+            }}
+            
+            Rules:
+            - Rate overall_stars from 1.0 to 5.0 based on sentiment
+            - Rate each aspect from 1.0 to 5.0 based on how well the comment addresses it
+            - Extract entities mentioned (products, places, people, etc.) with confidence 0.0-1.0
+            - For SOLUTION queries, provide cluster_key for grouping similar solutions
+            - For RANKING queries, extract entities with the specific entity_type requested
+            - For GENERIC queries, cluster_key should be null{entity_type_instruction}
+            """
+            
+            response = self.chat(
+                system="You are an expert at analyzing user comments and extracting structured information.",
+                user=prompt,
+                temperature=0.3,
+                max_tokens=2000
+            )
+            
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
+                result = json.loads(json_str)
+            else:
+                result = json.loads(response)
+            
+            annotations = []
+            for anno_data in result.get("annotations", []):
+                try:
+                    entities = []
+                    for entity_data in anno_data.get("entities", []):
+                        entity = EntityRef(
+                            name=entity_data.get("name", ""),
+                            entity_type=entity_data.get("entity_type", ""),
+                            mentions=1,
+                            confidence=entity_data.get("confidence", 0.5)
+                        )
+                        entities.append(entity)
+                    
+                    annotation = GPTCommentAnno(
+                        id=anno_data.get("id", ""),
+                        overall_stars=float(anno_data.get("overall_stars", 3.0)),
+                        aspects=anno_data.get("aspects", {}),
+                        entities=entities,
+                        cluster_key=anno_data.get("cluster_key")
+                    )
+                    annotations.append(annotation)
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to parse annotation: {e}")
+                    continue
+            
+            logger.info(f"Successfully annotated {len(annotations)} comments")
+            return annotations
+                
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse annotation response: {e}")
+            return []
+                
+        except Exception as e:
+            logger.error(f"Comment annotation failed: {e}")
+            return []
+    
+    def summarize_generic_with_gpt(self, query: str, aspects: Dict[str, float], overall: float, quotes: List[str]) -> str:
+        """Generate generic summary with pros/cons."""
+        try:
+            aspects_text = "\n".join([f"- {name}: {score:.1f}/5" for name, score in aspects.items()])
+            quotes_text = "\n".join([f"- \"{quote[:100]}...\"" for quote in quotes[:5]])
+            
+            prompt = f"""
+            Generate a comprehensive summary for "{query}" based on the analysis results.
+            
+            Overall Rating: {overall:.1f}/5
+            
+            Aspect Scores:
+            {aspects_text}
+            
+            Representative Quotes:
+            {quotes_text}
+            
+            Provide a summary that includes:
+            1. Overall assessment of the product/service
+            2. Key strengths (pros) based on aspect scores and quotes
+            3. Key weaknesses (cons) based on aspect scores and quotes
+            4. Final recommendation
+            
+            Write in a natural, engaging style suitable for consumers.
+            """
+            
+            response = self.chat(
+                system="You are an expert product reviewer who writes clear, helpful summaries for consumers.",
+                user=prompt,
+                temperature=0.4,
+                max_tokens=800
+            )
+            
+            return response.strip()
+                
+        except Exception as e:
+            logger.error(f"Generic summarization failed: {e}")
+            return f"Analysis completed for {query}. Overall rating: {overall:.1f}/5. See detailed aspect scores and quotes for more information."
+    
+    def summarize_solutions_with_gpt(self, query: str, clusters: List[Dict]) -> str:
+        """Generate solution summary with clusters."""
+        try:
+            clusters_text = ""
+            for i, cluster in enumerate(clusters, 1):
+                cluster_text = f"""
+                Solution {i}: {cluster.get('title', 'Untitled Solution')}
+                Steps: {cluster.get('steps', [])}
+                Caveats: {cluster.get('caveats', [])}
+                Evidence: {cluster.get('evidence_count', 0)} comments
+                """
+                clusters_text += cluster_text + "\n"
+            
+            prompt = f"""
+            Generate a comprehensive solution summary for "{query}" based on the solution clusters.
+            
+            Solution Clusters:
+            {clusters_text}
+            
+            Provide a summary that includes:
+            1. Overview of the problem and available solutions
+            2. Summary of each solution cluster with key steps
+            3. Important caveats and considerations
+            4. Recommendations for which solutions to try first
+            
+            Write in a helpful, actionable style for users seeking solutions.
+            """
+            
+            response = self.chat(
+                system="You are an expert problem-solver who provides clear, actionable solutions.",
+                user=prompt,
+                temperature=0.4,
+                max_tokens=1000
+            )
+            
+            return response.strip()
+                
+        except Exception as e:
+            logger.error(f"Solution summarization failed: {e}")
+            return f"Found {len(clusters)} solution clusters for {query}. See detailed solutions for specific steps and caveats."
+
+    # ===== GPT-ONLY PIPELINE METHODS =====
+    
+    def detect_intent_and_schema(self, query: str, sample_comments: List[Dict] = None) -> IntentSchema:
+        """Detect query intent and generate relevant aspect schema."""
+        try:
+            # Prepare sample text for analysis
+            sample_text = ""
+            if sample_comments:
+                sample_text = "\n".join([c.get("text", "")[:200] for c in sample_comments[:5]])
+            
+            prompt = f"""Analyze this query and determine its intent and relevant aspects:
+
+Query: "{query}"
+
+Sample comments (if available):
+{sample_text}
+
+Determine the INTENT:
+- RANKING: User wants to compare/rank specific items (e.g., "best iPhone", "iPhone vs Samsung")
+- SOLUTION: User wants solutions to a problem (e.g., "how to fix iPhone battery", "iPhone problems")
+- GENERIC: General discussion/reviews (e.g., "iPhone reviews", "iPhone experience")
+
+Generate relevant ASPECTS for this query (3-8 aspects):
+- For tech products: performance, battery, camera, design, price, software, etc.
+- For services: quality, customer service, value, reliability, etc.
+- For locations: atmosphere, accessibility, value, quality, etc.
+
+Return JSON:
+{{
+    "intent": "RANKING|SOLUTION|GENERIC",
+    "aspects": ["aspect1", "aspect2", "aspect3"],
+    "entity_type": "products|services|locations|etc" (for RANKING queries)
+}}"""
+
+            response = self.chat(
+                system="You are an expert at analyzing user queries and determining intent and relevant aspects.",
+                user=prompt,
+                temperature=0.2,
+                max_tokens=500
+            )
+            
+            result = _safe_json_loads(response)
+            
+            # Validate and set defaults
+            intent = result.get("intent", "GENERIC")
+            if intent not in ["RANKING", "SOLUTION", "GENERIC"]:
+                intent = "GENERIC"
+            
+            aspects = result.get("aspects", [])
+            if not aspects:
+                aspects = ["quality", "value", "performance"]
+            
+            entity_type = result.get("entity_type", "products")
+            
+            return IntentSchema(
+                intent=intent,
+                aspects=aspects,
+                entity_type=entity_type
+            )
+            
+        except Exception as e:
+            logger.error(f"Intent detection failed: {e}")
+            return IntentSchema(
+                intent="GENERIC",
+                aspects=["quality", "value", "performance"],
+                entity_type="products"
+            )
+
+    def annotate_comments_with_gpt(self, comments: List[Dict], aspects: List[str], entity_type: str = None) -> List[GPTCommentAnno]:
+        """Annotate comments with GPT for scoring and entity extraction."""
+        annotations = []
+        
+        # Process in batches to avoid token limits
+        batch_size = 5
+        for i in range(0, len(comments), batch_size):
+            batch = comments[i:i + batch_size]
+            
+            try:
+                # Prepare batch text
+                batch_text = ""
+                for j, comment in enumerate(batch):
+                    # Handle both dict and object formats
+                    if isinstance(comment, dict):
+                        text = comment.get('text', '')
+                    else:
+                        text = getattr(comment, 'text', '')
+                    batch_text += f"Comment {j+1}: {text}\n\n"
+                
+                prompt = f"""Analyze these Reddit comments and provide structured annotations.
+
+Comments:
+{batch_text}
+
+Aspects to score: {', '.join(aspects)}
+
+For each comment, provide:
+1. Overall star rating (1-5)
+2. Per-aspect scores (1-5 for each aspect)
+3. Entities mentioned (for ranking queries)
+4. Solution cluster key (for solution queries)
+
+Return JSON array:
+[
+    {{
+        "overall_score": 4,
+        "aspect_scores": {{"quality": 4, "value": 3, "performance": 5}},
+        "entities": [{{"name": "iPhone 15", "type": "product", "confidence": 0.9}}],
+        "solution_key": "battery_replacement"
+    }}
+]"""
+
+                response = self.chat(
+                    system="You are an expert at analyzing Reddit comments for sentiment, aspects, and entities.",
+                    user=prompt,
+                    temperature=0.2,
+                    max_tokens=1500
+                )
+                
+                batch_annotations = _safe_json_loads(response)
+                
+                # Convert to GPTCommentAnno objects
+                for j, annotation_data in enumerate(batch_annotations):
+                    if j < len(batch):
+                        comment = batch[j]
+                        
+                        # Extract comment ID
+                        if isinstance(comment, dict):
+                            comment_id = comment.get("id", "")
+                        else:
+                            comment_id = getattr(comment, "id", "")
+                        
+                        # Extract entities
+                        entities = []
+                        for entity_data in annotation_data.get("entities", []):
+                            entities.append(EntityRef(
+                                name=entity_data.get("name", ""),
+                                entity_type=entity_data.get("type", entity_type or "unknown"),
+                                confidence=entity_data.get("confidence", 0.5)
+                            ))
+                        
+                        annotations.append(GPTCommentAnno(
+                            comment_id=comment_id,
+                            overall_score=annotation_data.get("overall_score", 3),
+                            aspect_scores=annotation_data.get("aspect_scores", {}),
+                            entities=entities,
+                            solution_key=annotation_data.get("solution_key", "")
+                        ))
+                
+            except Exception as e:
+                logger.error(f"GPT annotation batch failed: {e}")
+                # Add default annotations for failed batch
+                for comment in batch:
+                    # Extract comment ID
+                    if isinstance(comment, dict):
+                        comment_id = comment.get("id", "")
+                    else:
+                        comment_id = getattr(comment, "id", "")
+                    
+                    annotations.append(GPTCommentAnno(
+                        comment_id=comment_id,
+                        overall_score=3,
+                        aspect_scores={aspect: 3 for aspect in aspects},
+                        entities=[],
+                        solution_key=""
+                    ))
+        
+        return annotations
+
+    def generate_dynamic_aspects(self, query: str, sample_comments: List[Dict] = None) -> List[str]:
+        """Generate dynamic aspects based on query and sample comments."""
+        try:
+            # Prepare sample text
+            sample_text = ""
+            if sample_comments:
+                sample_text = "\n".join([c.get("text", "")[:200] for c in sample_comments[:3]])
+            
+            prompt = f"""Generate relevant aspects for analyzing this query:
+
+Query: "{query}"
+
+Sample comments:
+{sample_text}
+
+Generate 4-6 relevant aspects that people would care about for this topic.
+Return as a JSON array: ["aspect1", "aspect2", "aspect3"]"""
+
+            response = self.chat(
+                system="You are an expert at identifying relevant aspects for any topic.",
+                user=prompt,
+                temperature=0.2,
+                max_tokens=300
+            )
+            
+            aspects = _safe_json_loads(response)
+            if isinstance(aspects, list) and all(isinstance(a, str) for a in aspects):
+                return aspects[:6]  # Limit to 6 aspects
+            
+        except Exception as e:
+            logger.error(f"Dynamic aspect generation failed: {e}")
+        
+        # Fallback to domain-specific aspects
+        return get_domain_aspects(query)
 
 
 class FallbackLLMService:
@@ -773,3 +1324,248 @@ class FallbackLLMService:
         """Fallback concatenated analysis - delegates to map-reduce."""
         logger.warning("Fallback LLM service concatenated analysis called - using map-reduce fallback")
         return self.summarize_comments_map_reduce(reviews, query)
+
+    # ===== GPT-ONLY PIPELINE METHODS (FALLBACK VERSIONS) =====
+    
+    def detect_intent_and_schema(self, query: str, sample_comments: List[Dict] = None) -> IntentSchema:
+        """Fallback intent detection - returns GENERIC with basic aspects."""
+        logger.warning("Fallback LLM service intent detection called - using basic fallback")
+        return IntentSchema(
+            intent="GENERIC",
+            aspects=["quality", "value", "performance"],
+            entity_type="products"
+        )
+
+    def annotate_comments_with_gpt(self, comments: List[Dict], aspects: List[str], entity_type: str = None) -> List[GPTCommentAnno]:
+        """Fallback comment annotation - returns dummy annotations."""
+        logger.warning("Fallback LLM service comment annotation called - using dummy annotations")
+        annotations = []
+        for comment in comments:
+            # Extract comment ID safely
+            if isinstance(comment, dict):
+                comment_id = comment.get("id", "")
+            else:
+                comment_id = getattr(comment, "id", "")
+            
+            annotations.append(GPTCommentAnno(
+                comment_id=comment_id,
+                overall_score=3.0,
+                aspect_scores={aspect: 3.0 for aspect in aspects},
+                entities=[],
+                solution_key=""
+            ))
+        return annotations
+
+    def generate_dynamic_aspects(self, query: str, sample_comments: List[Dict] = None) -> List[str]:
+        """Fallback dynamic aspect generation - uses domain-specific aspects."""
+        logger.warning("Fallback LLM service dynamic aspect generation called - using domain aspects")
+        return get_domain_aspects(query)
+
+    # ===== GPT-ONLY PIPELINE METHODS =====
+    
+    def detect_intent_and_schema(self, query: str, sample_comments: List[Dict] = None) -> IntentSchema:
+        """Detect query intent and generate relevant aspect schema."""
+        try:
+            # Prepare sample text for analysis
+            sample_text = ""
+            if sample_comments:
+                sample_text = "\n".join([c.get("text", "")[:200] for c in sample_comments[:5]])
+            
+            prompt = f"""Analyze this query and determine its intent and relevant aspects:
+
+Query: "{query}"
+
+Sample comments (if available):
+{sample_text}
+
+Determine the INTENT:
+- RANKING: User wants to compare/rank specific items (e.g., "best iPhone", "iPhone vs Samsung")
+- SOLUTION: User wants solutions to a problem (e.g., "how to fix iPhone battery", "iPhone problems")
+- GENERIC: General discussion/reviews (e.g., "iPhone reviews", "iPhone experience")
+
+Generate relevant ASPECTS for this query (3-8 aspects):
+- For tech products: performance, battery, camera, design, price, software, etc.
+- For services: quality, customer service, value, reliability, etc.
+- For locations: atmosphere, accessibility, value, quality, etc.
+
+Return JSON:
+{{
+    "intent": "RANKING|SOLUTION|GENERIC",
+    "aspects": ["aspect1", "aspect2", "aspect3"],
+    "entity_type": "products|services|locations|etc" (for RANKING queries)
+}}"""
+
+            response = self.chat(
+                system="You are an expert at analyzing user queries and determining intent and relevant aspects.",
+                user=prompt,
+                temperature=0.2,
+                max_tokens=500
+            )
+            
+            result = _safe_json_loads(response)
+            
+            # Validate and set defaults
+            intent = result.get("intent", "GENERIC")
+            if intent not in ["RANKING", "SOLUTION", "GENERIC"]:
+                intent = "GENERIC"
+            
+            aspects = result.get("aspects", [])
+            if not aspects:
+                aspects = ["quality", "value", "performance"]
+            
+            entity_type = result.get("entity_type", "products")
+            
+            return IntentSchema(
+                intent=intent,
+                aspects=aspects,
+                entity_type=entity_type
+            )
+            
+        except Exception as e:
+            logger.error(f"Intent detection failed: {e}")
+            return IntentSchema(
+                intent="GENERIC",
+                aspects=["quality", "value", "performance"],
+                entity_type="products"
+            )
+
+    def annotate_comments_with_gpt(self, comments: List[Dict], aspects: List[str], entity_type: str = None) -> List[GPTCommentAnno]:
+        """Annotate comments with GPT for scoring and entity extraction."""
+        annotations = []
+        
+        # Debug: check what we're getting
+        logger.info(f"annotate_comments_with_gpt called with {len(comments)} comments")
+        if comments:
+            logger.info(f"First comment type: {type(comments[0])}, content: {comments[0]}")
+        
+        # Process in batches to avoid token limits
+        batch_size = 5
+        for i in range(0, len(comments), batch_size):
+            batch = comments[i:i + batch_size]
+            
+            try:
+                # Prepare batch text
+                batch_text = ""
+                for j, comment in enumerate(batch):
+                    # Handle both dict and object formats
+                    if isinstance(comment, dict):
+                        text = comment.get('text', '')
+                    else:
+                        text = getattr(comment, 'text', '')
+                    batch_text += f"Comment {j+1}: {text}\n\n"
+                
+                prompt = f"""Analyze these Reddit comments and provide structured annotations.
+
+Comments:
+{batch_text}
+
+Aspects to score: {', '.join(aspects)}
+
+For each comment, provide:
+1. Overall star rating (1-5)
+2. Per-aspect scores (1-5 for each aspect)
+3. Entities mentioned (for ranking queries)
+4. Solution cluster key (for solution queries)
+
+Return JSON array:
+[
+    {{
+        "overall_score": 4,
+        "aspect_scores": {{"quality": 4, "value": 3, "performance": 5}},
+        "entities": [{{"name": "iPhone 15", "type": "product", "confidence": 0.9}}],
+        "solution_key": "battery_replacement"
+    }}
+]"""
+
+                response = self.chat(
+                    system="You are an expert at analyzing Reddit comments for sentiment, aspects, and entities.",
+                    user=prompt,
+                    temperature=0.2,
+                    max_tokens=1500
+                )
+                
+                batch_annotations = _safe_json_loads(response)
+                
+                # Convert to GPTCommentAnno objects
+                for j, annotation_data in enumerate(batch_annotations):
+                    if j < len(batch):
+                        comment = batch[j]
+                        
+                        # Extract comment ID
+                        if isinstance(comment, dict):
+                            comment_id = comment.get("id", "")
+                        else:
+                            comment_id = getattr(comment, "id", "")
+                        
+                        # Extract entities
+                        entities = []
+                        for entity_data in annotation_data.get("entities", []):
+                            entities.append(EntityRef(
+                                name=entity_data.get("name", ""),
+                                entity_type=entity_data.get("type", entity_type or "unknown"),
+                                confidence=entity_data.get("confidence", 0.5)
+                            ))
+                        
+                        annotations.append(GPTCommentAnno(
+                            comment_id=comment_id,
+                            overall_score=annotation_data.get("overall_score", 3),
+                            aspect_scores=annotation_data.get("aspect_scores", {}),
+                            entities=entities,
+                            solution_key=annotation_data.get("solution_key", "")
+                        ))
+                
+            except Exception as e:
+                logger.error(f"GPT annotation batch failed: {e}")
+                # Add default annotations for failed batch
+                for comment in batch:
+                    # Extract comment ID
+                    if isinstance(comment, dict):
+                        comment_id = comment.get("id", "")
+                    else:
+                        comment_id = getattr(comment, "id", "")
+                    
+                    annotations.append(GPTCommentAnno(
+                        comment_id=comment_id,
+                        overall_score=3,
+                        aspect_scores={aspect: 3 for aspect in aspects},
+                        entities=[],
+                        solution_key=""
+                    ))
+        
+        return annotations
+
+    def generate_dynamic_aspects(self, query: str, sample_comments: List[Dict] = None) -> List[str]:
+        """Generate dynamic aspects based on query and sample comments."""
+        try:
+            # Prepare sample text
+            sample_text = ""
+            if sample_comments:
+                sample_text = "\n".join([c.get("text", "")[:200] for c in sample_comments[:3]])
+            
+            prompt = f"""Generate relevant aspects for analyzing this query:
+
+Query: "{query}"
+
+Sample comments:
+{sample_text}
+
+Generate 4-6 relevant aspects that people would care about for this topic.
+Return as a JSON array: ["aspect1", "aspect2", "aspect3"]"""
+
+            response = self.chat(
+                system="You are an expert at identifying relevant aspects for any topic.",
+                user=prompt,
+                temperature=0.2,
+                max_tokens=300
+            )
+            
+            aspects = _safe_json_loads(response)
+            if isinstance(aspects, list) and all(isinstance(a, str) for a in aspects):
+                return aspects[:6]  # Limit to 6 aspects
+            
+        except Exception as e:
+            logger.error(f"Dynamic aspect generation failed: {e}")
+        
+        # Fallback to domain-specific aspects
+        return get_domain_aspects(query)
+

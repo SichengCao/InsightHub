@@ -1,7 +1,12 @@
 """Tests for scoring module."""
 
 import pytest
-from insighthub.analysis.scoring import compute_global
+import sys
+from pathlib import Path
+
+# Add parent directory to path for flat module imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from scoring import compute_global
 
 
 def test_compute_global_guardrail():

@@ -4,7 +4,7 @@ import logging
 import math, time
 from typing import List, Dict, Any
 from collections import defaultdict
-from models import Review, AspectScore, AnalysisSummary
+from models import Review, AspectScore, AnalysisSummary, GPTCommentAnno, RankingItem
 
 logger = logging.getLogger(__name__)
 
@@ -235,3 +235,101 @@ def crowd_trust_stars(reviews):
     n_eff = pos_w + neg_w + 0.5*neu_w
     p_lb = _wilson_lower_bound(pos_w + 0.5*neu_w, n_eff)
     return round(1 + 4*p_lb, 1)
+
+
+def aggregate_generic(aspect_schema: List[str], annos: List[GPTCommentAnno], upvote_map: Dict[str, int]) -> tuple[float, Dict[str, float]]:
+    """Aggregate generic analysis results."""
+    if not annos:
+        return 3.0, {}
+    
+    # Calculate overall rating
+    overall_scores = []
+    aspect_scores = defaultdict(list)
+    
+    for anno in annos:
+        # Weight by upvotes
+        weight = _winsor_weight(upvote_map.get(anno.comment_id, 1))
+        
+        # Overall score
+        overall_scores.append((anno.overall_score, weight))
+        
+        # Aspect scores
+        for aspect_name in aspect_schema:
+            if aspect_name in anno.aspect_scores:
+                aspect_scores[aspect_name].append((anno.aspect_scores[aspect_name], weight))
+    
+    # Calculate weighted averages
+    overall = _weighted_mean(overall_scores) if overall_scores else 3.0
+    
+    aspect_averages = {}
+    for aspect_name in aspect_schema:
+        if aspect_scores[aspect_name]:
+            aspect_averages[aspect_name] = _weighted_mean(aspect_scores[aspect_name])
+        else:
+            aspect_averages[aspect_name] = 3.0
+    
+    return overall, aspect_averages
+
+
+def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entity_type: str, min_mentions: int = 3) -> List[RankingItem]:
+    """Rank entities based on mentions and scores."""
+    entity_stats = defaultdict(lambda: {
+        'mentions': 0,
+        'confidence_sum': 0.0,
+        'overall_scores': [],
+        'aspect_scores': defaultdict(list),
+        'comment_ids': []
+    })
+    
+    # Aggregate entity data
+    for anno in annos:
+        weight = _winsor_weight(upvote_map.get(anno.comment_id, 1))
+        
+        for entity in anno.entities:
+            # Flexible entity type matching
+            if (entity.entity_type == entity_type or 
+                entity.entity_type == entity_type.rstrip('s') or  # singular/plural
+                entity.entity_type == entity_type + 's' or  # plural
+                entity_type in entity.entity_type or  # substring match
+                entity.entity_type in entity_type):  # reverse substring match
+                entity_stats[entity.name]['mentions'] += 1
+                entity_stats[entity.name]['confidence_sum'] += entity.confidence
+                entity_stats[entity.name]['overall_scores'].append((anno.overall_score, weight))
+                entity_stats[entity.name]['comment_ids'].append(anno.comment_id)
+                
+                # Add aspect scores
+                for aspect_name, score in anno.aspect_scores.items():
+                    entity_stats[entity.name]['aspect_scores'][aspect_name].append((score, weight))
+    
+    # Create ranking items
+    ranking_items = []
+    for entity_name, stats in entity_stats.items():
+        if stats['mentions'] >= min_mentions:
+            # Calculate overall score
+            overall_stars = _weighted_mean(stats['overall_scores']) if stats['overall_scores'] else 3.0
+            
+            # Calculate aspect scores
+            aspect_scores = {}
+            for aspect_name, scores in stats['aspect_scores'].items():
+                if scores:
+                    aspect_scores[aspect_name] = _weighted_mean(scores)
+                else:
+                    aspect_scores[aspect_name] = 3.0
+            
+            # Calculate confidence
+            confidence = stats['confidence_sum'] / stats['mentions'] if stats['mentions'] > 0 else 0.0
+            
+            ranking_item = RankingItem(
+                name=entity_name,
+                overall_stars=overall_stars,
+                aspect_scores=aspect_scores,
+                mentions=stats['mentions'],
+                confidence=confidence,
+                quotes=[]  # Will be filled by caller
+            )
+            ranking_items.append(ranking_item)
+    
+    # Sort by overall score descending, then by mentions descending
+    ranking_items.sort(key=lambda x: (-x.overall_stars, -x.mentions))
+    
+    return ranking_items

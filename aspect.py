@@ -20,10 +20,12 @@ def _norm(text: str) -> str:
 
 
 class YAMLAspectDetector:
-    """YAML-based aspect detector."""
+    """LLM-powered aspect detector with fallback to predefined aspects."""
     
     def __init__(self):
         self.aspects = self._load_aspects()
+        self.llm_service = None
+        self._aspect_cache = {}  # Cache generated aspects per query
     
     def _load_aspects(self) -> Dict[str, List[str]]:
         """Load aspects from YAML file."""
@@ -59,12 +61,20 @@ class YAMLAspectDetector:
             "design": ["design", "looks", "appearance", "size", "weight", "thickness", "bezels", "style", "aesthetic"]
         }
     
-    def detect_aspects(self, text: str, category: str = "tech") -> List[Dict[str, any]]:
-        """Detect aspects in text with word-boundary matching."""
+    def detect_aspects(self, text: str, query: str = "", sample_comments: list = None, category: str = "tech") -> List[Dict[str, any]]:
+        """Detect aspects in text using LLM-generated aspects with fallback."""
         text_norm = _norm(text)
         detected_aspects = []
         
-        for aspect_name, keywords in self.aspects.items():
+        # Get aspects (LLM-generated or fallback)
+        if query and sample_comments:
+            domain_aspects = self._get_generated_aspects(query, sample_comments)
+        elif query:
+            domain_aspects = get_domain_aspects(query)
+        else:
+            domain_aspects = self.aspects
+        
+        for aspect_name, keywords in domain_aspects.items():
             hits = []
             for keyword in keywords:
                 # Use word boundary matching for better precision
@@ -80,6 +90,42 @@ class YAMLAspectDetector:
                 })
         
         return detected_aspects
+    
+    def _get_llm_service(self):
+        """Get LLM service instance."""
+        if self.llm_service is None:
+            try:
+                from llm import LLMServiceFactory
+                self.llm_service = LLMServiceFactory.create()
+            except Exception as e:
+                logger.warning(f"Failed to initialize LLM service: {e}")
+                return None
+        return self.llm_service
+    
+    def _get_generated_aspects(self, query: str, sample_comments: list) -> Dict[str, List[str]]:
+        """Get LLM-generated aspects for a query."""
+        # Check cache first
+        cache_key = f"{query.lower().strip()}"
+        if cache_key in self._aspect_cache:
+            return self._aspect_cache[cache_key]
+        
+        # Try LLM generation
+        llm_service = self._get_llm_service()
+        if llm_service:
+            try:
+                generated_aspects = llm_service.generate_aspects_for_query(query, sample_comments)
+                if generated_aspects:
+                    self._aspect_cache[cache_key] = generated_aspects
+                    logger.info(f"Generated {len(generated_aspects)} aspects for query: {query}")
+                    return generated_aspects
+            except Exception as e:
+                logger.warning(f"LLM aspect generation failed: {e}")
+        
+        # Fallback to predefined aspects
+        fallback_aspects = get_domain_aspects(query)
+        self._aspect_cache[cache_key] = fallback_aspects
+        logger.info(f"Using fallback aspects for query: {query}")
+        return fallback_aspects
 
 
 # Domain-aware aspect taxonomies
@@ -105,6 +151,17 @@ PHONE_ASPECTS = {
     "Durability": ["durable", "waterproof", "drop", "scratch", "protection", "case"]
 }
 
+GOLF_ASPECTS = {
+    "Course Quality": ["course", "greens", "fairways", "rough", "condition", "maintenance", "quality", "well-maintained"],
+    "Difficulty/Challenge": ["difficult", "challenging", "easy", "hard", "slope", "rating", "handicap", "skill level"],
+    "Pace of Play": ["pace", "slow", "fast", "wait", "backup", "crowded", "busy", "time", "speed"],
+    "Scenery/Views": ["scenic", "beautiful", "views", "landscape", "nature", "mountains", "ocean", "picturesque"],
+    "Facilities": ["clubhouse", "pro shop", "restaurant", "bar", "locker room", "practice", "driving range", "putting green"],
+    "Price/Value": ["price", "cost", "value", "expensive", "cheap", "worth", "affordable", "green fees", "membership"],
+    "Staff/Service": ["staff", "service", "friendly", "helpful", "professional", "rude", "attitude", "customer service"],
+    "Accessibility": ["public", "private", "accessible", "location", "parking", "easy to find", "convenient"]
+}
+
 GENERAL_ASPECTS = {
     "Quality": ["quality", "build", "construction", "materials", "durable", "reliable"],
     "Performance": ["performance", "speed", "fast", "slow", "power", "efficiency"],
@@ -121,8 +178,12 @@ def get_domain_aspects(query: str) -> Dict[str, List[str]]:
     """Get domain-specific aspects based on the query."""
     query_lower = query.lower()
     
+    # Golf courses
+    if any(term in query_lower for term in ['golf', 'golf course', 'golfing', 'course', 'greens', 'fairway', 'tee', 'putting', 'golf club', 'country club']):
+        return GOLF_ASPECTS
+    
     # Automotive
-    if any(term in query_lower for term in ['tesla', 'model y', 'model 3', 'model s', 'model x', 'cybertruck', 'ev', 'electric vehicle', 'car', 'automotive', 'ford', 'bmw', 'mercedes', 'audi', 'honda', 'toyota', 'nissan', 'hyundai', 'kia']):
+    elif any(term in query_lower for term in ['tesla', 'model y', 'model 3', 'model s', 'model x', 'cybertruck', 'ev', 'electric vehicle', 'car', 'automotive', 'ford', 'bmw', 'mercedes', 'audi', 'honda', 'toyota', 'nissan', 'hyundai', 'kia']):
         return CAR_ASPECTS
     
     # Phones
@@ -138,7 +199,14 @@ def aspect_hint_for_query(query: str) -> str:
     """Generate a hint string for the LLM based on the query domain."""
     query_lower = query.lower()
     
-    if any(term in query_lower for term in ['tesla', 'model y', 'model 3', 'model s', 'model x', 'cybertruck', 'ev', 'electric vehicle', 'car', 'automotive', 'ford', 'bmw', 'mercedes', 'audi', 'honda', 'toyota', 'nissan', 'hyundai', 'kia']):
+    if any(term in query_lower for term in ['golf', 'golf course', 'golfing', 'course', 'greens', 'fairway', 'tee', 'putting', 'golf club', 'country club']):
+        return (
+            "DOMAIN=Golf Course. Prefer these aspects when relevant: "
+            "Course Quality; Difficulty/Challenge; Pace of Play; Scenery/Views; Facilities; "
+            "Price/Value; Staff/Service; Accessibility. "
+            "Focus on golf-specific features like course condition, greens quality, pace of play, and facilities."
+        )
+    elif any(term in query_lower for term in ['tesla', 'model y', 'model 3', 'model s', 'model x', 'cybertruck', 'ev', 'electric vehicle', 'car', 'automotive', 'ford', 'bmw', 'mercedes', 'audi', 'honda', 'toyota', 'nissan', 'hyundai', 'kia']):
         return (
             "DOMAIN=Automotive. Prefer these aspects when relevant: "
             "Build Quality; Ride/Handling; Range/Battery; Performance; Autopilot/FSD; "
