@@ -10,6 +10,7 @@ from typing import Dict, List, Any
 from tenacity import retry, stop_after_attempt, wait_exponential
 import openai
 from diskcache import Cache
+import hashlib
 from ..core.config import settings
 from ..core.aspect import get_domain_aspects, aspect_hint_for_query
 from ..core.models import IntentSchema, GPTCommentAnno, EntityRef
@@ -296,12 +297,24 @@ class OpenAIService:
     
     def __init__(self):
         self.client = openai.OpenAI(api_key=settings.effective_openai_key)
-        # Prefer a small-but-strong JSON-friendly model
+        # Use different models for different tasks to optimize cost
         self.model = getattr(settings, "openai_model", None) or "gpt-4o-mini"
-        logger.info("OpenAI service initialized")
+        self.fast_model = "gpt-3.5-turbo"  # For simple tasks
+        self.smart_model = "gpt-4o-mini"   # For complex analysis
+        self.cache = Cache('cache/llm_cache')  # Cache for API responses
+        logger.info("OpenAI service initialized with caching")
     
     def chat(self, system: str, user: str, temperature: float = 0.3, max_tokens: int = 800) -> str:
-        """Generic chat method for LLM interactions."""
+        """Generic chat method for LLM interactions with caching."""
+        # Create cache key from input parameters
+        cache_key = hashlib.md5(f"{system}|{user}|{temperature}|{max_tokens}".encode()).hexdigest()
+        
+        # Check cache first
+        cached_response = self.cache.get(cache_key)
+        if cached_response:
+            logger.debug(f"Cache hit for LLM request: {cache_key[:8]}...")
+            return cached_response
+        
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -313,7 +326,13 @@ class OpenAIService:
                 temperature=temperature,
                 timeout=20
             )
-            return response.choices[0].message.content.strip()
+            result = response.choices[0].message.content.strip()
+            
+            # Cache the response for 24 hours
+            self.cache.set(cache_key, result, expire=86400)
+            logger.debug(f"Cached LLM response: {cache_key[:8]}...")
+            
+            return result
         except Exception as e:
             logger.error(f"Chat failed: {e}")
             raise
@@ -1090,7 +1109,7 @@ Return JSON:
         annotations = []
         
         # Process in batches to avoid token limits
-        batch_size = 5
+        batch_size = 15  # Increased from 5 to 15 for better efficiency
         for i in range(0, len(comments), batch_size):
             batch = comments[i:i + batch_size]
             
@@ -1103,7 +1122,9 @@ Return JSON:
                         text = comment.get('text', '')
                     else:
                         text = getattr(comment, 'text', '')
-                    batch_text += f"Comment {j+1}: {text}\n\n"
+                    # Truncate long comments to save tokens (keep first 300 chars)
+                    truncated_text = text[:300] + "..." if len(text) > 300 else text
+                    batch_text += f"Comment {j+1}: {truncated_text}\n\n"
                 
                 prompt = f"""Analyze these Reddit comments and provide structured annotations.
 
@@ -1451,13 +1472,20 @@ Return JSON:
         """Annotate comments with GPT for scoring and entity extraction."""
         annotations = []
         
+        # Smart comment selection: prioritize high-quality comments
+        if len(comments) > 30:
+            # Sort by upvotes and take top 30 most relevant comments
+            sorted_comments = sorted(comments, key=lambda c: c.get('upvotes', 0) if isinstance(c, dict) else getattr(c, 'upvotes', 0), reverse=True)
+            comments = sorted_comments[:30]
+            logger.info(f"Selected top 30 comments from {len(sorted_comments)} total comments")
+        
         # Debug: check what we're getting
         logger.info(f"annotate_comments_with_gpt called with {len(comments)} comments")
         if comments:
             logger.info(f"First comment type: {type(comments[0])}, content: {comments[0]}")
         
         # Process in batches to avoid token limits
-        batch_size = 5
+        batch_size = 15  # Increased from 5 to 15 for better efficiency
         for i in range(0, len(comments), batch_size):
             batch = comments[i:i + batch_size]
             
@@ -1470,7 +1498,9 @@ Return JSON:
                         text = comment.get('text', '')
                     else:
                         text = getattr(comment, 'text', '')
-                    batch_text += f"Comment {j+1}: {text}\n\n"
+                    # Truncate long comments to save tokens (keep first 300 chars)
+                    truncated_text = text[:300] + "..." if len(text) > 300 else text
+                    batch_text += f"Comment {j+1}: {truncated_text}\n\n"
                 
                 prompt = f"""Analyze these Reddit comments and provide structured annotations.
 
