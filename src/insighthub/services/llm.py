@@ -1051,6 +1051,15 @@ Return JSON:
             
             result = _safe_json_loads(response)
             
+            # Ensure result is a dictionary
+            if not isinstance(result, dict):
+                logger.error(f"Intent detection failed: Expected dict, got {type(result)}")
+                return IntentSchema(
+                    intent="GENERIC",
+                    aspects=["quality", "value", "performance"],
+                    entity_type="products"
+                )
+            
             # Validate and set defaults
             intent = result.get("intent", "GENERIC")
             if intent not in ["RANKING", "SOLUTION", "GENERIC"]:
@@ -1403,6 +1412,15 @@ Return JSON:
             )
             
             result = _safe_json_loads(response)
+            
+            # Ensure result is a dictionary
+            if not isinstance(result, dict):
+                logger.error(f"Intent detection failed: Expected dict, got {type(result)}")
+                return IntentSchema(
+                    intent="GENERIC",
+                    aspects=["quality", "value", "performance"],
+                    entity_type="products"
+                )
             
             # Validate and set defaults
             intent = result.get("intent", "GENERIC")

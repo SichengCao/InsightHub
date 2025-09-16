@@ -282,7 +282,7 @@ class RedditService:
         """Plan search using LLM with fallback to API-only discovery."""
         try:
             # Import LLM service
-            from llm import LLMServiceFactory
+            from .llm import LLMServiceFactory
             llm = LLMServiceFactory.create()
             plan = llm.plan_reddit_search(query)
             return SearchPlan(**plan)
