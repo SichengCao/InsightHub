@@ -1,0 +1,4 @@
+global:
+  sentiment_weight: 1.0
+  aspect_weight: 1.0
+
