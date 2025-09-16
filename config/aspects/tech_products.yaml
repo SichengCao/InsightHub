@@ -1,8 +1,42 @@
-battery: ["battery","battery life","charge","charging","power"]
-camera: ["camera","photo","photo quality","video"]
-durability: ["durable","build","scratch","drop","water","IP68"]
-price: ["price","expensive","cheap","value"]
-heat: ["hot","overheat","warm","heat"]
-ai: ["ai","siri","assistant","generative","model","ml"]
-other: ["design","screen","display","audio","speaker","microphone"]
-
+ai:
+- ai
+- siri
+- assistant
+- generative
+- model
+- ml
+battery:
+- battery
+- battery life
+- charge
+- charging
+- power
+camera:
+- camera
+- photo
+- photo quality
+- video
+durability:
+- durable
+- build
+- scratch
+- drop
+- water
+- IP68
+heat:
+- hot
+- overheat
+- warm
+- heat
+other:
+- design
+- screen
+- display
+- audio
+- speaker
+- microphone
+price:
+- price
+- expensive
+- cheap
+- value

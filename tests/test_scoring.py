@@ -4,9 +4,9 @@ import pytest
 import sys
 from pathlib import Path
 
-# Add parent directory to path for flat module imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from scoring import compute_global
+# Add src to path for organized module imports
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+from insighthub.core.scoring import compute_global
 
 
 def test_compute_global_guardrail():

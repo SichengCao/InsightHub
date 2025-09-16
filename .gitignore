@@ -21,17 +21,12 @@ wheels/
 *.egg
 MANIFEST
 
-# Virtual Environment
+# Virtual environments
 venv/
 env/
 ENV/
 env.bak/
 venv.bak/
-
-# Environment Variables
-.env
-.env.local
-.env.*.local
 
 # IDE
 .vscode/
@@ -49,30 +44,31 @@ venv.bak/
 ehthumbs.db
 Thumbs.db
 
-# Logs
-*.log
-logs/
-
-# Cache
+# Project specific
 .cache/
-.pytest_cache/
+*.json
+!config/*.yaml
+!config/aspects/*.yaml
+logs/
+*.log
 
-# Test outputs
-test_*.json
-out.json
-*.json.bak
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Test coverage
+.coverage
+.pytest_cache/
+htmlcov/
 
 # Streamlit
 .streamlit/
 
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# Coverage reports
-htmlcov/
-.coverage
-.coverage.*
-coverage.xml
-*.cover
-.hypothesis/
-
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp

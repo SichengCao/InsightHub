@@ -10,14 +10,14 @@ from collections import defaultdict
 
 # Add parent directory to path for imports
 import sys
-sys.path.append(str(Path(__file__).parent))
+sys.path.append(str(Path(__file__).parent.parent.parent))
 
 # Import from organized modules
-from ..core.config import ensure_config_files
-from ..services.reddit_client import RedditService
-from ..services.llm import LLMServiceFactory
-from ..core.scoring import aggregate_generic, rank_entities
-from ..utils.data_prep import export_to_json
+from insighthub.core.config import ensure_config_files
+from insighthub.services.reddit_client import RedditService
+from insighthub.services.llm import LLMServiceFactory
+from insighthub.core.scoring import aggregate_generic, rank_entities
+from insighthub.utils.data_prep import export_to_json
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -351,3 +351,7 @@ for i, p in enumerate(POPULAR):
         if st.button(f'Use "{p["title"]}"', key=f"use_{i}", width='stretch'):
             st.session_state["query"] = p["q"]
             st.rerun()
+
+def main():
+    """Main function for Streamlit app."""
+    pass  # The app runs automatically when imported
