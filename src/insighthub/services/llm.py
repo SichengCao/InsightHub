@@ -18,24 +18,38 @@ from ..core.models import IntentSchema, GPTCommentAnno, EntityRef
 # ---- Search planner constants ----
 SEARCH_PLANNER_PROMPT = dedent("""
 You are a search planner for finding the best Reddit comments for ANY user query.
-Return ONLY JSON (no prose).
+Return ONLY JSON (no prose). Use English keys; keep values in the query's language.
 
-CRITICAL: Focus on the EXACT product/service/thing mentioned in the query. Avoid tangential topics.
+INPUT (via user message): the raw user query (e.g., "best golf course in bay area").
 
-Produce:
-- "terms": 4–10 short search strings (deduped), MUST include the exact query and specific variants. Quote exact phrases when useful.
-- "subreddits": 0–12 subreddit names (no r/ prefix), discovered from the query; include "all" last
-- "time_filter": one of ["day","week","month","year","all"]
-- "strategies": 2–3 from ["relevance","top","new"]
-- "min_comment_score": integer 0..50
-- "per_post_top_n": integer 3..12
-- "comment_must_patterns": 0–6 lowercase regexes that should appear in relevant comments - MUST include the main product/service name
+Rules:
+- Focus on the EXACT product/service/topic in the query, but add SHORT, meaningful variants:
+  * brand/model aliases, common abbreviations, and for places: local nicknames (e.g., "SF Bay Area","East Bay","Peninsula","Silicon Valley","Marin").
+- Choose items that maximize recall without inventing facts. Prefer canonical, high-traffic subreddits.
+- All arrays MUST be case-insensitively deduped and length-bounded per spec.
+- Never include "r/" prefixes in subreddit names.
+- If unsure about regexes, return an empty list for comment_must_patterns.
 
-Examples:
-- For "Nintendo Switch": terms should include "Nintendo Switch" exactly, patterns should require "nintendo"
-- For "iPhone 15": terms should include "iPhone 15" exactly, patterns should require "iphone"
-- For "Tesla Model Y": terms should include "Tesla Model Y" exactly, patterns should require "tesla"
-- For "best golf course in bay area": patterns should require "golf" OR "bay area" OR "course" (not all together)
+Also infer an internal intent to guide your choices:
+- If the query is a "best/top/which/where" compare: treat as RANKING.
+- If "how to/fix/solution/workaround": treat as SOLUTION.
+- Otherwise: GENERIC.
+
+Produce JSON with exactly these keys:
+- "terms": 4–10 short search strings (must include the exact raw query once).
+- "subreddits": 1–10 names (no "r/" prefix). Always include "all" as a catch-all as the last item.
+- "time_filter": one of ["day","week","month","year","all"].
+- "strategies": 2–3 from ["relevance","top","new"].
+- "min_comment_score": integer 0..50.
+- "per_post_top_n": integer 3..12.
+- "comment_must_patterns": 0–3 lowercase regexes, simple words with \\b boundaries (example: "\\\\bpace\\\\b").
+
+Heuristics by inferred intent:
+- RANKING → strategies: ["top","relevance"]; time_filter: "year" (if evergreen) else "all"; per_post_top_n: 5–8; min_comment_score: 2–8.
+- SOLUTION → strategies: ["new","relevance"]; time_filter: "week" or "month"; per_post_top_n: 8–12; min_comment_score: 0–3.
+- GENERIC → strategies: ["relevance","top"]; time_filter: "month" or "year"; per_post_top_n: 5–8; min_comment_score: 1–5.
+
+Output strict JSON only. No comments, no trailing commas.
 """).strip()
 
 def _safe_json_loads(s: str):
@@ -354,33 +368,34 @@ class OpenAIService:
             resp = self.chat(sys, user, temperature=0.2, max_tokens=400)
             plan = _safe_json_loads(resp)
 
-            # Defensive clamps
+            # Defensive clamps with intent-aware defaults
             plan.setdefault("terms", [query])
             plan["terms"] = list(dict.fromkeys([t for t in plan["terms"] if isinstance(t, str) and t.strip()]))[:10]
 
             subs = [s.replace("r/","").strip() for s in plan.get("subreddits", []) if isinstance(s, str)]
             if "all" not in [s.lower() for s in subs]:
                 subs.append("all")
-            plan["subreddits"] = subs[:12]
+            plan["subreddits"] = subs[:10]  # Reduced from 12 to match new spec
 
-            plan["time_filter"] = plan.get("time_filter") or "year"
+            # Intent-aware defaults
+            plan["time_filter"] = plan.get("time_filter") or "month"
             plan["strategies"] = [s for s in plan.get("strategies", ["relevance","top"]) if s in ("relevance","top","new")] or ["relevance","top"]
-            plan["min_comment_score"] = max(0, int(plan.get("min_comment_score", 1)))
-            plan["per_post_top_n"] = min(12, max(3, int(plan.get("per_post_top_n", 8))))
+            plan["min_comment_score"] = max(0, min(50, int(plan.get("min_comment_score", 3))))  # Clamp to 0-50 range
+            plan["per_post_top_n"] = min(12, max(3, int(plan.get("per_post_top_n", 6))))  # Slightly lower default
 
             pats = plan.get("comment_must_patterns") or []
-            plan["comment_must_patterns"] = [p for p in pats if isinstance(p, str) and p.strip()][:6]
+            plan["comment_must_patterns"] = [p for p in pats if isinstance(p, str) and p.strip()][:3]  # Reduced from 6 to 3
             return plan
         except Exception as e:
             logger.error(f"Reddit search planning failed: {e}")
-            # Return a safe fallback plan
+            # Return a safe fallback plan with intent-aware defaults
             return {
                 "terms": [query],
                 "subreddits": ["all"],
-                "time_filter": "year",
+                "time_filter": "month",  # More balanced default
                 "strategies": ["relevance", "top"],
-                "min_comment_score": 1,
-                "per_post_top_n": 8,
+                "min_comment_score": 3,  # Higher quality default
+                "per_post_top_n": 6,  # Balanced default
                 "comment_must_patterns": [r"\b(love|hate|recommend|avoid|worth|issue|problem|help)\b"]
             }
     
@@ -1263,15 +1278,34 @@ class FallbackLLMService:
         return ""
     
     def plan_reddit_search(self, query: str) -> dict:
-        """Fallback search planning."""
+        """Fallback search planning with intent awareness."""
         logger.warning("Using fallback Reddit search planning")
+        
+        # Intent detection for better defaults
+        query_lower = query.lower()
+        if any(word in query_lower for word in ["best", "top", "which", "where"]):
+            # RANKING intent
+            time_filter = "year"
+            min_score = 5
+            per_post = 6
+        elif any(word in query_lower for word in ["how to", "fix", "solution", "workaround"]):
+            # SOLUTION intent
+            time_filter = "month"
+            min_score = 2
+            per_post = 8
+        else:
+            # GENERIC intent
+            time_filter = "month"
+            min_score = 3
+            per_post = 6
+        
         return {
             "terms": [query],
             "subreddits": ["all"],
-            "time_filter": "year",
+            "time_filter": time_filter,
             "strategies": ["relevance", "top"],
-            "min_comment_score": 1,
-            "per_post_top_n": 8,
+            "min_comment_score": min_score,
+            "per_post_top_n": per_post,
             "comment_must_patterns": [r"\b(love|hate|recommend|avoid|worth|issue|problem|help)\b"]
         }
     
