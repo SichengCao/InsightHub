@@ -16,6 +16,9 @@ from ..core.aspect import get_domain_aspects, aspect_hint_for_query
 from ..core.models import IntentSchema, GPTCommentAnno, EntityRef
 
 # ---- Search planner constants ----
+# Version bump to force fresh LLM responses
+PLANNER_PROMPT_VERSION = "v2.1"
+
 SEARCH_PLANNER_PROMPT = dedent("""
 You are a search planner for finding the best Reddit comments for ANY user query.
 Return ONLY JSON (no prose). Use English keys; keep values in the query's language.
@@ -28,7 +31,11 @@ Rules:
 - Choose items that maximize recall without inventing facts. Prefer canonical, high-traffic subreddits.
 - All arrays MUST be case-insensitively deduped and length-bounded per spec.
 - Never include "r/" prefixes in subreddit names.
-- If unsure about regexes, return an empty list for comment_must_patterns.
+- For comment_must_patterns: Include key product/service terms that should appear in relevant comments.
+- For "Tesla Model Y" → include patterns like "\\btesla\\b", "\\bmodel y\\b", "\\bev\\b"
+- For "iPhone 15" → include patterns like "\\biphone\\b", "\\bapple\\b", "\\bphone\\b"
+- For "best golf course" → include patterns like "\\bgolf\\b", "\\bcourse\\b"
+- Only return empty list if no clear product/service terms exist.
 
 Also infer an internal intent to guide your choices:
 - If the query is a "best/top/which/where" compare: treat as RANKING.
@@ -320,8 +327,8 @@ class OpenAIService:
     
     def chat(self, system: str, user: str, temperature: float = 0.3, max_tokens: int = 800) -> str:
         """Generic chat method for LLM interactions with caching."""
-        # Create cache key from input parameters
-        cache_key = hashlib.md5(f"{system}|{user}|{temperature}|{max_tokens}".encode()).hexdigest()
+        # Create cache key from input parameters including prompt version
+        cache_key = hashlib.md5(f"{system}|{user}|{temperature}|{max_tokens}|{PLANNER_PROMPT_VERSION}".encode()).hexdigest()
         
         # Check cache first
         cached_response = self.cache.get(cache_key)

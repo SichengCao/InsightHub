@@ -223,40 +223,23 @@ if run_analysis:
                     df = pd.DataFrame(reviews[:3])
                     st.dataframe(df[["id","author","upvotes","permalink","text"]])
                 
-                # Key metrics based on intent
+                # Key metrics - simplified for all intents
                 st.subheader("📈 Key Metrics")
                 
-                if intent_schema.intent == "RANKING":
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Total Reviews", len(reviews))
-                    with col2:
-                        st.metric("Ranked Entities", len(payload["ranking"]))
-                    with col3:
-                        avg_rating = sum(item["overall_stars"] for item in payload["ranking"]) / len(payload["ranking"]) if payload["ranking"] else 0
-                        st.metric("Average Rating", f"{avg_rating:.1f}/5")
-                        
-                elif intent_schema.intent == "SOLUTION":
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Total Reviews", len(reviews))
-                    with col2:
-                        st.metric("Solution Clusters", len(payload["solutions"]))
-                    with col3:
-                        total_evidence = sum(cluster["evidence_count"] for cluster in payload["solutions"])
-                        st.metric("Evidence Comments", total_evidence)
-                        
-                else:  # GENERIC
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("Total Reviews", len(reviews))
-                    with col2:
-                        st.metric("Overall Rating", f"{payload['overall']:.1f}/5")
-                    with col3:
-                        st.metric("Aspects Analyzed", len(payload["aspects"]))
-                    with col4:
-                        meaningful_reviews = [r for r in reviews if len((r.get("text") or "")) >= 100]
-                        st.metric("Meaningful Reviews", len(meaningful_reviews))
+                meaningful_reviews = [r for r in reviews if len((r.get("text") or "")) >= 100]
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Reviews", len(reviews))
+                with col2:
+                    st.metric("Meaningful Reviews", len(meaningful_reviews))
+                with col3:
+                    if intent_schema.intent == "RANKING":
+                        st.metric("Ranked Entities", len(payload.get("ranking", [])))
+                    elif intent_schema.intent == "SOLUTION":
+                        st.metric("Solution Clusters", len(payload.get("solutions", [])))
+                    else:
+                        st.metric("Analysis Complete", "✅")
                 
                 # Detailed Summary Section
                 st.subheader("📝 Detailed Summary")
@@ -267,18 +250,11 @@ if run_analysis:
                     st.subheader("🏆 Ranking Results")
                     if payload["ranking"]:
                         for i, item in enumerate(payload["ranking"][:5], 1):
-                            st.write(f"**{i}. {item['name']}**: {item['overall_stars']:.1f}/5 ({item['mentions']} mentions)")
-                            
-                            # Show aspect scores
-                            if item['aspect_scores']:
-                                st.write("Aspect scores:")
-                                for aspect, score in item['aspect_scores'].items():
-                                    color = "🟢" if score >= 4 else "🟡" if score >= 3 else "🔴"
-                                    st.write(f"  - {aspect}: {score:.1f}/5 {color}")
+                            st.write(f"**{i}. {item['name']}** ({item['mentions']} mentions)")
                             
                             # Show quotes
                             if item['quotes']:
-                                with st.expander(f"Quotes about {item['name']}"):
+                                with st.expander(f"Key insights about {item['name']}"):
                                     for quote in item['quotes'][:3]:
                                         st.write(f"• {quote}")
                             st.write("---")
@@ -303,31 +279,36 @@ if run_analysis:
                         st.info("No solution clusters found. Try a more specific query or increase the comment limit.")
                         
                 else:  # GENERIC
-                    st.subheader("🎯 Aspect Analysis")
-                    if payload["aspects"]:
-                        st.write("**📊 Aspects (score):**")
-                        for aspect, score in payload["aspects"].items():
-                            color = "🟢" if score >= 4 else "🟡" if score >= 3 else "🔴"
-                            st.write(f"- **{aspect}**: {score:.1f}/5 {color}")
-                    
                     # Show representative quotes
                     if payload.get("quotes"):
-                        st.subheader("💬 Representative Quotes")
+                        st.subheader("💬 Key Insights")
                         for quote in payload["quotes"][:5]:
                             st.write(f"• {quote}")
                 
                 # Show raw comments for all intents
-                st.subheader("💬 Raw Reddit Comments")
+                st.subheader("💬 Related Reviews")
                 meaningful_reviews = [r for r in reviews if len((r.get("text") or "")) >= 100]
                 
                 # Sort by upvotes
-                sorted_reviews = sorted(meaningful_reviews, key=lambda r: -(r.get("upvotes", 0) or 0))[:10]
+                sorted_reviews = sorted(meaningful_reviews, key=lambda r: -(r.get("upvotes", 0) or 0))
                 
-                for i, review in enumerate(sorted_reviews, 1):
+                # Show first 5 reviews
+                initial_reviews = sorted_reviews[:5]
+                
+                for i, review in enumerate(initial_reviews, 1):
                     link = review.get("url") or (f"https://reddit.com{review.get('permalink','')}" if review.get("permalink") else "")
                     st.write(f"**{i}. ↑{review.get('upvotes', 0)} · [{review.get('author','u/unknown')}]({link})**")
                     st.caption(_excerpt(review.get("text","")))
                     st.write("---")
+                
+                # Show more reviews if available
+                if len(sorted_reviews) > 5:
+                    with st.expander(f"📖 View More Reviews ({len(sorted_reviews) - 5} additional)"):
+                        for i, review in enumerate(sorted_reviews[5:], 6):
+                            link = review.get("url") or (f"https://reddit.com{review.get('permalink','')}" if review.get("permalink") else "")
+                            st.write(f"**{i}. ↑{review.get('upvotes', 0)} · [{review.get('author','u/unknown')}]({link})**")
+                            st.caption(_excerpt(review.get("text","")))
+                            st.write("---")
     
     except Exception as e:
         logger.error(f"Analysis failed: {e}")
