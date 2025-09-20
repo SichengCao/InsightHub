@@ -16,7 +16,6 @@ dependencies = [
     "pydantic-settings>=2", 
     "praw>=7.0",
     "PyYAML>=6.0",
-    "tenacity>=8.0",
     "diskcache>=5.0",
     "streamlit>=1.28",
     "openai>=1.0",
@@ -37,4 +36,4 @@ Issues = "https://github.com/SichengCao/InsightHub/issues"
 where = ["src"]
 
 [tool.setuptools.package-data]
-insighthub = ["config/*.yaml", "config/aspects/*.yaml"]
+insighthub = []

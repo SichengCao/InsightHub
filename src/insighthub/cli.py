@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .core.config import settings, ensure_config_files
+from .core.config import settings
 from .core.models import Review
 from .services.reddit_client import RedditService
 from .services.llm import LLMServiceFactory
@@ -28,7 +28,7 @@ def setup_logging():
 
 def cmd_scrape(args):
     """Scrape command."""
-    ensure_config_files()
+    # Config files are no longer needed with GPT-only pipeline
     
     reddit_service = RedditService()
     reviews = reddit_service.scrape(args.query, args.limit)
@@ -51,7 +51,7 @@ def cmd_scrape(args):
 
 def cmd_analyze(args):
     """Analyze command using GPT-only pipeline."""
-    ensure_config_files()
+    # Config files are no longer needed with GPT-only pipeline
     
     # Initialize services
     reddit_service = RedditService()

@@ -13,7 +13,7 @@ import sys
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
 # Import from organized modules
-from insighthub.core.config import ensure_config_files
+from insighthub.core.config import settings
 from insighthub.services.reddit_client import RedditService
 from insighthub.services.llm import LLMServiceFactory
 from insighthub.core.scoring import aggregate_generic, rank_entities
@@ -51,7 +51,7 @@ st.set_page_config(
 )
 
 # Ensure config files exist
-ensure_config_files()
+# Config files are no longer needed with GPT-only pipeline
 
 # Initialize services
 reddit_service = RedditService()
