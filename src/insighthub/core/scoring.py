@@ -271,6 +271,24 @@ def aggregate_generic(aspect_schema: List[str], annos: List[GPTCommentAnno], upv
     return overall, aspect_averages
 
 
+def _normalize_entity_name(name: str) -> str:
+    """Normalize entity names for better deduplication."""
+    name = name.strip().lower()
+    # Common variations
+    variations = {
+        "joe's pizza": "joe's",
+        "joe's": "joe's",
+        "joes": "joe's",
+        "joes pizza": "joe's",
+        "le bernardin": "le bernardin",
+        "bernardin": "le bernardin",
+        "tatiana": "tatiana",
+        "tatiana's": "tatiana",
+        "l&b": "l&b",
+        "l and b": "l&b",
+    }
+    return variations.get(name, name)
+
 def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entity_type: str, min_mentions: int = 3) -> List[RankingItem]:
     """Rank entities based on mentions and scores."""
     entity_stats = defaultdict(lambda: {
@@ -278,7 +296,8 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
         'confidence_sum': 0.0,
         'overall_scores': [],
         'aspect_scores': defaultdict(list),
-        'comment_ids': []
+        'comment_ids': [],
+        'original_names': set()
     })
     
     # Aggregate entity data
@@ -292,18 +311,22 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
                 entity.entity_type == entity_type + 's' or  # plural
                 entity_type in entity.entity_type or  # substring match
                 entity.entity_type in entity_type):  # reverse substring match
-                entity_stats[entity.name]['mentions'] += 1
-                entity_stats[entity.name]['confidence_sum'] += entity.confidence
-                entity_stats[entity.name]['overall_scores'].append((anno.overall_score, weight))
-                entity_stats[entity.name]['comment_ids'].append(anno.comment_id)
+                
+                # Normalize entity name for deduplication
+                normalized_name = _normalize_entity_name(entity.name)
+                entity_stats[normalized_name]['mentions'] += 1
+                entity_stats[normalized_name]['confidence_sum'] += entity.confidence
+                entity_stats[normalized_name]['overall_scores'].append((anno.overall_score, weight))
+                entity_stats[normalized_name]['comment_ids'].append(anno.comment_id)
+                entity_stats[normalized_name]['original_names'].add(entity.name)
                 
                 # Add aspect scores
                 for aspect_name, score in anno.aspect_scores.items():
-                    entity_stats[entity.name]['aspect_scores'][aspect_name].append((score, weight))
+                    entity_stats[normalized_name]['aspect_scores'][aspect_name].append((score, weight))
     
     # Create ranking items
     ranking_items = []
-    for entity_name, stats in entity_stats.items():
+    for normalized_name, stats in entity_stats.items():
         if stats['mentions'] >= min_mentions:
             # Calculate overall score
             overall_stars = _weighted_mean(stats['overall_scores']) if stats['overall_scores'] else 3.0
@@ -319,8 +342,12 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
             # Calculate confidence
             confidence = stats['confidence_sum'] / stats['mentions'] if stats['mentions'] > 0 else 0.0
             
+            # Choose the best original name (prefer longer, more complete names)
+            original_names = list(stats['original_names'])
+            display_name = max(original_names, key=len) if original_names else normalized_name
+            
             ranking_item = RankingItem(
-                name=entity_name,
+                name=display_name,
                 overall_stars=overall_stars,
                 aspect_scores=aspect_scores,
                 mentions=stats['mentions'],
@@ -333,3 +360,25 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
     ranking_items.sort(key=lambda x: (-x.overall_stars, -x.mentions))
     
     return ranking_items
+
+def rank_entities_with_relaxation(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entity_type: str, min_mentions: int = 2) -> List[RankingItem]:
+    """Rank entities with automatic relaxation if too few results."""
+    max_retries = 3
+    current_min_mentions = min_mentions
+    
+    for attempt in range(max_retries):
+        logger.info(f"Entity ranking attempt {attempt + 1}: min_mentions={current_min_mentions}")
+        
+        ranked = rank_entities(annos, upvote_map, entity_type, current_min_mentions)
+        
+        if len(ranked) >= 3:
+            logger.info(f"Entity ranking: {len(ranked)} entities ranked with min_mentions={current_min_mentions}")
+            return ranked
+        
+        if attempt < max_retries - 1:
+            # Relax constraints for next attempt
+            current_min_mentions = max(1, current_min_mentions - 1)
+            logger.info(f"Auto-relaxing: reducing min_mentions to {current_min_mentions}")
+    
+    logger.info(f"Entity ranking: {len(ranked)} entities ranked after {max_retries} attempts")
+    return ranked

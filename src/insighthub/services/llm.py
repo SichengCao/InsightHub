@@ -28,7 +28,16 @@ INPUT (via user message): the raw user query (e.g., "best golf course in bay are
 Rules:
 - Focus on the EXACT product/service/topic in the query, but add SHORT, meaningful variants:
   * brand/model aliases, common abbreviations, and for places: local nicknames (e.g., "SF Bay Area","East Bay","Peninsula","Silicon Valley","Marin").
-- Choose items that maximize recall without inventing facts. Prefer canonical, high-traffic subreddits.
+- SUBREDDIT SELECTION STRATEGY:
+  * For location queries: prioritize LOCAL subreddits (city/region names) over general topic subreddits
+    Example: "NYC restaurants" → ['AskNYC', 'NewYorkCity', 'FoodNYC'] NOT ['food', 'restaurants']
+  * For product queries: prioritize BRAND-SPECIFIC subreddits over general category subreddits  
+    Example: "iPhone 15" → ['iPhone', 'Apple'] NOT ['smartphones', 'technology']
+  * For services: prioritize SERVICE-SPECIFIC subreddits
+  * NEVER include "all" subreddit - it returns too much irrelevant content
+  * Prefer active, relevant subreddits with 10K+ members
+  * Choose the MOST relevant subreddits - prioritize quality over quantity
+  * For NYC queries: start with ['AskNYC', 'NewYorkCity', 'FoodNYC'] and add more relevant subreddits as needed
 - All arrays MUST be case-insensitively deduped and length-bounded per spec.
 - Never include "r/" prefixes in subreddit names.
 - For comment_must_patterns: Include key product/service terms that should appear in relevant comments.
@@ -43,8 +52,12 @@ Also infer an internal intent to guide your choices:
 - Otherwise: GENERIC.
 
 Produce JSON with exactly these keys:
-- "terms": 4–10 short search strings (must include the exact raw query once).
-- "subreddits": 1–10 names (no "r/" prefix). Always include "all" as a catch-all as the last item.
+- "terms": 4–8 short search strings (must include the exact raw query once).
+  * Make terms SPECIFIC and TARGETED to avoid irrelevant results
+  * For location queries: include specific place names, avoid generic terms like "best food"
+  * For product queries: include specific model names, avoid generic category terms
+  * PRIORITIZE specificity over recall - better to get fewer, more relevant results
+- "subreddits": 1–12 names (no "r/" prefix). AVOID "all" unless absolutely necessary. PRIORITIZE the most relevant and active subreddits. Include more subreddits when appropriate to provide comprehensive coverage.
 - "time_filter": one of ["day","week","month","year","all"].
 - "strategies": 2–3 from ["relevance","top","new"].
 - "min_comment_score": integer 0..50.
@@ -52,9 +65,9 @@ Produce JSON with exactly these keys:
 - "comment_must_patterns": 0–3 lowercase regexes, simple words with \\b boundaries (example: "\\\\bpace\\\\b").
 
 Heuristics by inferred intent:
-- RANKING → strategies: ["top","relevance"]; time_filter: "year" (if evergreen) else "all"; per_post_top_n: 5–8; min_comment_score: 2–8.
+- RANKING → strategies: ["top","relevance"]; time_filter: "year" (if evergreen) else "all"; per_post_top_n: 5–8; min_comment_score: 3–8 (higher for quality).
 - SOLUTION → strategies: ["new","relevance"]; time_filter: "week" or "month"; per_post_top_n: 8–12; min_comment_score: 0–3.
-- GENERIC → strategies: ["relevance","top"]; time_filter: "month" or "year"; per_post_top_n: 5–8; min_comment_score: 1–5.
+- GENERIC → strategies: ["relevance","top"]; time_filter: "month" or "year"; per_post_top_n: 5–8; min_comment_score: 2–5 (higher for quality).
 
 Output strict JSON only. No comments, no trailing commas.
 """).strip()
@@ -367,7 +380,7 @@ class OpenAIService:
                     logger.error(f"Chat failed after {max_retries} attempts: {e}")
                     raise
     
-    def plan_reddit_search(self, query: str) -> dict:
+    def plan_reddit_search(self, query: str, max_subreddits: int = 6) -> dict:
         """Plan Reddit search strategy using LLM."""
         try:
             sys = "You output strict JSON to plan Reddit searches."
@@ -377,28 +390,53 @@ class OpenAIService:
 
             # Defensive clamps with intent-aware defaults
             plan.setdefault("terms", [query])
-            plan["terms"] = list(dict.fromkeys([t for t in plan["terms"] if isinstance(t, str) and t.strip()]))[:10]
+            plan["terms"] = list(dict.fromkeys([t for t in plan["terms"] if isinstance(t, str) and t.strip()]))[:10]  # 恢复全面搜索：10个搜索词
 
             subs = [s.replace("r/","").strip() for s in plan.get("subreddits", []) if isinstance(s, str)]
-            if "all" not in [s.lower() for s in subs]:
-                subs.append("all")
-            plan["subreddits"] = subs[:10]  # Reduced from 12 to match new spec
+            # Remove "all" subreddit to avoid irrelevant content - prioritize specific subreddits
+            subs = [s for s in subs if s.lower() != "all"]
+            
+            # Expand subreddit list if it's too short to meet user's preference
+            if len(subs) < max_subreddits:
+                # Add common general subreddits based on query type
+                query_lower = query.lower()
+                additional_subs = []
+                
+                if any(word in query_lower for word in ['restaurant', 'food', 'dining', 'eat']):
+                    additional_subs = ['food', 'restaurants', 'AskReddit', 'cooking', 'FoodPorn']
+                elif any(word in query_lower for word in ['iphone', 'apple', 'phone']):
+                    additional_subs = ['technology', 'Apple', 'smartphones', 'AskReddit', 'gadgets']
+                elif any(word in query_lower for word in ['tesla', 'car', 'vehicle', 'electric']):
+                    additional_subs = ['cars', 'ElectricVehicles', 'TeslaMotors', 'AskReddit', 'technology']
+                elif any(word in query_lower for word in ['movie', 'film', 'cinema']):
+                    additional_subs = ['movies', 'films', 'AskReddit', 'entertainment', 'NetflixBestOf']
+                else:
+                    additional_subs = ['AskReddit', 'NoStupidQuestions', 'explainlikeimfive', 'LifeProTips']
+                
+                # Add additional subreddits up to max_subreddits
+                for sub in additional_subs:
+                    if len(subs) >= max_subreddits:
+                        break
+                    if sub.lower() not in [s.lower() for s in subs]:
+                        subs.append(sub)
+            
+            plan["subreddits"] = subs[:max_subreddits]  # 用户可配置的子reddit数量
 
             # Intent-aware defaults
             plan["time_filter"] = plan.get("time_filter") or "month"
-            plan["strategies"] = [s for s in plan.get("strategies", ["relevance","top"]) if s in ("relevance","top","new")] or ["relevance","top"]
-            plan["min_comment_score"] = max(0, min(50, int(plan.get("min_comment_score", 3))))  # Clamp to 0-50 range
-            plan["per_post_top_n"] = min(12, max(3, int(plan.get("per_post_top_n", 6))))  # Slightly lower default
+            plan["strategies"] = [s for s in plan.get("strategies", ["relevance","top"]) if s in ("relevance","top","new")] or ["relevance","top"]  # 恢复全面搜索：2个策略
+            plan["min_comment_score"] = max(0, int(plan.get("min_comment_score", 1)))  # 恢复最初配置：默认1分
+            plan["per_post_top_n"] = min(12, max(3, int(plan.get("per_post_top_n", 8))))  # 恢复最初配置：8条/帖
 
             pats = plan.get("comment_must_patterns") or []
-            plan["comment_must_patterns"] = [p for p in pats if isinstance(p, str) and p.strip()][:3]  # Reduced from 6 to 3
+            plan["comment_must_patterns"] = [p for p in pats if isinstance(p, str) and p.strip()][:6]  # 恢复全面搜索：6个模式
             return plan
         except Exception as e:
             logger.error(f"Reddit search planning failed: {e}")
             # Return a safe fallback plan with intent-aware defaults
             return {
                 "terms": [query],
-                "subreddits": ["all"],
+                "subreddits": ["AskReddit"],  # More focused than "all"
                 "time_filter": "month",  # More balanced default
                 "strategies": ["relevance", "top"],
                 "min_comment_score": 3,  # Higher quality default
@@ -825,6 +863,17 @@ class OpenAIService:
             - SOLUTION: User wants solutions/fixes/how-to (e.g., "fix wind noise", "how to improve battery", "troubleshooting")
             - GENERIC: General product/service review analysis (e.g., "iPhone 15", "Tesla Model Y", "restaurant reviews")
             
+            Entity Type Rules (for RANKING queries):
+            - For restaurant queries: use "restaurant" (not "locations")
+            - For product queries: use "product" or specific type like "phone", "car", "movie"
+            - For service queries: use "service" or specific type like "hotel", "gym"
+            - For location queries: use "location" or specific type like "city", "neighborhood"
+            - Examples:
+              * "best restaurant in NYC" → entity_type: "restaurant"
+              * "best iPhone" → entity_type: "phone" 
+              * "best hotel in Paris" → entity_type: "hotel"
+              * "best neighborhoods in SF" → entity_type: "neighborhood"
+            
             Aspect Rules:
             - Generate 4-8 relevant aspects based on the query domain
             - Use specific, actionable aspect names
@@ -854,6 +903,14 @@ class OpenAIService:
                 intent = "GENERIC"
             
             clean_aspects = [a.strip() for a in aspects if a.strip()][:8]
+            
+            # Fix common entity_type mismatches
+            if "restaurant" in query.lower() and entity_type == "locations":
+                entity_type = "restaurant"
+            elif "hotel" in query.lower() and entity_type == "locations":
+                entity_type = "hotel"
+            elif "gym" in query.lower() and entity_type == "services":
+                entity_type = "gym"
             
             logger.info(f"Detected intent: {intent}, entity_type: {entity_type}, aspects: {len(clean_aspects)}")
             return IntentSchema(intent=intent, entity_type=entity_type, aspects=clean_aspects)
@@ -978,6 +1035,58 @@ class OpenAIService:
             logger.error(f"Comment annotation failed: {e}")
             return []
     
+    def summarize_ranking_with_gpt(self, query: str, ranking_items: List[Dict]) -> str:
+        """Generate ranking summary focused on top entities."""
+        try:
+            if not ranking_items:
+                return f"No ranked entities found for {query}. Try adjusting your search terms or filters."
+            
+            # Prepare ranking data
+            top_items = ranking_items[:5]  # Top 5 items
+            ranking_text = "\n".join([
+                f"{i+1}. **{item['name']}** - {item['overall_stars']:.1f}/5 stars ({item['mentions']} mentions)"
+                for i, item in enumerate(top_items)
+            ])
+            
+            # Get quotes from top items
+            quotes_text = ""
+            for item in top_items[:3]:
+                if item.get('quotes'):
+                    quotes_text += f"\n**{item['name']}:**\n"
+                    for quote in item['quotes'][:2]:
+                        quotes_text += f"- \"{quote[:150]}...\"\n"
+            
+            prompt = f"""
+            Generate a ranking summary for "{query}" based on the analysis results.
+            
+            Top Ranked Entities:
+            {ranking_text}
+            
+            Key Insights:
+            {quotes_text}
+            
+            Provide a summary that includes:
+            1. Brief overview of the ranking results
+            2. Highlight the top 3 entities with specific details
+            3. Mention key insights from user reviews
+            4. Provide a concise recommendation
+            
+            Write in a natural, engaging style focused on the ranking results. Do NOT use pros/cons format.
+            """
+            
+            response = self.chat(
+                system="You are an expert reviewer who creates clear, engaging ranking summaries.",
+                user=prompt,
+                temperature=0.4,
+                max_tokens=600
+            )
+            
+            return response.strip()
+                
+        except Exception as e:
+            logger.error(f"Ranking summarization failed: {e}")
+            return f"Ranking analysis completed for {query}. Found {len(ranking_items)} ranked entities."
+
     def summarize_generic_with_gpt(self, query: str, aspects: Dict[str, float], overall: float, quotes: List[str]) -> str:
         """Generate generic summary with pros/cons."""
         try:
@@ -1121,6 +1230,14 @@ Return JSON:
             
             entity_type = result.get("entity_type", "products")
             
+            # Fix common entity_type mismatches
+            if "restaurant" in query.lower() and entity_type == "locations":
+                entity_type = "restaurant"
+            elif "hotel" in query.lower() and entity_type == "locations":
+                entity_type = "hotel"
+            elif "gym" in query.lower() and entity_type == "services":
+                entity_type = "gym"
+            
             return IntentSchema(
                 intent=intent,
                 aspects=aspects,
@@ -1137,10 +1254,12 @@ Return JSON:
 
     def annotate_comments_with_gpt(self, comments: List[Dict], aspects: List[str], entity_type: str = None) -> List[GPTCommentAnno]:
         """Annotate comments with GPT for scoring and entity extraction."""
+        import time
+        start_time = time.time()
         annotations = []
         
         # Process in batches to avoid token limits and timeouts
-        batch_size = 8  # Optimized for reliability and efficiency
+        batch_size = 15  # 平衡批处理：15条/批次，兼顾速度和稳定性
         for i in range(0, len(comments), batch_size):
             batch = comments[i:i + batch_size]
             
@@ -1163,6 +1282,15 @@ Comments:
 {batch_text}
 
 Aspects to score: {', '.join(aspects)}
+
+IMPORTANT FILTERING RULES:
+- For queries with specific years (e.g., "2025", "2024"), ONLY extract entities that match that time period
+  * If comment mentions "2020 movie" but query asks for "2025", set overall_score=1 and extract NO entities
+  * If comment mentions "Edge of Tomorrow (2014)" but query asks for "2025", set overall_score=1 and extract NO entities
+- For queries with specific locations (e.g., "NYC", "San Francisco"), ONLY extract entities in that location  
+  * If comment mentions "Chicago restaurant" but query asks for "NYC", set overall_score=1 and extract NO entities
+- Only extract entities that are actually comparable and relevant to the query
+- CRITICAL: If content is from wrong time period or location, set overall_score=1 and entities=[]
 
 For each comment, provide:
 1. Overall star rating (1-5)
@@ -1504,6 +1632,14 @@ Return JSON:
             
             entity_type = result.get("entity_type", "products")
             
+            # Fix common entity_type mismatches
+            if "restaurant" in query.lower() and entity_type == "locations":
+                entity_type = "restaurant"
+            elif "hotel" in query.lower() and entity_type == "locations":
+                entity_type = "hotel"
+            elif "gym" in query.lower() and entity_type == "services":
+                entity_type = "gym"
+            
             return IntentSchema(
                 intent=intent,
                 aspects=aspects,
@@ -1559,6 +1695,15 @@ Comments:
 {batch_text}
 
 Aspects to score: {', '.join(aspects)}
+
+IMPORTANT FILTERING RULES:
+- For queries with specific years (e.g., "2025", "2024"), ONLY extract entities that match that time period
+  * If comment mentions "2020 movie" but query asks for "2025", set overall_score=1 and extract NO entities
+  * If comment mentions "Edge of Tomorrow (2014)" but query asks for "2025", set overall_score=1 and extract NO entities
+- For queries with specific locations (e.g., "NYC", "San Francisco"), ONLY extract entities in that location  
+  * If comment mentions "Chicago restaurant" but query asks for "NYC", set overall_score=1 and extract NO entities
+- Only extract entities that are actually comparable and relevant to the query
+- CRITICAL: If content is from wrong time period or location, set overall_score=1 and entities=[]
 
 For each comment, provide:
 1. Overall star rating (1-5)

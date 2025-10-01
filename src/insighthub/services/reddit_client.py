@@ -278,13 +278,13 @@ class RedditService:
             return any(rx.search(text or "") for rx in em)
         return _ok
 
-    def _plan_search(self, query: str) -> SearchPlan:
+    def _plan_search(self, query: str, max_subreddits: int = 6) -> SearchPlan:
         """Plan search using LLM with fallback to API-only discovery."""
         try:
             # Import LLM service
             from .llm import LLMServiceFactory
             llm = LLMServiceFactory.create()
-            plan = llm.plan_reddit_search(query)
+            plan = llm.plan_reddit_search(query, max_subreddits)
             return SearchPlan(**plan)
         except Exception as e:
             logger.warning(f"LLM planning failed, using fallback: {e}")
@@ -370,18 +370,23 @@ class RedditService:
         stop=stop_after_attempt(settings.max_retries),
         wait=wait_exponential(multiplier=settings.retry_delay, max=settings.retry_backoff * 10)
     )
-    def scrape(self, query: str, limit: int = 50) -> List[Review]:
+    def scrape(self, query: str, limit: int = 50, max_subreddits: int = 6) -> List[Review]:
         """Scrape Reddit for reviews."""
         if self.reddit:
-            return self._scrape_real(query, limit)
+            return self._scrape_real(query, limit, max_subreddits)
         else:
             return self._scrape_mock(query, limit)
     
-    def _scrape_real(self, query: str, limit: int) -> List[Review]:
+    def _scrape_real(self, query: str, limit: int, max_subreddits: int = 6) -> List[Review]:
         """Scrape real Reddit data using universal search planning."""
-        plan = self._plan_search(query)
+        import time
+        start_time = time.time()
+        
+        plan = self._plan_search(query, max_subreddits)
         raw_comments = []
         seen_posts = set()
+        
+        logger.info(f"Searching for '{query}' with limit={limit}, max_raw={limit*5}, subreddits={plan.subreddits}, terms={plan.terms}")
 
         try:
             subs = [s for s in plan.subreddits if s] or ["all"]
@@ -391,12 +396,12 @@ class RedditService:
                 buckets.append("all")
 
             for bucket in buckets:
-                if len(raw_comments) >= limit * 3: break
+                if len(raw_comments) >= limit * 5: break
                 sr = self.reddit.subreddit(bucket)
                 for term in plan.terms:
-                    if len(raw_comments) >= limit * 3: break
+                    if len(raw_comments) >= limit * 5: break
                     for strat in plan.strategies:
-                        if len(raw_comments) >= limit * 3: break
+                        if len(raw_comments) >= limit * 5: break
                         try:
                             submissions = sr.search(term, sort=strat, time_filter=plan.time_filter, syntax="lucene", limit=10)
                             for sub in submissions:
@@ -409,7 +414,7 @@ class RedditService:
                                 flat = [c for c in flat if (getattr(c,"score",0) or 0) >= plan.min_comment_score and len(getattr(c,"body","")) > 30]
                                 flat.sort(key=lambda c: getattr(c,"score",0) or 0, reverse=True)
                                 raw_comments.extend(flat[:plan.per_post_top_n])
-                            time.sleep(0.15)
+                            time.sleep(0.05)  # 激进延迟：50ms，从其他地方补偿质量
                         except Exception as e:
                             logger.debug(f"search fail {bucket}:{term}:{strat} -> {e}")
                             continue
@@ -426,25 +431,35 @@ class RedditService:
         query_words = [w for w in re.findall(r'\b\w+\b', query_lower) if len(w) > 2]
         query_patterns = [re.compile(rf'\b{re.escape(w)}\b', re.I) for w in query_words[:3]]  # Top 3 words
         
+        # Filtering statistics
+        quality_filtered = 0
+        pattern_filtered = 0
+        dedupe_filtered = 0
+        
         for c in raw_comments:
             try:
                 if not _passes_quality(c, query, settings): 
+                    quality_filtered += 1
                     continue
                 body = getattr(c, "body", "") or ""
                 # More flexible filtering: either matches plan patterns OR query words
                 if not ok(body) and not any(p.search(body) for p in query_patterns):
+                    pattern_filtered += 1
                     continue
                 
                 h = _text_hash(body)
                 if h in seen: 
+                    dedupe_filtered += 1
                     continue
                 seen.add(h)
                 sig = _shingle_sig(body)
                 if sig in shingles: 
+                    dedupe_filtered += 1
                     continue
                 shingles.add(sig)
                 filtered.append(c)
             except Exception:
+                quality_filtered += 1
                 continue
 
         # Canonical mapping
@@ -467,7 +482,8 @@ class RedditService:
                 "author": author_name,
                 "upvotes": score,
             })
-        logger.info(f"Scraped {len(raw_comments)} raw, kept {len(reviews)} planned-universal comments")
+        elapsed_time = time.time() - start_time
+        logger.info(f"Search completed in {elapsed_time:.1f}s: {len(raw_comments)} raw -> quality_filtered={quality_filtered} -> pattern_filtered={pattern_filtered} -> dedupe_filtered={dedupe_filtered} -> {len(filtered)} filtered -> {len(reviews)} final")
         return reviews
     
     def _scrape_mock(self, query: str, limit: int) -> List[Review]:

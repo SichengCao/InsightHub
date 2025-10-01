@@ -71,6 +71,10 @@ with st.sidebar:
     # Limit slider
     limit = st.slider("Number of Comments", 10, 200, 50, step=10)
     
+    # Subreddit count slider
+    subreddit_count = st.slider("Number of Subreddits", 3, 12, 6, step=1, 
+                                help="More subreddits = better coverage but longer search time")
+    
     # Analyze button
     run_analysis = st.button("📊 Analyze Reviews", width='stretch')
 
@@ -95,9 +99,11 @@ if run_analysis:
                 except Exception as e:
                     st.caption(f"(plan unavailable) {e}")
             
-            # Scrape reviews
+            # Scrape reviews with timing
             logger.info(f"Scraping Reddit for '{query}'...")
-            reviews = reddit_service.scrape(query, limit)
+            start_time = time.time()
+            reviews = reddit_service.scrape(query, limit, subreddit_count)
+            search_time = time.time() - start_time
             logger.info(f"Analyzing {len(reviews)} reviews...")
             
             # Show filtering transparency
@@ -143,12 +149,17 @@ if run_analysis:
                                 entity_comments.append(comment["text"][:200] + "...")
                         item.quotes = entity_comments[:3]
                     
-                    summary = llm_service.summarize_generic_with_gpt(
-                        query, 
-                        {item.name: item.overall_stars for item in ranking[:5]}, 
-                        sum(item.overall_stars for item in ranking[:5]) / len(ranking[:5]) if ranking else 3.0,
-                        [quote for item in ranking[:3] for quote in item.quotes]
-                    )
+                    # Prepare ranking data for summary
+                    ranking_data = []
+                    for item in ranking:
+                        ranking_data.append({
+                            "name": item.name,
+                            "overall_stars": item.overall_stars,
+                            "mentions": item.mentions,
+                            "quotes": item.quotes
+                        })
+                    
+                    summary = llm_service.summarize_ranking_with_gpt(query, ranking_data)
                     
                     payload = {
                         "query": query,
@@ -309,6 +320,9 @@ if run_analysis:
                             st.write(f"**{i}. ↑{review.get('upvotes', 0)} · [{review.get('author','u/unknown')}]({link})**")
                             st.caption(_excerpt(review.get("text","")))
                             st.write("---")
+                
+                # Display search time
+                st.success(f"⏱️ **Search completed in {search_time:.1f} seconds**")
     
     except Exception as e:
         logger.error(f"Analysis failed: {e}")
