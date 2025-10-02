@@ -52,21 +52,21 @@ Also infer an internal intent to guide your choices:
 - Otherwise: GENERIC.
 
 Produce JSON with exactly these keys:
-- "terms": 4–8 short search strings (must include the exact raw query once).
+- "terms": 2–4 short search strings (must include the exact raw query once).
   * Make terms SPECIFIC and TARGETED to avoid irrelevant results
   * For location queries: include specific place names, avoid generic terms like "best food"
   * For product queries: include specific model names, avoid generic category terms
   * PRIORITIZE specificity over recall - better to get fewer, more relevant results
-- "subreddits": 1–12 names (no "r/" prefix). AVOID "all" unless absolutely necessary. PRIORITIZE the most relevant and active subreddits. Include more subreddits when appropriate to provide comprehensive coverage.
+- "subreddits": 2–6 names (no "r/" prefix). AVOID "all" unless absolutely necessary. PRIORITIZE the most relevant and active subreddits.
 - "time_filter": one of ["day","week","month","year","all"].
-- "strategies": 2–3 from ["relevance","top","new"].
+- "strategies": 1–2 from ["relevance","top","new"].
 - "min_comment_score": integer 0..50.
-- "per_post_top_n": integer 3..12.
-- "comment_must_patterns": 0–3 lowercase regexes, simple words with \\b boundaries (example: "\\\\bpace\\\\b").
+- "per_post_top_n": integer 3..8.
+- "comment_must_patterns": 0–2 lowercase regexes, simple words with \\b boundaries (example: "\\\\bpace\\\\b").
 
 Heuristics by inferred intent:
 - RANKING → strategies: ["top","relevance"]; time_filter: "year" (if evergreen) else "all"; per_post_top_n: 5–8; min_comment_score: 3–8 (higher for quality).
-- SOLUTION → strategies: ["new","relevance"]; time_filter: "week" or "month"; per_post_top_n: 8–12; min_comment_score: 0–3.
+- SOLUTION → strategies: ["new","relevance"]; time_filter: "week" or "month"; per_post_top_n: 6–10; min_comment_score: 0–3.
 - GENERIC → strategies: ["relevance","top"]; time_filter: "month" or "year"; per_post_top_n: 5–8; min_comment_score: 2–5 (higher for quality).
 
 Output strict JSON only. No comments, no trailing commas.

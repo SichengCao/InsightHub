@@ -4,10 +4,10 @@
 class SearchConstants:
     """Constants related to Reddit search and filtering."""
     
-    # API Rate Limiting
-    REDDIT_API_DELAY = 0.05  # seconds between API calls
-    REDDIT_SEARCH_LIMIT = 25  # posts per search call
-    REDDIT_MAX_RAW_COMMENTS = 5  # multiplier for comment collection
+    # API Rate Limiting (Optimized for speed)
+    REDDIT_API_DELAY = 0.02  # seconds between API calls (reduced from 0.05)
+    REDDIT_SEARCH_LIMIT = 30  # posts per search call (increased from 25)
+    REDDIT_MAX_RAW_COMMENTS = 4  # multiplier for comment collection (reduced from 5)
     
     # Quality Filtering
     MIN_COMMENT_LENGTH = 30  # minimum characters in comment
@@ -37,17 +37,17 @@ class SearchConstants:
     # UI Limits
     MAX_COMMENTS_UI = 200  # maximum comments user can request
     MIN_COMMENTS_UI = 10  # minimum comments user can request
-    DEFAULT_COMMENTS_UI = 50  # default comment count
+    DEFAULT_COMMENTS_UI = 30  # default comment count (reduced for faster results)
     
-    MAX_SUBREDDITS_UI = 12  # maximum subreddits user can request
-    MIN_SUBREDDITS_UI = 3  # minimum subreddits user can request
-    DEFAULT_SUBREDDITS_UI = 6  # default subreddit count
+    MAX_SUBREDDITS_UI = 8  # maximum subreddits user can request (reduced from 12)
+    MIN_SUBREDDITS_UI = 2  # minimum subreddits user can request (reduced from 3)
+    DEFAULT_SUBREDDITS_UI = 4  # default subreddit count (reduced from 6)
     
-    # Search Strategy Limits
-    MAX_SEARCH_TERMS = 8  # maximum search terms per query
-    MAX_SEARCH_STRATEGIES = 3  # maximum search strategies
-    MAX_COMMENT_PATTERNS = 3  # maximum regex patterns
-    MAX_POSTS_PER_SUBREDDIT = 10  # posts per subreddit per search
+    # Search Strategy Limits (Optimized for speed)
+    MAX_SEARCH_TERMS = 4  # maximum search terms per query (reduced from 8)
+    MAX_SEARCH_STRATEGIES = 2  # maximum search strategies (reduced from 3)
+    MAX_COMMENT_PATTERNS = 2  # maximum regex patterns (reduced from 3)
+    MAX_POSTS_PER_SUBREDDIT = 15  # posts per subreddit per search (increased for better coverage)
 
 # Prompt Constants
 class PromptConstants:

@@ -87,7 +87,7 @@ def cmd_analyze(args):
     
     # Annotate comments with GPT
     print("Annotating comments with GPT...")
-    annos = llm_service.annotate_comments_with_gpt(comments, intent_schema.aspects, intent_schema.entity_type, query)
+    annos = llm_service.annotate_comments_with_gpt(comments, intent_schema.aspects, intent_schema.entity_type, args.query)
     print(f"Annotated {len(annos)} comments")
     
     # Show extracted entities for verification
