@@ -233,7 +233,7 @@ class RedditService:
             return any(rx.search(text or "") for rx in em)
         return _ok
 
-    def _plan_search(self, query: str, max_subreddits: int = 6) -> SearchPlan:
+    def _plan_search(self, query: str, max_subreddits: int = 4) -> SearchPlan:
         """Plan search using LLM with fallback to API-only discovery."""
         try:
             # Import LLM service
@@ -325,14 +325,14 @@ class RedditService:
         stop=stop_after_attempt(settings.max_retries),
         wait=wait_exponential(multiplier=settings.retry_delay, max=settings.retry_backoff * 10)
     )
-    def scrape(self, query: str, limit: int = 50, max_subreddits: int = 6) -> List[Review]:
+    def scrape(self, query: str, limit: int = 50, max_subreddits: int = 4) -> List[Review]:
         """Scrape Reddit for reviews."""
         if self.reddit:
             return self._scrape_real(query, limit, max_subreddits)
         else:
             return self._scrape_mock(query, limit)
     
-    def _scrape_real(self, query: str, limit: int, max_subreddits: int = 6) -> List[Review]:
+    def _scrape_real(self, query: str, limit: int, max_subreddits: int = 4) -> List[Review]:
         """
         Scrape real Reddit data using universal search planning.
         

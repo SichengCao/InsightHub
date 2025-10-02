@@ -364,7 +364,7 @@ class OpenAIService:
                     logger.error(f"Chat failed after {max_retries} attempts: {e}")
                     raise
     
-    def plan_reddit_search(self, query: str, max_subreddits: int = 6) -> dict:
+    def plan_reddit_search(self, query: str, max_subreddits: int = 4) -> dict:
         """Plan Reddit search strategy using LLM."""
         try:
             sys = "You output strict JSON to plan Reddit searches."
