@@ -394,8 +394,12 @@ class OpenAIService:
                     additional_subs = ['cars', 'ElectricVehicles', 'TeslaMotors', 'AskReddit', 'technology']
                 elif any(word in query_lower for word in ['movie', 'film', 'cinema']):
                     additional_subs = ['movies', 'films', 'AskReddit', 'entertainment', 'NetflixBestOf']
+                elif any(word in query_lower for word in ['camera', 'photography', 'photo', 'lens']):
+                    additional_subs = ['photography', 'cameras', 'CameraGear', 'AskPhotography', 'PhotoCritique']
+                elif any(word in query_lower for word in ['golf', 'course', 'club']):
+                    additional_subs = ['golf', 'golfcoursereview', 'AskReddit', 'sports']
                 else:
-                    additional_subs = ['AskReddit', 'NoStupidQuestions', 'explainlikeimfive', 'LifeProTips']
+                    additional_subs = ['AskReddit']
                 
                 # Add additional subreddits up to max_subreddits
                 for sub in additional_subs:

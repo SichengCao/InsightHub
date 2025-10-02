@@ -367,8 +367,7 @@ class RedditService:
             subs = [s for s in plan.subreddits if s] or ["all"]
             combined = "+".join([s for s in subs if s.lower() != "all"][:10])  # Reddit API limit
             buckets = [combined] if combined else []
-            if "all" not in [b.lower() for b in buckets]:
-                buckets.append("all")  # Fallback to global search
+            # Removed "all" fallback for faster, more focused searches
 
             # Step 3: Execute multi-dimensional search strategy
             # For each bucket (subreddit combination) × each search term × each strategy
