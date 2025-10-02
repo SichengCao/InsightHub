@@ -30,6 +30,7 @@ def _norm_q(s: str) -> str:
 # --- Anti-bot heuristics & text quality gates ---
 import hashlib, math, time
 from collections import Counter
+from ..core.constants import SearchConstants, ErrorConstants
 
 STOP_USERS = {"AutoModerator"}
 WORD_RE = re.compile(r"[A-Za-z]{2,}")
@@ -66,53 +67,7 @@ def _looks_english(s: str, min_ratio: float = 0.75) -> bool:
     if total_letters == 0: return False
     return ascii_letters / total_letters >= min_ratio
 
-def _get_relevant_subreddits(query: str) -> List[str]:
-    """Get relevant subreddits based on the search query."""
-    query_lower = query.lower()
-    
-    # Automotive/Tesla
-    if any(term in query_lower for term in ['tesla', 'model y', 'model 3', 'model s', 'model x', 'cybertruck', 'ev', 'electric vehicle', 'car', 'automotive', 'ford', 'bmw', 'mercedes', 'audi', 'honda', 'toyota', 'nissan', 'hyundai', 'kia']):
-        return ['teslamotors', 'electricvehicles', 'cars', 'technology', 'tesla', 'autos', 'whatcarshouldibuy']
-    
-    # Tech/Phones
-    elif any(term in query_lower for term in ['iphone', 'android', 'samsung', 'google pixel', 'oneplus', 'xiaomi', 'huawei', 'phone', 'smartphone', 'mobile', 'ios', 'android']):
-        return ['iphone', 'android', 'samsung', 'googlepixel', 'oneplus', 'technology', 'gadgets', 'smartphones']
-    
-    # Gaming
-    elif any(term in query_lower for term in ['gaming', 'game', 'playstation', 'xbox', 'nintendo', 'steam', 'pc gaming', 'console', 'gpu', 'graphics card']):
-        return ['gaming', 'pcgaming', 'playstation', 'xbox', 'nintendo', 'steam', 'buildapc', 'technology']
-    
-    # Computers/Laptops
-    elif any(term in query_lower for term in ['laptop', 'macbook', 'dell', 'hp', 'lenovo', 'asus', 'acer', 'computer', 'pc', 'mac', 'windows', 'linux']):
-        return ['laptops', 'macbook', 'buildapc', 'technology', 'apple', 'windows', 'linux', 'computers']
-    
-    # Audio/Headphones
-    elif any(term in query_lower for term in ['headphone', 'earphone', 'airpods', 'sony', 'bose', 'audio', 'speaker', 'sound', 'music']):
-        return ['headphones', 'audiophile', 'budgetaudiophile', 'technology', 'music']
-    
-    # Photography/Cameras
-    elif any(term in query_lower for term in ['camera', 'photography', 'canon', 'nikon', 'sony', 'dslr', 'mirrorless', 'lens']):
-        return ['photography', 'canon', 'nikon', 'sony', 'cameras', 'photographygear']
-    
-    # Home/Kitchen
-    elif any(term in query_lower for term in ['kitchen', 'cooking', 'appliance', 'vacuum', 'dishwasher', 'refrigerator', 'home', 'house']):
-        return ['home', 'kitchen', 'cooking', 'homeimprovement', 'buyitforlife']
-    
-    # Fitness/Sports
-    elif any(term in query_lower for term in ['fitness', 'gym', 'workout', 'exercise', 'sport', 'running', 'cycling', 'golf', 'tennis']):
-        return ['fitness', 'running', 'cycling', 'golf', 'tennis', 'sports', 'bodybuilding']
-    
-    # Travel/Location-based
-    elif any(term in query_lower for term in ['travel', 'hotel', 'restaurant', 'food', 'bay area', 'san francisco', 'new york', 'los angeles', 'chicago', 'course', 'golf course']):
-        return ['travel', 'bayarea', 'sanfrancisco', 'asknyc', 'losangeles', 'chicago', 'golf', 'food', 'restaurants']
-    
-    # General technology
-    elif any(term in query_lower for term in ['technology', 'tech', 'software', 'app', 'website', 'internet', 'ai', 'machine learning']):
-        return ['technology', 'programming', 'software', 'webdev', 'machinelearning', 'artificial']
-    
-    # Default fallback - general subreddits
-    else:
-        return ['technology', 'askreddit', 'reviews', 'buyitforlife', 'gadgets', 'products']
+# Legacy function removed - subreddit selection now handled by LLM planning
 
 def _author_meta(comment):
     # Safe access without extra API calls if rate limited
@@ -172,18 +127,18 @@ def _passes_quality(comment, query, settings) -> bool:
     
     # Skip brand-new accounts
     karma, link_karma, age_days = _author_meta(comment)
-    if age_days < 3 and karma < 5:
+    if age_days < SearchConstants.MIN_ACCOUNT_AGE_DAYS and karma < SearchConstants.MIN_ACCOUNT_KARMA:
         return False
     
-    if getattr(comment, "score", 0) < 1: 
+    if getattr(comment, "score", 0) < SearchConstants.MIN_COMMENT_SCORE: 
         return False
-    if len(body) < getattr(settings, "min_comment_len", 80): 
+    if len(body) < getattr(settings, "min_comment_len", SearchConstants.MIN_COMMENT_LENGTH): 
         return False
-    if _alpha_ratio(body) < getattr(settings, "min_alpha_ratio", 0.6): 
+    if _alpha_ratio(body) < getattr(settings, "min_alpha_ratio", SearchConstants.MIN_ALPHA_RATIO):
         return False
     if body.strip().endswith("?") and len(body) < 140:
         return False
-    if len(WORD_RE.findall(body)) < 8:
+    if len(WORD_RE.findall(body)) < SearchConstants.MIN_WORD_COUNT:
         return False
     if not _looks_english(body, 0.75):
         return False
@@ -378,43 +333,93 @@ class RedditService:
             return self._scrape_mock(query, limit)
     
     def _scrape_real(self, query: str, limit: int, max_subreddits: int = 6) -> List[Review]:
-        """Scrape real Reddit data using universal search planning."""
+        """
+        Scrape real Reddit data using universal search planning.
+        
+        This method implements a sophisticated multi-stage search and filtering process:
+        1. Generate search plan via LLM (subreddits, terms, strategies)
+        2. Execute Reddit API searches with rate limiting
+        3. Extract and filter comments using quality gates
+        4. Apply pattern matching and deduplication
+        5. Return structured Review objects
+        
+        Args:
+            query: User search query (e.g., "best iPhone 15")
+            limit: Target number of comments to return
+            max_subreddits: Maximum number of subreddits to search
+            
+        Returns:
+            List of Review objects with filtered, high-quality comments
+        """
         import time
         start_time = time.time()
         
+        # Step 1: Generate intelligent search plan using LLM
         plan = self._plan_search(query, max_subreddits)
         raw_comments = []
-        seen_posts = set()
+        seen_posts = set()  # Track processed posts to avoid duplicates
         
         logger.info(f"Searching for '{query}' with limit={limit}, max_raw={limit*5}, subreddits={plan.subreddits}, terms={plan.terms}")
 
         try:
+            # Step 2: Prepare subreddit search buckets
+            # Combine multiple subreddits into search buckets for efficient API usage
             subs = [s for s in plan.subreddits if s] or ["all"]
-            combined = "+".join([s for s in subs if s.lower() != "all"][:10])
+            combined = "+".join([s for s in subs if s.lower() != "all"][:10])  # Reddit API limit
             buckets = [combined] if combined else []
             if "all" not in [b.lower() for b in buckets]:
-                buckets.append("all")
+                buckets.append("all")  # Fallback to global search
 
-            for bucket in buckets:
-                if len(raw_comments) >= limit * 5: break
+            # Step 3: Execute multi-dimensional search strategy
+            # For each bucket (subreddit combination) × each search term × each strategy
+            total_searches = len(buckets) * len(plan.terms) * len(plan.strategies)
+            search_count = 0
+            start_time = time.time()
+            logger.info(f"🚀 Starting {total_searches} Reddit API searches...")
+            
+            for bucket_idx, bucket in enumerate(buckets):
+                if len(raw_comments) >= limit * SearchConstants.REDDIT_MAX_RAW_COMMENTS: break
                 sr = self.reddit.subreddit(bucket)
-                for term in plan.terms:
-                    if len(raw_comments) >= limit * 5: break
-                    for strat in plan.strategies:
-                        if len(raw_comments) >= limit * 5: break
+                logger.info(f"📡 Subreddit {bucket_idx+1}/{len(buckets)}: r/{bucket}")
+                
+                for term_idx, term in enumerate(plan.terms):
+                    if len(raw_comments) >= limit * SearchConstants.REDDIT_MAX_RAW_COMMENTS: break
+                    
+                    for strat_idx, strat in enumerate(plan.strategies):
+                        if len(raw_comments) >= limit * SearchConstants.REDDIT_MAX_RAW_COMMENTS: break
+                        
+                        search_count += 1
+                        elapsed = time.time() - start_time
+                        logger.info(f"🔍 [{search_count}/{total_searches}] r/{bucket} '{term}' ({strat}) | Comments: {len(raw_comments)} | {elapsed:.1f}s")
+                        
                         try:
-                            submissions = sr.search(term, sort=strat, time_filter=plan.time_filter, syntax="lucene", limit=10)
+                            # Execute Reddit search with plan parameters
+                            submissions = sr.search(term, sort=strat, time_filter=plan.time_filter, syntax="lucene", limit=SearchConstants.REDDIT_SEARCH_LIMIT)
+                            
+                            # Step 4: Process each submission and extract comments
+                            submissions_processed = 0
                             for sub in submissions:
                                 sid = getattr(sub, "id", None)
                                 if not sid or sid in seen_posts: 
-                                    continue
+                                    continue  # Skip duplicates
                                 seen_posts.add(sid)
+                                submissions_processed += 1
+                                
+                                # Expand all comments (including nested ones)
                                 sub.comments.replace_more(limit=0)
                                 flat = [c for c in sub.comments.list() if hasattr(c,"body")]
-                                flat = [c for c in flat if (getattr(c,"score",0) or 0) >= plan.min_comment_score and len(getattr(c,"body","")) > 30]
+                                
+                                # Apply initial quality filtering
+                                flat = [c for c in flat if (getattr(c,"score",0) or 0) >= plan.min_comment_score and len(getattr(c,"body","")) > SearchConstants.MIN_COMMENT_LENGTH]
+                                
+                                # Sort by score and take top N per post
                                 flat.sort(key=lambda c: getattr(c,"score",0) or 0, reverse=True)
                                 raw_comments.extend(flat[:plan.per_post_top_n])
-                            time.sleep(0.05)  # 激进延迟：50ms，从其他地方补偿质量
+                            
+                            if submissions_processed > 0:
+                                logger.info(f"   ✅ Processed {submissions_processed} posts, added {min(len(flat), plan.per_post_top_n) if 'flat' in locals() else 0} comments")
+                                
+                            time.sleep(SearchConstants.REDDIT_API_DELAY)  # Rate limiting delay
                         except Exception as e:
                             logger.debug(f"search fail {bucket}:{term}:{strat} -> {e}")
                             continue
@@ -422,41 +427,54 @@ class RedditService:
             logger.error(f"Reddit scraping failed: {e}")
             return self._scrape_mock(query, limit)
 
-        # Quality + dedupe + pattern filter (more flexible)
+        # Step 5: Advanced multi-stage filtering pipeline
+        # This implements sophisticated comment filtering with multiple quality gates
+        
         seen, shingles, filtered = set(), set(), []
         ok = self._compile_comment_filter(plan.comment_must_patterns)
         
-        # Additional query relevance check - ensure comment mentions ANY of the actual product terms
+        # Prepare query relevance patterns for fallback filtering
+        # Extract meaningful words from user query for pattern matching
         query_lower = query.lower()
         query_words = [w for w in re.findall(r'\b\w+\b', query_lower) if len(w) > 2]
         query_patterns = [re.compile(rf'\b{re.escape(w)}\b', re.I) for w in query_words[:3]]  # Top 3 words
         
-        # Filtering statistics
+        # Filtering statistics for transparency
         quality_filtered = 0
         pattern_filtered = 0
         dedupe_filtered = 0
         
+        # Apply multi-stage filtering to each comment
         for c in raw_comments:
             try:
+                # Stage 1: Quality filtering (account age, karma, length, language)
                 if not _passes_quality(c, query, settings): 
                     quality_filtered += 1
                     continue
+                    
                 body = getattr(c, "body", "") or ""
-                # More flexible filtering: either matches plan patterns OR query words
+                
+                # Stage 2: Pattern filtering (flexible relevance matching)
+                # Comments must match either LLM-generated patterns OR query words
                 if not ok(body) and not any(p.search(body) for p in query_patterns):
                     pattern_filtered += 1
                     continue
                 
+                # Stage 3: Deduplication (exact and fuzzy matching)
                 h = _text_hash(body)
                 if h in seen: 
                     dedupe_filtered += 1
                     continue
                 seen.add(h)
+                
+                # Stage 4: Shingle-based similarity detection
                 sig = _shingle_sig(body)
                 if sig in shingles: 
                     dedupe_filtered += 1
                     continue
                 shingles.add(sig)
+                
+                # Comment passed all filters
                 filtered.append(c)
             except Exception:
                 quality_filtered += 1
@@ -483,7 +501,8 @@ class RedditService:
                 "upvotes": score,
             })
         elapsed_time = time.time() - start_time
-        logger.info(f"Search completed in {elapsed_time:.1f}s: {len(raw_comments)} raw -> quality_filtered={quality_filtered} -> pattern_filtered={pattern_filtered} -> dedupe_filtered={dedupe_filtered} -> {len(filtered)} filtered -> {len(reviews)} final")
+        logger.info(f"🎉 Search completed in {elapsed_time:.1f}s: {len(raw_comments)} raw -> quality_filtered={quality_filtered} -> pattern_filtered={pattern_filtered} -> dedupe_filtered={dedupe_filtered} -> {len(filtered)} filtered -> {len(reviews)} final")
+        logger.info(f"📊 API calls made: {search_count}/{total_searches} searches | Avg: {elapsed_time/search_count:.2f}s per search")
         return reviews
     
     def _scrape_mock(self, query: str, limit: int) -> List[Review]:

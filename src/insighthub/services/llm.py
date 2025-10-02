@@ -16,8 +16,8 @@ from ..core.aspect import get_domain_aspects, aspect_hint_for_query
 from ..core.models import IntentSchema, GPTCommentAnno, EntityRef
 
 # ---- Search planner constants ----
-# Version bump to force fresh LLM responses
-PLANNER_PROMPT_VERSION = "v2.1"
+from ..core.constants import PromptConstants, SearchConstants, CacheConstants, ErrorConstants, FileConstants
+PLANNER_PROMPT_VERSION = PromptConstants.PLANNER_PROMPT_VERSION
 
 SEARCH_PLANNER_PROMPT = dedent("""
 You are a search planner for finding the best Reddit comments for ANY user query.
@@ -272,23 +272,7 @@ def _chunk(items, n=12):
     for i in range(0, len(items), n):
         yield items[i:i+n]
 
-# Normalization helpers for substring matching
-_WS = re.compile(r"\s+")
-def _norm_for_substring(s: str) -> str:
-    """Normalize quotes, collapse whitespace, strip control chars; case-insensitive."""
-    if not s: return ""
-    s = unicodedata.normalize("NFKC", s)
-    s = s.replace("\u201c", '"').replace("\u201d", '"').replace("\u2019", "'")
-    s = s.replace("'","'").replace(""",'"').replace(""",'"')
-    s = "".join(ch for ch in s if ch not in "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x0b\x0c\x0e\x0f")
-    s = _WS.sub(" ", s).strip().lower()
-    return s
-
-def _contains_norm(hay: str, needle: str) -> bool:
-    """Check if needle is contained in hay after normalization."""
-    H = _norm_for_substring(hay)
-    N = _norm_for_substring(needle)
-    return bool(N) and (N in H)
+# Coverage validation functions (using the first _norm_for_substring function)
 
 def _validate_and_fix_coverage(final: dict, id2text: dict) -> dict:
     """Validate quotes with normalized substring matching and recompute coverage."""
@@ -335,7 +319,7 @@ class OpenAIService:
         self.model = getattr(settings, "openai_model", None) or "gpt-4o-mini"
         self.fast_model = "gpt-3.5-turbo"  # For simple tasks
         self.smart_model = "gpt-4o-mini"   # For complex analysis
-        self.cache = Cache('cache/llm_cache')  # Cache for API responses
+        self.cache = Cache(FileConstants.CACHE_DIR)  # Cache for API responses
         logger.info("OpenAI service initialized with caching")
     
     def chat(self, system: str, user: str, temperature: float = 0.3, max_tokens: int = 800) -> str:
@@ -346,11 +330,11 @@ class OpenAIService:
         # Check cache first
         cached_response = self.cache.get(cache_key)
         if cached_response:
-            logger.debug(f"Cache hit for LLM request: {cache_key[:8]}...")
+            logger.debug(f"Cache hit for LLM request: {cache_key[:CacheConstants.CACHE_KEY_LENGTH]}...")
             return cached_response
         
         # Retry logic with exponential backoff
-        max_retries = 3
+        max_retries = ErrorConstants.MAX_RETRY_ATTEMPTS
         for attempt in range(max_retries):
             try:
                 response = self.client.chat.completions.create(
@@ -361,18 +345,18 @@ class OpenAIService:
                     ],
                     max_tokens=max_tokens,
                     temperature=temperature,
-                    timeout=60  # Increased timeout for larger batches
+                    timeout=ErrorConstants.REQUEST_TIMEOUT  # Increased timeout for larger batches
                 )
                 result = response.choices[0].message.content.strip()
                 
-                # Cache the response for 24 hours
-                self.cache.set(cache_key, result, expire=86400)
-                logger.debug(f"Cached LLM response: {cache_key[:8]}...")
+                # Cache the response for configured TTL
+                self.cache.set(cache_key, result, expire=3600*CacheConstants.CACHE_TTL_HOURS)
+                logger.debug(f"Cached LLM response: {cache_key[:CacheConstants.CACHE_KEY_LENGTH]}...")
                 
                 return result
             except Exception as e:
                 if attempt < max_retries - 1:
-                    wait_time = 2 ** attempt  # Exponential backoff
+                    wait_time = ErrorConstants.RETRY_BASE_DELAY ** attempt  # Exponential backoff
                     logger.warning(f"Chat attempt {attempt + 1} failed: {e}. Retrying in {wait_time}s...")
                     import time
                     time.sleep(wait_time)
@@ -390,7 +374,7 @@ class OpenAIService:
 
             # Defensive clamps with intent-aware defaults
             plan.setdefault("terms", [query])
-            plan["terms"] = list(dict.fromkeys([t for t in plan["terms"] if isinstance(t, str) and t.strip()]))[:10]  # 恢复全面搜索：10个搜索词
+            plan["terms"] = list(dict.fromkeys([t for t in plan["terms"] if isinstance(t, str) and t.strip()]))[:SearchConstants.MAX_SEARCH_TERMS]  # Comprehensive search: up to 10 terms
 
             subs = [s.replace("r/","").strip() for s in plan.get("subreddits", []) if isinstance(s, str)]
             # Remove "all" subreddit to avoid irrelevant content - prioritize specific subreddits
@@ -420,16 +404,16 @@ class OpenAIService:
                     if sub.lower() not in [s.lower() for s in subs]:
                         subs.append(sub)
             
-            plan["subreddits"] = subs[:max_subreddits]  # 用户可配置的子reddit数量
+            plan["subreddits"] = subs[:max_subreddits]  # User-configurable subreddit count
 
             # Intent-aware defaults
             plan["time_filter"] = plan.get("time_filter") or "month"
-            plan["strategies"] = [s for s in plan.get("strategies", ["relevance","top"]) if s in ("relevance","top","new")] or ["relevance","top"]  # 恢复全面搜索：2个策略
-            plan["min_comment_score"] = max(0, int(plan.get("min_comment_score", 1)))  # 恢复最初配置：默认1分
-            plan["per_post_top_n"] = min(12, max(3, int(plan.get("per_post_top_n", 8))))  # 恢复最初配置：8条/帖
+            plan["strategies"] = [s for s in plan.get("strategies", ["relevance","top"]) if s in ("relevance","top","new")] or ["relevance","top"]  # Comprehensive search: 2 strategies
+            plan["min_comment_score"] = max(0, int(plan.get("min_comment_score", 1)))  # Default configuration: score 1
+            plan["per_post_top_n"] = min(12, max(3, int(plan.get("per_post_top_n", 8))))  # Default configuration: 8 comments per post
 
             pats = plan.get("comment_must_patterns") or []
-            plan["comment_must_patterns"] = [p for p in pats if isinstance(p, str) and p.strip()][:6]  # 恢复全面搜索：6个模式
+            plan["comment_must_patterns"] = [p for p in pats if isinstance(p, str) and p.strip()][:SearchConstants.MAX_COMMENT_PATTERNS]  # Comprehensive search: up to 6 patterns
             return plan
         except Exception as e:
             logger.error(f"Reddit search planning failed: {e}")
@@ -1042,15 +1026,15 @@ class OpenAIService:
                 return f"No ranked entities found for {query}. Try adjusting your search terms or filters."
             
             # Prepare ranking data
-            top_items = ranking_items[:5]  # Top 5 items
+            top_items = ranking_items[:SearchConstants.MAX_ENTITIES_FOR_SUMMARY]  # Top entities for comprehensive ranking
             ranking_text = "\n".join([
                 f"{i+1}. **{item['name']}** - {item['overall_stars']:.1f}/5 stars ({item['mentions']} mentions)"
                 for i, item in enumerate(top_items)
             ])
             
-            # Get quotes from top items
+            # Get quotes from top entities for detailed insights
             quotes_text = ""
-            for item in top_items[:3]:
+            for item in top_items[:SearchConstants.MAX_ENTITIES_FOR_QUOTES]:
                 if item.get('quotes'):
                     quotes_text += f"\n**{item['name']}:**\n"
                     for quote in item['quotes'][:2]:
@@ -1208,7 +1192,15 @@ Return JSON:
                 max_tokens=500
             )
             
-            result = _safe_json_loads(response)
+            try:
+                result = _safe_json_loads(response)
+            except Exception as e:
+                logger.error(f"Intent detection JSON parsing failed: {e}")
+                return IntentSchema(
+                    intent="GENERIC",
+                    aspects=["quality", "value", "performance"],
+                    entity_type="products"
+                )
             
             # Ensure result is a dictionary
             if not isinstance(result, dict):
@@ -1252,14 +1244,36 @@ Return JSON:
                 entity_type="products"
             )
 
-    def annotate_comments_with_gpt(self, comments: List[Dict], aspects: List[str], entity_type: str = None) -> List[GPTCommentAnno]:
-        """Annotate comments with GPT for scoring and entity extraction."""
+    def annotate_comments_with_gpt(self, comments: List[Dict], aspects: List[str], entity_type: str = None, query: str = None) -> List[GPTCommentAnno]:
+        """
+        Annotate comments using GPT with caching and batch processing.
+        
+        This method implements a sophisticated batch processing pipeline:
+        1. Process comments in optimal batch sizes to avoid token limits
+        2. Generate comprehensive prompts with context and examples
+        3. Extract structured data (sentiment, aspects, entities) from GPT responses
+        4. Apply validation and fallback logic for failed batches
+        5. Cache results for performance optimization
+        
+        Args:
+            comments: List of comment objects or dictionaries
+            aspects: List of aspect names to score
+            entity_type: Expected entity type for extraction (e.g., "restaurant", "phone")
+            query: Original user query for context-aware filtering
+            
+        Returns:
+            List of GPTCommentAnno objects with extracted information:
+            - overall_stars: 1-5 sentiment rating
+            - aspect_scores: Dict of aspect -> score mappings
+            - entities: List of extracted entities with confidence
+        """
         import time
         start_time = time.time()
         annotations = []
         
         # Process in batches to avoid token limits and timeouts
-        batch_size = 15  # 平衡批处理：15条/批次，兼顾速度和稳定性
+        # Smaller batches = more reliable, larger batches = faster processing
+        batch_size = SearchConstants.LLM_BATCH_SIZE  # Balanced batch size for speed and stability
         for i in range(0, len(comments), batch_size):
             batch = comments[i:i + batch_size]
             
@@ -1278,6 +1292,8 @@ Return JSON:
                 
                 prompt = f"""Analyze these Reddit comments and provide structured annotations.
 
+USER QUERY: "{query or 'General analysis'}"
+
 Comments:
 {batch_text}
 
@@ -1287,9 +1303,11 @@ IMPORTANT FILTERING RULES:
 - For queries with specific years (e.g., "2025", "2024"), ONLY extract entities that match that time period
   * If comment mentions "2020 movie" but query asks for "2025", set overall_score=1 and extract NO entities
   * If comment mentions "Edge of Tomorrow (2014)" but query asks for "2025", set overall_score=1 and extract NO entities
-- For queries with specific locations (e.g., "NYC", "San Francisco"), ONLY extract entities in that location  
-  * If comment mentions "Chicago restaurant" but query asks for "NYC", set overall_score=1 and extract NO entities
-- Only extract entities that are actually comparable and relevant to the query
+- For queries with specific locations (e.g., "NYC", "San Francisco", "Bay Area", "Los Angeles"), ONLY extract entities in that location  
+  * If comment mentions a different location than the query specifies, set overall_score=1 and extract NO entities
+  * Examples: "Chicago restaurant" for "NYC" query, "Indiana golf" for "Bay Area" query, "NYC golf" for "Los Angeles" query
+  * Use geographic reasoning: if query asks for location X, only extract entities in location X
+- Only extract entities that are actually comparable and relevant to the query location
 - CRITICAL: If content is from wrong time period or location, set overall_score=1 and entities=[]
 
 For each comment, provide:
@@ -1544,7 +1562,7 @@ class FallbackLLMService:
             entity_type="products"
         )
 
-    def annotate_comments_with_gpt(self, comments: List[Dict], aspects: List[str], entity_type: str = None) -> List[GPTCommentAnno]:
+    def annotate_comments_with_gpt(self, comments: List[Dict], aspects: List[str], entity_type: str = None, query: str = None) -> List[GPTCommentAnno]:
         """Fallback comment annotation - returns dummy annotations."""
         logger.warning("Fallback LLM service comment annotation called - using dummy annotations")
         annotations = []
@@ -1610,7 +1628,15 @@ Return JSON:
                 max_tokens=500
             )
             
-            result = _safe_json_loads(response)
+            try:
+                result = _safe_json_loads(response)
+            except Exception as e:
+                logger.error(f"Intent detection JSON parsing failed: {e}")
+                return IntentSchema(
+                    intent="GENERIC",
+                    aspects=["quality", "value", "performance"],
+                    entity_type="products"
+                )
             
             # Ensure result is a dictionary
             if not isinstance(result, dict):
@@ -1654,7 +1680,7 @@ Return JSON:
                 entity_type="products"
             )
 
-    def annotate_comments_with_gpt(self, comments: List[Dict], aspects: List[str], entity_type: str = None) -> List[GPTCommentAnno]:
+    def annotate_comments_with_gpt(self, comments: List[Dict], aspects: List[str], entity_type: str = None, query: str = None) -> List[GPTCommentAnno]:
         """Annotate comments with GPT for scoring and entity extraction."""
         annotations = []
         
@@ -1665,7 +1691,7 @@ Return JSON:
             comments = sorted_comments[:30]
             logger.info(f"Selected top 30 comments from {len(sorted_comments)} total comments")
         
-        # Debug: check what we're getting
+        # Process comments for annotation
         logger.info(f"annotate_comments_with_gpt called with {len(comments)} comments")
         if comments:
             logger.info(f"First comment type: {type(comments[0])}, content: {comments[0]}")
@@ -1691,6 +1717,8 @@ Return JSON:
                 
                 prompt = f"""Analyze these Reddit comments and provide structured annotations.
 
+USER QUERY: "{query or 'General analysis'}"
+
 Comments:
 {batch_text}
 
@@ -1700,9 +1728,11 @@ IMPORTANT FILTERING RULES:
 - For queries with specific years (e.g., "2025", "2024"), ONLY extract entities that match that time period
   * If comment mentions "2020 movie" but query asks for "2025", set overall_score=1 and extract NO entities
   * If comment mentions "Edge of Tomorrow (2014)" but query asks for "2025", set overall_score=1 and extract NO entities
-- For queries with specific locations (e.g., "NYC", "San Francisco"), ONLY extract entities in that location  
-  * If comment mentions "Chicago restaurant" but query asks for "NYC", set overall_score=1 and extract NO entities
-- Only extract entities that are actually comparable and relevant to the query
+- For queries with specific locations (e.g., "NYC", "San Francisco", "Bay Area", "Los Angeles"), ONLY extract entities in that location  
+  * If comment mentions a different location than the query specifies, set overall_score=1 and extract NO entities
+  * Examples: "Chicago restaurant" for "NYC" query, "Indiana golf" for "Bay Area" query, "NYC golf" for "Los Angeles" query
+  * Use geographic reasoning: if query asks for location X, only extract entities in location X
+- Only extract entities that are actually comparable and relevant to the query location
 - CRITICAL: If content is from wrong time period or location, set overall_score=1 and entities=[]
 
 For each comment, provide:

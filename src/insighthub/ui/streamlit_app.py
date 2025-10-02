@@ -14,6 +14,7 @@ sys.path.append(str(Path(__file__).parent.parent.parent))
 
 # Import from organized modules
 from insighthub.core.config import settings
+from insighthub.core.constants import SearchConstants
 from insighthub.services.reddit_client import RedditService
 from insighthub.services.llm import LLMServiceFactory
 from insighthub.core.scoring import aggregate_generic, rank_entities
@@ -69,11 +70,19 @@ with st.sidebar:
     query = st.text_input("Search Reviews", value=st.session_state.get("query", "Tesla Model Y"))
     
     # Limit slider
-    limit = st.slider("Number of Comments", 10, 200, 50, step=10)
+    limit = st.slider("Number of Comments", 
+                     SearchConstants.MIN_COMMENTS_UI, 
+                     SearchConstants.MAX_COMMENTS_UI, 
+                     SearchConstants.DEFAULT_COMMENTS_UI, 
+                     step=10)
     
     # Subreddit count slider
-    subreddit_count = st.slider("Number of Subreddits", 3, 12, 6, step=1, 
-                                help="More subreddits = better coverage but longer search time")
+    subreddit_count = st.slider("Number of Subreddits", 
+                               SearchConstants.MIN_SUBREDDITS_UI, 
+                               SearchConstants.MAX_SUBREDDITS_UI, 
+                               SearchConstants.DEFAULT_SUBREDDITS_UI, 
+                               step=1, 
+                               help="More subreddits = better coverage but longer search time")
     
     # Analyze button
     run_analysis = st.button("📊 Analyze Reviews", width='stretch')
@@ -132,7 +141,7 @@ if run_analysis:
                 
                 # Annotate comments with GPT
                 with st.spinner("🤖 Annotating comments with GPT..."):
-                    annos = llm_service.annotate_comments_with_gpt(comments, intent_schema.aspects, intent_schema.entity_type)
+                    annos = llm_service.annotate_comments_with_gpt(comments, intent_schema.aspects, intent_schema.entity_type, query)
                 
                 # Create upvote map for weighting
                 upvote_map = {comment["id"]: comment["upvotes"] for comment in comments}
@@ -228,7 +237,7 @@ if run_analysis:
                 # Display results
                 st.header(f"📊 Analysis Results for '{query}'")
                 
-                # Debug mode to see raw comment data
+                # Show raw comment data for inspection
                 if st.checkbox("🔧 Debug: show first 3 raw comments"):
                     import pandas as pd
                     df = pd.DataFrame(reviews[:3])
@@ -260,7 +269,8 @@ if run_analysis:
                 if intent_schema.intent == "RANKING":
                     st.subheader("🏆 Ranking Results")
                     if payload["ranking"]:
-                        for i, item in enumerate(payload["ranking"][:5], 1):
+                        # Show top entities for ranking queries (configurable)
+                        for i, item in enumerate(payload["ranking"][:SearchConstants.MAX_ENTITIES_TO_DISPLAY], 1):
                             st.write(f"**{i}. {item['name']}** ({item['mentions']} mentions)")
                             
                             # Show quotes

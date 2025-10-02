@@ -5,6 +5,7 @@ import math, time
 from typing import List, Dict, Any
 from collections import defaultdict
 from .models import Review, AspectScore, AnalysisSummary, GPTCommentAnno, RankingItem
+from .constants import SearchConstants, DomainConstants
 
 logger = logging.getLogger(__name__)
 
@@ -310,7 +311,11 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
                 entity.entity_type == entity_type.rstrip('s') or  # singular/plural
                 entity.entity_type == entity_type + 's' or  # plural
                 entity_type in entity.entity_type or  # substring match
-                entity.entity_type in entity_type):  # reverse substring match
+                entity.entity_type in entity_type or  # reverse substring match
+                # Special cases for location-based queries
+                (entity_type == "locations" and entity.entity_type in ["golf course", "restaurant", "hotel", "store", "shop", "cafe", "bar", "club", "park", "beach", "museum", "theater", "venue"]) or
+                (entity_type == "restaurant" and entity.entity_type in ["restaurant", "cafe", "bar", "diner", "eatery"]) or
+                (entity_type == "hotel" and entity.entity_type in ["hotel", "resort", "inn", "lodge"])):
                 
                 # Normalize entity name for deduplication
                 normalized_name = _normalize_entity_name(entity.name)
@@ -361,8 +366,26 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
     
     return ranking_items
 
-def rank_entities_with_relaxation(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entity_type: str, min_mentions: int = 2) -> List[RankingItem]:
-    """Rank entities with automatic relaxation if too few results."""
+def rank_entities_with_relaxation(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entity_type: str, min_mentions: int = SearchConstants.DEFAULT_MIN_MENTIONS) -> List[RankingItem]:
+    """
+    Rank entities with automatic relaxation if too few results.
+    
+    This method implements progressive relaxation to ensure we get sufficient results:
+    1. Start with strict evidence requirements (min_mentions=2)
+    2. If < 3 entities found, relax to min_mentions=1
+    3. If still insufficient, return whatever was found
+    
+    This adaptive approach balances quality (high evidence) with quantity (sufficient results).
+    
+    Args:
+        annos: List of GPT annotations with extracted entities
+        upvote_map: Mapping of comment IDs to upvote counts for weighting
+        entity_type: Expected entity type for filtering
+        min_mentions: Starting minimum mentions per entity
+        
+    Returns:
+        List of RankingItem objects sorted by overall score and mentions
+    """
     max_retries = 3
     current_min_mentions = min_mentions
     
