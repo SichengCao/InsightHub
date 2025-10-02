@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools","wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "insighthub"
+version = "2.0.0"
+description = "AI-powered Reddit review analysis platform with GPT-only pipeline"
+authors = [
+    {name = "InsightHub Team", email = "team@insighthub.ai"}
+]
+readme = "README.md"
+requires-python = ">=3.9,<3.9.7 || >=3.10"
+dependencies = [
+    "pydantic>=2",
+    "pydantic-settings>=2", 
+    "praw>=7.0",
+    "PyYAML>=6.0",
+    "diskcache>=5.0",
+    "streamlit>=1.28",
+    "openai>=1.0",
+    "httpx>=0.24"
+]
+
+[project.scripts]
+insighthub = "insighthub.main:main"
+insighthub-cli = "insighthub.cli:main"
+insighthub-ui = "insighthub.ui.streamlit_app:main"
+
+[project.urls]
+Homepage = "https://github.com/SichengCao/InsightHub"
+Repository = "https://github.com/SichengCao/InsightHub"
+Issues = "https://github.com/SichengCao/InsightHub/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+insighthub = []
