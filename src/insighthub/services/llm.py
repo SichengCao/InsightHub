@@ -70,11 +70,22 @@ Output strict JSON only. No comments, no trailing commas.
 
 def _safe_json_loads(s: str):
     """Safely parse JSON from LLM response, handling common formatting issues."""
+    # First, strip markdown code blocks if present
+    cleaned = s.strip()
+    if cleaned.startswith('```json'):
+        cleaned = cleaned[7:]
+    elif cleaned.startswith('```'):
+        cleaned = cleaned[3:]
+    if cleaned.endswith('```'):
+        cleaned = cleaned[:-3]
+    cleaned = cleaned.strip()
+    
+    # Try direct parsing on cleaned string
     try:
-        return json.loads(s)
+        return json.loads(cleaned)
     except Exception:
-        # Try to extract JSON array first
-        array_match = re.search(r'\[.*\]', s, re.DOTALL)
+        # Try to extract JSON array
+        array_match = re.search(r'\[.*\]', cleaned, re.DOTALL)
         if array_match:
             try:
                 return json.loads(array_match.group(0))
@@ -82,25 +93,14 @@ def _safe_json_loads(s: str):
                 pass
         
         # Try to extract JSON object
-        obj_match = re.search(r"\{.*\}", s, re.S)
+        obj_match = re.search(r"\{.*\}", cleaned, re.S)
         if obj_match:
             try:
                 return json.loads(obj_match.group(0))
             except:
                 pass
         
-        # If all else fails, try to clean the string
-        cleaned = s.strip()
-        if cleaned.startswith('```json'):
-            cleaned = cleaned[7:]
-        if cleaned.endswith('```'):
-            cleaned = cleaned[:-3]
-        cleaned = cleaned.strip()
-        
-        try:
-            return json.loads(cleaned)
-        except:
-            raise ValueError(f"Could not parse JSON from: {s[:200]}...")
+        raise ValueError(f"Could not parse JSON from: {s[:200]}...")
 
 logger = logging.getLogger(__name__)
 
