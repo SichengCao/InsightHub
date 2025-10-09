@@ -6,8 +6,8 @@ class SearchConstants:
     
     # API Rate Limiting (Optimized for speed)
     REDDIT_API_DELAY = 0.02  # seconds between API calls (reduced from 0.05)
-    REDDIT_SEARCH_LIMIT = 30  # posts per search call (increased from 25)
-    REDDIT_MAX_RAW_COMMENTS = 4  # multiplier for comment collection (reduced from 5)
+    REDDIT_SEARCH_LIMIT = 20  # posts per search call (reduced from 30 for faster searches)
+    REDDIT_MAX_RAW_COMMENTS = 3  # multiplier for comment collection (reduced from 4 for early termination)
     
     # Quality Filtering
     MIN_COMMENT_LENGTH = 30  # minimum characters in comment

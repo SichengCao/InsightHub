@@ -430,8 +430,8 @@ class RedditService:
             logger.info(f"🚀 Starting {total_searches} parallel Reddit API searches...")
             
             # Execute searches in parallel using ThreadPoolExecutor
-            # Max 4 workers to respect Reddit API rate limits
-            max_workers = min(4, total_searches)
+            # Max 6 workers for faster execution while respecting Reddit API rate limits
+            max_workers = min(6, total_searches)
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 # Submit all search tasks
                 future_to_task = {
@@ -451,9 +451,13 @@ class RedditService:
                         
                         logger.info(f"🔍 [{search_count}/{total_searches}] {search_id} | Posts: {submissions_processed} | Comments: {len(raw_comments)} | {elapsed:.1f}s")
                         
-                        # Stop if we have enough comments
+                        # Early termination: Stop if we have enough comments
                         if len(raw_comments) >= limit * SearchConstants.REDDIT_MAX_RAW_COMMENTS:
-                            logger.info(f"✅ Reached target comment count, stopping parallel search...")
+                            logger.info(f"✅ Reached target ({len(raw_comments)} comments), cancelling remaining searches...")
+                            # Cancel all pending futures
+                            for pending_future in future_to_task.keys():
+                                if not pending_future.done():
+                                    pending_future.cancel()
                             break
                             
                     except Exception as e:
