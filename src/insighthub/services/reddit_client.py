@@ -7,6 +7,7 @@ import unicodedata
 import re
 from typing import List
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from tenacity import retry, stop_after_attempt, wait_exponential
 import praw
 from ..core.models import Review
@@ -232,6 +233,52 @@ class RedditService:
             if not em: return True
             return any(rx.search(text or "") for rx in em)
         return _ok
+    
+    def _execute_single_search(self, bucket: str, term: str, strategy: str, plan: SearchPlan, seen_posts: set) -> tuple:
+        """
+        Execute a single Reddit search and return comments.
+        
+        Args:
+            bucket: Subreddit combination (e.g., "AskNYC+NewYorkCity")
+            term: Search term
+            strategy: Search strategy ("top", "relevance", "new")
+            plan: Search plan with parameters
+            seen_posts: Set of already processed post IDs
+            
+        Returns:
+            Tuple of (comments, processed_post_count, search_identifier)
+        """
+        comments = []
+        search_id = f"r/{bucket} '{term}' ({strategy})"
+        
+        try:
+            sr = self.reddit.subreddit(bucket)
+            submissions = sr.search(term, sort=strategy, time_filter=plan.time_filter, syntax="lucene", limit=SearchConstants.REDDIT_SEARCH_LIMIT)
+            
+            submissions_processed = 0
+            for sub in submissions:
+                sid = getattr(sub, "id", None)
+                if not sid or sid in seen_posts:
+                    continue
+                seen_posts.add(sid)  # Thread-safe with GIL
+                submissions_processed += 1
+                
+                # Expand all comments (including nested ones)
+                sub.comments.replace_more(limit=0)
+                flat = [c for c in sub.comments.list() if hasattr(c, "body")]
+                
+                # Apply initial quality filtering
+                flat = [c for c in flat if (getattr(c, "score", 0) or 0) >= plan.min_comment_score and len(getattr(c, "body", "")) > SearchConstants.MIN_COMMENT_LENGTH]
+                
+                # Sort by score and take top N per post
+                flat.sort(key=lambda c: getattr(c, "score", 0) or 0, reverse=True)
+                comments.extend(flat[:plan.per_post_top_n])
+            
+            return (comments, submissions_processed, search_id)
+            
+        except Exception as e:
+            logger.debug(f"Search failed {search_id}: {e}")
+            return ([], 0, search_id)
 
     def _plan_search(self, query: str, max_subreddits: int = 4) -> SearchPlan:
         """Plan search using LLM with fallback to API-only discovery."""
@@ -369,59 +416,49 @@ class RedditService:
             buckets = [combined] if combined else []
             # Removed "all" fallback for faster, more focused searches
 
-            # Step 3: Execute multi-dimensional search strategy
-            # For each bucket (subreddit combination) × each search term × each strategy
-            total_searches = len(buckets) * len(plan.terms) * len(plan.strategies)
+            # Step 3: Execute parallel multi-dimensional search strategy
+            # Build all search tasks (bucket × term × strategy combinations)
+            search_tasks = []
+            for bucket in buckets:
+                for term in plan.terms:
+                    for strategy in plan.strategies:
+                        search_tasks.append((bucket, term, strategy))
+            
+            total_searches = len(search_tasks)
             search_count = 0
             start_time = time.time()
-            logger.info(f"🚀 Starting {total_searches} Reddit API searches...")
+            logger.info(f"🚀 Starting {total_searches} parallel Reddit API searches...")
             
-            for bucket_idx, bucket in enumerate(buckets):
-                if len(raw_comments) >= limit * SearchConstants.REDDIT_MAX_RAW_COMMENTS: break
-                sr = self.reddit.subreddit(bucket)
-                logger.info(f"📡 Subreddit {bucket_idx+1}/{len(buckets)}: r/{bucket}")
+            # Execute searches in parallel using ThreadPoolExecutor
+            # Max 4 workers to respect Reddit API rate limits
+            max_workers = min(4, total_searches)
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Submit all search tasks
+                future_to_task = {
+                    executor.submit(self._execute_single_search, bucket, term, strategy, plan, seen_posts): (bucket, term, strategy)
+                    for bucket, term, strategy in search_tasks
+                }
                 
-                for term_idx, term in enumerate(plan.terms):
-                    if len(raw_comments) >= limit * SearchConstants.REDDIT_MAX_RAW_COMMENTS: break
+                # Process completed searches as they finish
+                for future in as_completed(future_to_task):
+                    bucket, term, strategy = future_to_task[future]
+                    search_count += 1
+                    elapsed = time.time() - start_time
                     
-                    for strat_idx, strat in enumerate(plan.strategies):
-                        if len(raw_comments) >= limit * SearchConstants.REDDIT_MAX_RAW_COMMENTS: break
+                    try:
+                        comments, submissions_processed, search_id = future.result()
+                        raw_comments.extend(comments)
                         
-                        search_count += 1
-                        elapsed = time.time() - start_time
-                        logger.info(f"🔍 [{search_count}/{total_searches}] r/{bucket} '{term}' ({strat}) | Comments: {len(raw_comments)} | {elapsed:.1f}s")
+                        logger.info(f"🔍 [{search_count}/{total_searches}] {search_id} | Posts: {submissions_processed} | Comments: {len(raw_comments)} | {elapsed:.1f}s")
                         
-                        try:
-                            # Execute Reddit search with plan parameters
-                            submissions = sr.search(term, sort=strat, time_filter=plan.time_filter, syntax="lucene", limit=SearchConstants.REDDIT_SEARCH_LIMIT)
+                        # Stop if we have enough comments
+                        if len(raw_comments) >= limit * SearchConstants.REDDIT_MAX_RAW_COMMENTS:
+                            logger.info(f"✅ Reached target comment count, stopping parallel search...")
+                            break
                             
-                            # Step 4: Process each submission and extract comments
-                            submissions_processed = 0
-                            for sub in submissions:
-                                sid = getattr(sub, "id", None)
-                                if not sid or sid in seen_posts: 
-                                    continue  # Skip duplicates
-                                seen_posts.add(sid)
-                                submissions_processed += 1
-                                
-                                # Expand all comments (including nested ones)
-                                sub.comments.replace_more(limit=0)
-                                flat = [c for c in sub.comments.list() if hasattr(c,"body")]
-                                
-                                # Apply initial quality filtering
-                                flat = [c for c in flat if (getattr(c,"score",0) or 0) >= plan.min_comment_score and len(getattr(c,"body","")) > SearchConstants.MIN_COMMENT_LENGTH]
-                                
-                                # Sort by score and take top N per post
-                                flat.sort(key=lambda c: getattr(c,"score",0) or 0, reverse=True)
-                                raw_comments.extend(flat[:plan.per_post_top_n])
-                            
-                            if submissions_processed > 0:
-                                logger.info(f"   ✅ Processed {submissions_processed} posts, added {min(len(flat), plan.per_post_top_n) if 'flat' in locals() else 0} comments")
-                                
-                            time.sleep(SearchConstants.REDDIT_API_DELAY)  # Rate limiting delay
-                        except Exception as e:
-                            logger.debug(f"search fail {bucket}:{term}:{strat} -> {e}")
-                            continue
+                    except Exception as e:
+                        logger.debug(f"Search task failed for r/{bucket} '{term}' ({strategy}): {e}")
+                        continue
         except Exception as e:
             logger.error(f"Reddit scraping failed: {e}")
             return self._scrape_mock(query, limit)
