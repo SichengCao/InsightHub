@@ -290,6 +290,54 @@ def _normalize_entity_name(name: str) -> str:
     }
     return variations.get(name, name)
 
+def _is_valid_entity_name(name: str, entity_type: str) -> bool:
+    """
+    Validate if an entity name is a proper name, not a generic descriptor.
+    
+    Filters out:
+    - Generic descriptors (e.g., "two michelin starred restaurant")
+    - Category names (e.g., "italian restaurant", "steakhouse")
+    - Phrases with numbers and common words
+    """
+    name_lower = name.lower().strip()
+    
+    # Generic descriptors to filter out
+    generic_patterns = [
+        "michelin starred", "michelin star", "fine dining",
+        "starred restaurant", "star restaurant",
+        "fancy restaurant", "upscale", "high end",
+        "casual dining", "fast food", "chain restaurant",
+        "local spot", "neighborhood", "place",
+        "restaurant group", "food group",
+    ]
+    
+    # Check if name contains generic patterns
+    for pattern in generic_patterns:
+        if pattern in name_lower:
+            return False
+    
+    # Filter out pure category names for restaurants
+    if entity_type in ["restaurant", "restaurants", "locations"]:
+        category_words = [
+            "italian", "french", "chinese", "japanese", "korean", "thai", "indian",
+            "mexican", "american", "steakhouse", "pizzeria", "cafe", "bar",
+            "bistro", "diner", "eatery", "grill", "tavern", "pub"
+        ]
+        
+        # If the name is ONLY a category word (or with "the"), it's too generic
+        words = name_lower.split()
+        if len(words) <= 2 and any(word in category_words for word in words):
+            return False
+    
+    # Filter out names that start with numbers and common descriptors
+    # e.g., "two michelin starred restaurant", "three course meal"
+    if name_lower.split()[0] in ["one", "two", "three", "four", "five", "1", "2", "3", "4", "5"]:
+        common_descriptors = ["star", "michelin", "course", "fork", "dollar"]
+        if any(desc in name_lower for desc in common_descriptors):
+            return False
+    
+    return True
+
 def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entity_type: str, min_mentions: int = 3) -> List[RankingItem]:
     """Rank entities based on mentions and scores."""
     entity_stats = defaultdict(lambda: {
@@ -316,6 +364,11 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
                 (entity_type == "locations" and entity.entity_type in ["golf course", "restaurant", "hotel", "store", "shop", "cafe", "bar", "club", "park", "beach", "museum", "theater", "venue"]) or
                 (entity_type == "restaurant" and entity.entity_type in ["restaurant", "cafe", "bar", "diner", "eatery"]) or
                 (entity_type == "hotel" and entity.entity_type in ["hotel", "resort", "inn", "lodge"])):
+                
+                # Validate entity name (filter out generic descriptors)
+                if not _is_valid_entity_name(entity.name, entity_type):
+                    logger.debug(f"Filtered out generic entity name: '{entity.name}'")
+                    continue
                 
                 # Normalize entity name for deduplication
                 normalized_name = _normalize_entity_name(entity.name)
