@@ -218,9 +218,15 @@ if run_analysis:
                 else:  # GENERIC
                     overall, aspect_averages = aggregate_generic(intent_schema.aspects, annos, upvote_map)
                     
+                    # Select high-quality quotes using GPT sentiment analysis
                     quotes = []
-                    for comment in comments[:10]:
-                        quotes.append(comment["text"][:200] + "...")
+                    positive_annos = [anno for anno in annos if anno.overall_score >= 3.5]  # High sentiment threshold
+                    sorted_annos = sorted(positive_annos, key=lambda a: a.overall_score, reverse=True)
+                    
+                    for anno in sorted_annos[:8]:  # Top 8 positive comments
+                        comment = next((c for c in comments if c["id"] == anno.comment_id), None)
+                        if comment:
+                            quotes.append(comment["text"][:200] + "...")
                     
                     summary = llm_service.summarize_generic_with_gpt(query, aspect_averages, overall, quotes)
                     
@@ -248,7 +254,7 @@ if run_analysis:
                 
                 meaningful_reviews = [r for r in reviews if len((r.get("text") or "")) >= 100]
                 
-                col1, col2, col3 = st.columns(3)
+                col1, col2, col3, col4 = st.columns(4)
                 with col1:
                     st.metric("Total Reviews", len(reviews))
                 with col2:
@@ -260,6 +266,36 @@ if run_analysis:
                         st.metric("Solution Clusters", len(payload.get("solutions", [])))
                     else:
                         st.metric("Analysis Complete", "✅")
+                with col4:
+                    if intent_schema.intent == "GENERIC":
+                        overall_rating = payload.get("overall", 3.0)
+                        st.metric("Overall Rating", f"{overall_rating:.1f}/5")
+                    else:
+                        st.metric("Analysis Complete", "✅")
+                
+                # Add prominent rating display for generic search
+                if intent_schema.intent == "GENERIC":
+                    st.subheader("⭐ Overall Assessment")
+                    col1, col2 = st.columns([1, 2])
+                    with col1:
+                        overall_rating = payload.get("overall", 3.0)
+                        st.metric("Overall Rating", f"{overall_rating:.1f}/5")
+                        if overall_rating >= 4.0:
+                            st.success("👍 Highly Recommended")
+                        elif overall_rating >= 3.0:
+                            st.info("👍 Generally Positive")
+                        else:
+                            st.warning("⚠️ Mixed Reviews")
+                    
+                    with col2:
+                        st.subheader("📊 Aspect Breakdown")
+                        aspect_scores = payload.get("aspects", {})
+                        if aspect_scores:
+                            for aspect, score in list(aspect_scores.items())[:4]:  # Show top 4 aspects
+                                st.progress(score / 5.0)
+                                st.caption(f"{aspect}: {score:.1f}/5")
+                        else:
+                            st.info("Aspect scores not available")
                 
                 # Detailed Summary Section
                 st.subheader("📝 Detailed Summary")

@@ -1076,33 +1076,36 @@ class OpenAIService:
             return f"Ranking analysis completed for {query}. Found {len(ranking_items)} ranked entities."
 
     def summarize_generic_with_gpt(self, query: str, aspects: Dict[str, float], overall: float, quotes: List[str]) -> str:
-        """Generate generic summary with pros/cons."""
+        """Generate detailed summary by analyzing review content."""
         try:
             aspects_text = "\n".join([f"- {name}: {score:.1f}/5" for name, score in aspects.items()])
-            quotes_text = "\n".join([f"- \"{quote[:100]}...\"" for quote in quotes[:5]])
+            quotes_text = "\n".join([f"- \"{quote[:150]}...\"" for quote in quotes[:6]])  # Longer quotes for better analysis
             
             prompt = f"""
-            Generate a comprehensive summary for "{query}" based on the analysis results.
+            Analyze these Reddit reviews for "{query}" and create a detailed, insightful summary.
             
             Overall Rating: {overall:.1f}/5
             
-            Aspect Scores:
+            Aspect Analysis:
             {aspects_text}
             
-            Representative Quotes:
+            Key User Reviews:
             {quotes_text}
             
-            Provide a summary that includes:
-            1. Overall assessment of the product/service
-            2. Key strengths (pros) based on aspect scores and quotes
-            3. Key weaknesses (cons) based on aspect scores and quotes
-            4. Final recommendation
+            Create a comprehensive summary that:
+            1. **Overall Assessment**: What's the general consensus about {query}?
+            2. **Detailed Analysis**: Analyze the actual review content - what specific experiences do users mention?
+            3. **Strengths**: What do users consistently praise? Be specific about features/benefits mentioned.
+            4. **Concerns**: What issues do users repeatedly mention? Focus on real user experiences.
+            5. **Context & Insights**: Any interesting patterns, comparisons, or insights from the reviews?
+            6. **Recommendation**: Who should consider this and why? Based on actual user feedback.
             
-            Write in a natural, engaging style suitable for consumers.
+            Write in an engaging, analytical style that captures the real user sentiment and experiences. 
+            Focus on what users actually say, not just the scores.
             """
             
             response = self.chat(
-                system="You are an expert product reviewer who writes clear, helpful summaries for consumers.",
+                system="You are an expert analyst who creates detailed, insightful reviews by analyzing real user experiences and sentiment patterns.",
                 user=prompt,
                 temperature=0.4,
                 max_tokens=800
@@ -1200,18 +1203,32 @@ Return JSON:
                 result = _safe_json_loads(response)
             except Exception as e:
                 logger.error(f"Intent detection JSON parsing failed: {e}")
+                # Generate dynamic aspects instead of hardcoded fallback
+                try:
+                    dynamic_aspects = self.generate_dynamic_aspects(query)
+                    aspect_names = list(dynamic_aspects.keys()) if dynamic_aspects else ["quality", "value", "performance"]
+                except:
+                    aspect_names = ["quality", "value", "performance"]
+                
                 return IntentSchema(
                     intent="GENERIC",
-                    aspects=["quality", "value", "performance"],
+                    aspects=aspect_names,
                     entity_type="products"
                 )
             
             # Ensure result is a dictionary
             if not isinstance(result, dict):
                 logger.error(f"Intent detection failed: Expected dict, got {type(result)}")
+                # Generate dynamic aspects instead of hardcoded fallback
+                try:
+                    dynamic_aspects = self.generate_dynamic_aspects(query)
+                    aspect_names = list(dynamic_aspects.keys()) if dynamic_aspects else ["quality", "value", "performance"]
+                except:
+                    aspect_names = ["quality", "value", "performance"]
+                
                 return IntentSchema(
                     intent="GENERIC",
-                    aspects=["quality", "value", "performance"],
+                    aspects=aspect_names,
                     entity_type="products"
                 )
             
@@ -1222,7 +1239,12 @@ Return JSON:
             
             aspects = result.get("aspects", [])
             if not aspects:
-                aspects = ["quality", "value", "performance"]
+                # Generate dynamic aspects instead of hardcoded fallback
+                try:
+                    dynamic_aspects = self.generate_dynamic_aspects(query)
+                    aspects = list(dynamic_aspects.keys()) if dynamic_aspects else ["quality", "value", "performance"]
+                except:
+                    aspects = ["quality", "value", "performance"]
             
             entity_type = result.get("entity_type", "products")
             
@@ -1636,18 +1658,32 @@ Return JSON:
                 result = _safe_json_loads(response)
             except Exception as e:
                 logger.error(f"Intent detection JSON parsing failed: {e}")
+                # Generate dynamic aspects instead of hardcoded fallback
+                try:
+                    dynamic_aspects = self.generate_dynamic_aspects(query)
+                    aspect_names = list(dynamic_aspects.keys()) if dynamic_aspects else ["quality", "value", "performance"]
+                except:
+                    aspect_names = ["quality", "value", "performance"]
+                
                 return IntentSchema(
                     intent="GENERIC",
-                    aspects=["quality", "value", "performance"],
+                    aspects=aspect_names,
                     entity_type="products"
                 )
             
             # Ensure result is a dictionary
             if not isinstance(result, dict):
                 logger.error(f"Intent detection failed: Expected dict, got {type(result)}")
+                # Generate dynamic aspects instead of hardcoded fallback
+                try:
+                    dynamic_aspects = self.generate_dynamic_aspects(query)
+                    aspect_names = list(dynamic_aspects.keys()) if dynamic_aspects else ["quality", "value", "performance"]
+                except:
+                    aspect_names = ["quality", "value", "performance"]
+                
                 return IntentSchema(
                     intent="GENERIC",
-                    aspects=["quality", "value", "performance"],
+                    aspects=aspect_names,
                     entity_type="products"
                 )
             
@@ -1658,7 +1694,12 @@ Return JSON:
             
             aspects = result.get("aspects", [])
             if not aspects:
-                aspects = ["quality", "value", "performance"]
+                # Generate dynamic aspects instead of hardcoded fallback
+                try:
+                    dynamic_aspects = self.generate_dynamic_aspects(query)
+                    aspects = list(dynamic_aspects.keys()) if dynamic_aspects else ["quality", "value", "performance"]
+                except:
+                    aspects = ["quality", "value", "performance"]
             
             entity_type = result.get("entity_type", "products")
             
