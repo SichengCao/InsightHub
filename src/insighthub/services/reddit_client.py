@@ -430,10 +430,10 @@ class RedditService:
             logger.info(f"🚀 Starting {total_searches} parallel Reddit API searches...")
             
             # Execute searches in parallel using ThreadPoolExecutor
-            # Max 6 workers for faster execution while respecting Reddit API rate limits
-            max_workers = min(6, total_searches)
+            # Max 8 workers for maximum speed
+            max_workers = min(8, total_searches)
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # Submit all search tasks
+                # Submit all search tasks at once
                 future_to_task = {
                     executor.submit(self._execute_single_search, bucket, term, strategy, plan, seen_posts): (bucket, term, strategy)
                     for bucket, term, strategy in search_tasks
@@ -450,19 +450,14 @@ class RedditService:
                         raw_comments.extend(comments)
                         
                         logger.info(f"🔍 [{search_count}/{total_searches}] {search_id} | Posts: {submissions_processed} | Comments: {len(raw_comments)} | {elapsed:.1f}s")
-                        
-                        # Early termination: Stop if we have enough comments
-                        if len(raw_comments) >= limit * SearchConstants.REDDIT_MAX_RAW_COMMENTS:
-                            logger.info(f"✅ Reached target ({len(raw_comments)} comments), cancelling remaining searches...")
-                            # Cancel all pending futures
-                            for pending_future in future_to_task.keys():
-                                if not pending_future.done():
-                                    pending_future.cancel()
-                            break
                             
                     except Exception as e:
-                        logger.debug(f"Search task failed for r/{bucket} '{term}' ({strategy}): {e}")
+                        logger.debug(f"Search task failed for r/{bucket} '{term}' ({strategy}': {e}")
                         continue
+                
+                # Log completion after all searches finish
+                elapsed_final = time.time() - start_time
+                logger.info(f"✅ All {search_count} searches completed in {elapsed_final:.1f}s")
         except Exception as e:
             logger.error(f"Reddit scraping failed: {e}")
             return self._scrape_mock(query, limit)
