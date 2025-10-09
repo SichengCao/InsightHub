@@ -40,11 +40,7 @@ Rules:
   * For NYC queries: start with ['AskNYC', 'NewYorkCity', 'FoodNYC'] and add more relevant subreddits as needed
 - All arrays MUST be case-insensitively deduped and length-bounded per spec.
 - Never include "r/" prefixes in subreddit names.
-- For comment_must_patterns: Include key product/service terms that should appear in relevant comments.
-- For "Tesla Model Y" → include patterns like "\\btesla\\b", "\\bmodel y\\b", "\\bev\\b"
-- For "iPhone 15" → include patterns like "\\biphone\\b", "\\bapple\\b", "\\bphone\\b"
-- For "best golf course" → include patterns like "\\bgolf\\b", "\\bcourse\\b"
-- Only return empty list if no clear product/service terms exist.
+- For comment_must_patterns: Always return an empty list []. GPT sentiment analysis will handle comment quality filtering.
 
 Also infer an internal intent to guide your choices:
 - If the query is a "best/top/which/where" compare: treat as RANKING.
@@ -62,7 +58,7 @@ Produce JSON with exactly these keys:
 - "strategies": 1–2 from ["relevance","top","new"].
 - "min_comment_score": integer 0..50.
 - "per_post_top_n": integer 3..8.
-- "comment_must_patterns": 0–2 lowercase regexes, simple words with \\b boundaries (example: "\\\\bpace\\\\b").
+- "comment_must_patterns": Always empty list [].
 
 Heuristics by inferred intent:
 - RANKING → strategies: ["top","relevance"]; time_filter: "year" (if evergreen) else "all"; per_post_top_n: 5–8; min_comment_score: 3–8 (higher for quality).
@@ -416,8 +412,8 @@ class OpenAIService:
             plan["min_comment_score"] = max(0, int(plan.get("min_comment_score", 1)))  # Default configuration: score 1
             plan["per_post_top_n"] = min(12, max(3, int(plan.get("per_post_top_n", 8))))  # Default configuration: 8 comments per post
 
-            pats = plan.get("comment_must_patterns") or []
-            plan["comment_must_patterns"] = [p for p in pats if isinstance(p, str) and p.strip()][:SearchConstants.MAX_COMMENT_PATTERNS]  # Comprehensive search: up to 6 patterns
+            # Always use empty patterns - GPT sentiment analysis handles quality filtering
+            plan["comment_must_patterns"] = []
             return plan
         except Exception as e:
             logger.error(f"Reddit search planning failed: {e}")
@@ -429,7 +425,7 @@ class OpenAIService:
                 "strategies": ["relevance", "top"],
                 "min_comment_score": 3,  # Higher quality default
                 "per_post_top_n": 6,  # Balanced default
-                "comment_must_patterns": [r"\b(love|hate|recommend|avoid|worth|issue|problem|help)\b"]
+                "comment_must_patterns": []  # GPT sentiment analysis handles quality
             }
     
     @retry(
@@ -1485,7 +1481,7 @@ class FallbackLLMService:
             "strategies": ["relevance", "top"],
             "min_comment_score": min_score,
             "per_post_top_n": per_post,
-            "comment_must_patterns": [r"\b(love|hate|recommend|avoid|worth|issue|problem|help)\b"]
+            "comment_must_patterns": []  # GPT sentiment analysis handles quality
         }
     
     def analyze_comment(self, text: str, aspects: List[str]) -> Dict[str, Any]:
