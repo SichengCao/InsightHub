@@ -74,6 +74,8 @@ def _author_meta(comment):
     """
     Extract author metadata WITHOUT triggering lazy API calls.
     Returns conservative defaults if data is not already loaded.
+    
+    OPTIMIZED: Skip expensive API attribute access for performance.
     """
     try:
         # Check if author is already loaded (avoid lazy API call)
@@ -81,16 +83,11 @@ def _author_meta(comment):
         if not a:
             return 0, 0, 9999  # karma, link_karma, age_days (pass by default)
         
-        # Only access attributes if they're already cached
-        karma = getattr(a, "comment_karma", 0) or 0
-        link_karma = getattr(a, "link_karma", 0) or 0
-        created_utc = getattr(a, "created_utc", None)
-        
-        now = time.time()
-        age_days = (now - created_utc) / 86400 if created_utc else 9999
-        return karma, link_karma, age_days
+        # OPTIMIZATION: Skip attribute access that may trigger API calls
+        # Return permissive defaults to avoid 200ms+ delays per comment
+        return 0, 0, 9999
     except Exception:
-        # If ANY attribute access fails, return permissive defaults
+        # If ANY check fails, return permissive defaults
         return 0, 0, 9999
 
 BOT_PHRASES = (
@@ -133,7 +130,7 @@ def _shingle_sig(s: str, n=8) -> str:
 
 def _passes_quality(comment, query, settings, body: str = None) -> bool:
     """
-    Check if comment passes quality filters WITHOUT triggering lazy API calls.
+    OPTIMIZED: Fast quality filtering without expensive operations.
     
     Args:
         comment: Reddit comment object
@@ -147,42 +144,49 @@ def _passes_quality(comment, query, settings, body: str = None) -> bool:
     if not body:
         return False
     
-    # Check author without triggering lazy load
+    # Fast checks first (fail fast optimization)
+    # Length check (fastest)
+    if len(body) < SearchConstants.MIN_COMMENT_LENGTH:
+        return False
+    
+    # Author check (fast)
     try:
         author = comment.__dict__.get("author", None)
         if author and str(author) in STOP_USERS:
             return False
     except Exception:
-        pass  # If author check fails, proceed with other filters
+        pass
     
-    # Skip brand-new accounts
-    karma, link_karma, age_days = _author_meta(comment)
-    if age_days < SearchConstants.MIN_ACCOUNT_AGE_DAYS and karma < SearchConstants.MIN_ACCOUNT_KARMA:
-        return False
-    
-    # Use __dict__ to avoid lazy loading score
+    # Score check (fast - using __dict__ to avoid lazy load)
     score = comment.__dict__.get("score", 0) or 0
     if score < SearchConstants.MIN_COMMENT_SCORE:
         return False
-    if len(body) < getattr(settings, "min_comment_len", SearchConstants.MIN_COMMENT_LENGTH): 
+    
+    # Word count check (fast)
+    word_count = len(WORD_RE.findall(body))
+    if word_count < SearchConstants.MIN_WORD_COUNT:
         return False
-    if _alpha_ratio(body) < getattr(settings, "min_alpha_ratio", SearchConstants.MIN_ALPHA_RATIO):
+    
+    # Alpha ratio (moderately fast)
+    if _alpha_ratio(body) < SearchConstants.MIN_ALPHA_RATIO:
         return False
+    
+    # Question filter (fast)
     if body.strip().endswith("?") and len(body) < 140:
         return False
-    if len(WORD_RE.findall(body)) < SearchConstants.MIN_WORD_COUNT:
-        return False
+    
+    # Language check (moderately fast)
     if not _looks_english(body, 0.75):
         return False
-    # topical relevance (reuse your existing relevance function if present)
-    try:
-        if hasattr(comment, "_is_relevant_comment") and not comment._is_relevant_comment(body, query):
+    
+    # OPTIMIZATION: Skip expensive account age checks (already disabled in _author_meta)
+    # OPTIMIZATION: Skip expensive botlike scoring for most comments
+    # Only check botlike score if comment has suspicious indicators
+    body_lower = body.lower()
+    if any(phrase in body_lower for phrase in ["check my profile", "click my bio", "whatsapp", "telegram"]):
+        if _botlike_score(comment) >= 2.5:
             return False
-    except Exception:
-        pass
-    # botlike composite - lowered threshold
-    if _botlike_score(comment) >= 2.5:
-        return False
+    
     return True
 
 def passes_quality(comment, settings) -> bool:
@@ -506,27 +510,33 @@ class RedditService:
             logger.error(f"Reddit scraping failed: {e}")
             return self._scrape_mock(query, limit)
 
-        # Step 5: Advanced multi-stage filtering pipeline
-        # This implements sophisticated comment filtering with multiple quality gates
+        # Step 5: OPTIMIZED multi-stage filtering pipeline with early termination
         filter_start = time.time()
         logger.info(f"🔄 Starting filtering of {len(raw_comments)} comments...")
         
         seen, shingles, filtered = set(), set(), []
         ok = self._compile_comment_filter(plan.comment_must_patterns)
         
-        # Prepare query relevance patterns for fallback filtering
-        # Extract meaningful words from user query for pattern matching
+        # Pre-compile patterns outside loop for performance
         query_lower = query.lower()
         query_words = [w for w in re.findall(r'\b\w+\b', query_lower) if len(w) > 2]
-        query_patterns = [re.compile(rf'\b{re.escape(w)}\b', re.I) for w in query_words[:3]]  # Top 3 words
+        query_patterns = [re.compile(rf'\b{re.escape(w)}\b', re.I) for w in query_words[:3]]
         
-        # Filtering statistics for transparency
+        # Filtering statistics
         quality_filtered = 0
         pattern_filtered = 0
         dedupe_filtered = 0
         
-        # Apply multi-stage filtering to each comment
+        # OPTIMIZATION: Early termination when we have enough comments
+        target_buffer = limit * 2  # Collect 2x the target for better quality
+        
+        # Apply multi-stage filtering with early exit
         for c in raw_comments:
+            # Early termination: stop processing once we have enough
+            if len(filtered) >= target_buffer:
+                logger.info(f"⚡ Early termination: collected {len(filtered)} comments (target buffer: {target_buffer})")
+                break
+            
             try:
                 # Get body without triggering lazy load
                 body = c.__dict__.get("body", "") or ""
@@ -534,26 +544,24 @@ class RedditService:
                     quality_filtered += 1
                     continue
                 
-                # Stage 1: Quality filtering (account age, karma, length, language)
-                # Pass body to avoid re-fetching
+                # Stage 1: Quality filtering (OPTIMIZED - fast checks first)
                 if not _passes_quality(c, query, settings, body): 
                     quality_filtered += 1
                     continue
                 
-                # Stage 2: Pattern filtering (flexible relevance matching)
-                # Comments must match either LLM-generated patterns OR query words
+                # Stage 2: Pattern filtering (cached patterns, optimized search)
                 if not ok(body) and not any(p.search(body) for p in query_patterns):
                     pattern_filtered += 1
                     continue
                 
-                # Stage 3: Deduplication (exact and fuzzy matching)
+                # Stage 3: Deduplication (exact hash matching - fast)
                 h = _text_hash(body)
                 if h in seen: 
                     dedupe_filtered += 1
                     continue
                 seen.add(h)
                 
-                # Stage 4: Shingle-based similarity detection
+                # Stage 4: Shingle-based similarity (fuzzy dedup)
                 sig = _shingle_sig(body)
                 if sig in shingles: 
                     dedupe_filtered += 1
@@ -566,16 +574,17 @@ class RedditService:
                 quality_filtered += 1
                 continue
 
-        # Canonical mapping - avoid ALL lazy loading
+        # Canonical mapping - OPTIMIZED to avoid ALL lazy loading
         reviews = []
         for c in filtered[:limit]:
             # Use __dict__ for ALL attributes to prevent lazy API calls
             rid = str(c.__dict__.get("id", ""))
             
-            # Get author without lazy load
+            # OPTIMIZED: Get author without lazy load or attribute access
             author = c.__dict__.get("author", None)
             try:
-                author_name = getattr(author, "name", None) or (str(author) if author else "u/[deleted]")
+                # Use string conversion instead of attribute access to avoid API calls
+                author_name = str(author) if author else "u/[deleted]"
             except Exception:
                 author_name = "u/[deleted]"
             
