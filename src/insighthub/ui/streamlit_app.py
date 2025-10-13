@@ -123,9 +123,9 @@ if run_analysis:
             else:
                 # Detect intent and generate schema
                 intent_schema = llm_service.detect_intent_and_schema(query)
-                st.info(f"🎯 Detected intent: **{intent_schema.intent}**")
+                st.info(f" Detected intent: **{intent_schema.intent}**")
                 if intent_schema.entity_type:
-                    st.info(f"📋 Entity type: **{intent_schema.entity_type}**")
+                    st.info(f"Entity type: **{intent_schema.entity_type}**")
                 st.info(f"🔍 Aspects: {', '.join(intent_schema.aspects[:5])}{'...' if len(intent_schema.aspects) > 5 else ''}")
                 
                 # Convert reviews to comment format for annotation
@@ -140,7 +140,7 @@ if run_analysis:
                     comments.append(comment)
                 
                 # Annotate comments with GPT
-                with st.spinner("🤖 Annotating comments with GPT..."):
+                with st.spinner("Annotating comments with GPT..."):
                     annos = llm_service.annotate_comments_with_gpt(comments, intent_schema.aspects, intent_schema.entity_type, query)
                 
                 # Create upvote map for weighting
@@ -241,7 +241,7 @@ if run_analysis:
                     }
                 
                 # Display results
-                st.header(f"📊 Analysis Results for '{query}'")
+                st.header(f"Analysis Results for '{query}'")
                 
                 # Show raw comment data for inspection
                 if st.checkbox("🔧 Debug: show first 3 raw comments"):
@@ -250,7 +250,7 @@ if run_analysis:
                     st.dataframe(df[["id","author","upvotes","permalink","text"]])
                 
                 # Key metrics - simplified for all intents
-                st.subheader("📈 Key Metrics")
+                st.subheader("Key Metrics")
                 
                 meaningful_reviews = [r for r in reviews if len((r.get("text") or "")) >= 100]
                 
@@ -271,24 +271,24 @@ if run_analysis:
                         overall_rating = payload.get("overall", 3.0)
                         st.metric("Overall Rating", f"{overall_rating:.1f}/5")
                     else:
-                        st.metric("Analysis Complete", "✅")
+                        st.metric("Analysis Complete", "")
                 
                 # Add prominent rating display for generic search
                 if intent_schema.intent == "GENERIC":
-                    st.subheader("⭐ Overall Assessment")
+                    st.subheader(" Overall Assessment")
                     col1, col2 = st.columns([1, 2])
                     with col1:
                         overall_rating = payload.get("overall", 3.0)
                         st.metric("Overall Rating", f"{overall_rating:.1f}/5")
                         if overall_rating >= 4.0:
-                            st.success("👍 Highly Recommended")
+                            st.success("Highly Recommended")
                         elif overall_rating >= 3.0:
-                            st.info("👍 Generally Positive")
+                            st.info(" Generally Positive")
                         else:
-                            st.warning("⚠️ Mixed Reviews")
+                            st.warning(" Mixed Reviews")
                     
                     with col2:
-                        st.subheader("📊 Aspect Breakdown")
+                        st.subheader("Aspect Breakdown")
                         aspect_scores = payload.get("aspects", {})
                         if aspect_scores:
                             for aspect, score in list(aspect_scores.items())[:4]:  # Show top 4 aspects
@@ -298,7 +298,7 @@ if run_analysis:
                             st.info("Aspect scores not available")
                 
                 # Detailed Summary Section
-                st.subheader("📝 Detailed Summary")
+                st.subheader(" Detailed Summary")
                 st.write(payload["summary"])
                 
                 # Display results based on intent
@@ -338,12 +338,12 @@ if run_analysis:
                 else:  # GENERIC
                     # Show representative quotes
                     if payload.get("quotes"):
-                        st.subheader("💬 Key Insights")
+                        st.subheader("Key Insights")
                         for quote in payload["quotes"][:5]:
                             st.write(f"• {quote}")
                 
                 # Show raw comments for all intents
-                st.subheader("💬 Related Reviews")
+                st.subheader("Related Reviews")
                 meaningful_reviews = [r for r in reviews if len((r.get("text") or "")) >= 100]
                 
                 # Sort by upvotes
@@ -360,7 +360,7 @@ if run_analysis:
                 
                 # Show more reviews if available
                 if len(sorted_reviews) > 5:
-                    with st.expander(f"📖 View More Reviews ({len(sorted_reviews) - 5} additional)"):
+                    with st.expander(f"View More Reviews ({len(sorted_reviews) - 5} additional)"):
                         for i, review in enumerate(sorted_reviews[5:], 6):
                             link = review.get("url") or (f"https://reddit.com{review.get('permalink','')}" if review.get("permalink") else "")
                             st.write(f"**{i}. ↑{review.get('upvotes', 0)} · [{review.get('author','u/unknown')}]({link})**")
@@ -368,7 +368,7 @@ if run_analysis:
                             st.write("---")
                 
                 # Display search time
-                st.success(f"⏱️ **Search completed in {search_time:.1f} seconds**")
+                st.success(f" **Search completed in {search_time:.1f} seconds**")
     
     except Exception as e:
         logger.error(f"Analysis failed: {e}")
@@ -376,7 +376,7 @@ if run_analysis:
         st.info("Please try again with a different search term.")
 
 # Popular searches
-st.subheader("🔥 Popular Searches")
+st.subheader("Popular Searches")
 cols = st.columns(4, gap="large")
 
 POPULAR = [

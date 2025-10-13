@@ -71,16 +71,27 @@ def _looks_english(s: str, min_ratio: float = 0.75) -> bool:
 # Legacy function removed - subreddit selection now handled by LLM planning
 
 def _author_meta(comment):
-    # Safe access without extra API calls if rate limited
-    a = getattr(comment, "author", None)
-    if not a:
-        return 0, 0, 9999  # karma, link_karma, age_days
-    karma = (getattr(a, "comment_karma", 0) or 0) + (getattr(a, "link_karma", 0) or 0)
-    link_karma = getattr(a, "link_karma", 0) or 0
-    created_utc = getattr(a, "created_utc", None)
-    now = time.time()
-    age_days = (now - created_utc) / 86400 if created_utc else 9999
-    return karma, link_karma, age_days
+    """
+    Extract author metadata WITHOUT triggering lazy API calls.
+    Returns conservative defaults if data is not already loaded.
+    """
+    try:
+        # Check if author is already loaded (avoid lazy API call)
+        a = comment.__dict__.get("author", None)
+        if not a:
+            return 0, 0, 9999  # karma, link_karma, age_days (pass by default)
+        
+        # Only access attributes if they're already cached
+        karma = getattr(a, "comment_karma", 0) or 0
+        link_karma = getattr(a, "link_karma", 0) or 0
+        created_utc = getattr(a, "created_utc", None)
+        
+        now = time.time()
+        age_days = (now - created_utc) / 86400 if created_utc else 9999
+        return karma, link_karma, age_days
+    except Exception:
+        # If ANY attribute access fails, return permissive defaults
+        return 0, 0, 9999
 
 BOT_PHRASES = (
     "check my profile", "click my bio", "free giveaway", "investment manager",
@@ -120,18 +131,38 @@ def _shingle_sig(s: str, n=8) -> str:
     h = hashlib.md5("||".join(shingles[:40]).encode()).hexdigest()
     return h
 
-def _passes_quality(comment, query, settings) -> bool:
-    body = getattr(comment, "body", "") or ""
-    if not body: return False
-    if comment.author and str(comment.author) in STOP_USERS: 
+def _passes_quality(comment, query, settings, body: str = None) -> bool:
+    """
+    Check if comment passes quality filters WITHOUT triggering lazy API calls.
+    
+    Args:
+        comment: Reddit comment object
+        query: Search query string
+        settings: Search settings
+        body: Comment body text (if already loaded, to avoid re-fetching)
+    """
+    # Get body if not provided, without triggering lazy load
+    if body is None:
+        body = comment.__dict__.get("body", "") or ""
+    if not body:
         return False
+    
+    # Check author without triggering lazy load
+    try:
+        author = comment.__dict__.get("author", None)
+        if author and str(author) in STOP_USERS:
+            return False
+    except Exception:
+        pass  # If author check fails, proceed with other filters
     
     # Skip brand-new accounts
     karma, link_karma, age_days = _author_meta(comment)
     if age_days < SearchConstants.MIN_ACCOUNT_AGE_DAYS and karma < SearchConstants.MIN_ACCOUNT_KARMA:
         return False
     
-    if getattr(comment, "score", 0) < SearchConstants.MIN_COMMENT_SCORE: 
+    # Use __dict__ to avoid lazy loading score
+    score = comment.__dict__.get("score", 0) or 0
+    if score < SearchConstants.MIN_COMMENT_SCORE:
         return False
     if len(body) < getattr(settings, "min_comment_len", SearchConstants.MIN_COMMENT_LENGTH): 
         return False
@@ -263,16 +294,29 @@ class RedditService:
                 seen_posts.add(sid)  # Thread-safe with GIL
                 submissions_processed += 1
                 
-                # Expand all comments (including nested ones)
-                sub.comments.replace_more(limit=0)
-                flat = [c for c in sub.comments.list() if hasattr(c, "body")]
-                
-                # Apply initial quality filtering
-                flat = [c for c in flat if (getattr(c, "score", 0) or 0) >= plan.min_comment_score and len(getattr(c, "body", "")) > SearchConstants.MIN_COMMENT_LENGTH]
+                # Get top-level comments without expanding nested threads (faster!)
+                # Skip replace_more() as it's expensive and we only need top comments
+                flat = []
+                for c in sub.comments:
+                    # Skip "MoreComments" objects
+                    if not hasattr(c, "body"):
+                        continue
+                    
+                    # Force load body and score NOW (during parallel execution)
+                    # This way lazy loading happens in parallel, not sequentially later
+                    try:
+                        body = c.body  # Force load
+                        score = c.score  # Force load
+                    except Exception:
+                        continue
+                    
+                    # Quick quality check
+                    if score >= plan.min_comment_score and len(body) > SearchConstants.MIN_COMMENT_LENGTH:
+                        flat.append((c, score))
                 
                 # Sort by score and take top N per post
-                flat.sort(key=lambda c: getattr(c, "score", 0) or 0, reverse=True)
-                comments.extend(flat[:plan.per_post_top_n])
+                flat.sort(key=lambda x: x[1], reverse=True)
+                comments.extend([c for c, _ in flat[:plan.per_post_top_n]])
             
             return (comments, submissions_processed, search_id)
             
@@ -464,6 +508,8 @@ class RedditService:
 
         # Step 5: Advanced multi-stage filtering pipeline
         # This implements sophisticated comment filtering with multiple quality gates
+        filter_start = time.time()
+        logger.info(f"🔄 Starting filtering of {len(raw_comments)} comments...")
         
         seen, shingles, filtered = set(), set(), []
         ok = self._compile_comment_filter(plan.comment_must_patterns)
@@ -482,12 +528,17 @@ class RedditService:
         # Apply multi-stage filtering to each comment
         for c in raw_comments:
             try:
-                # Stage 1: Quality filtering (account age, karma, length, language)
-                if not _passes_quality(c, query, settings): 
+                # Get body without triggering lazy load
+                body = c.__dict__.get("body", "") or ""
+                if not body:
                     quality_filtered += 1
                     continue
-                    
-                body = getattr(c, "body", "") or ""
+                
+                # Stage 1: Quality filtering (account age, karma, length, language)
+                # Pass body to avoid re-fetching
+                if not _passes_quality(c, query, settings, body): 
+                    quality_filtered += 1
+                    continue
                 
                 # Stage 2: Pattern filtering (flexible relevance matching)
                 # Comments must match either LLM-generated patterns OR query words
@@ -515,27 +566,41 @@ class RedditService:
                 quality_filtered += 1
                 continue
 
-        # Canonical mapping
+        # Canonical mapping - avoid ALL lazy loading
         reviews = []
         for c in filtered[:limit]:
-            rid = str(getattr(c,"id",""))
-            author = getattr(c,"author",None)
-            author_name = getattr(author,"name",None) or (str(author) if author else "u/[deleted]")
-            score = int(getattr(c,"score", getattr(c,"upvotes",0)) or 0)
-            permalink = getattr(c,"permalink","") or ""
-            url = getattr(c,"url","") or (f"https://reddit.com{permalink}" if permalink else "")
-            text = getattr(c,"body","") or ""
+            # Use __dict__ for ALL attributes to prevent lazy API calls
+            rid = str(c.__dict__.get("id", ""))
+            
+            # Get author without lazy load
+            author = c.__dict__.get("author", None)
+            try:
+                author_name = getattr(author, "name", None) or (str(author) if author else "u/[deleted]")
+            except Exception:
+                author_name = "u/[deleted]"
+            
+            # Get all other attributes from __dict__
+            score = int(c.__dict__.get("score", 0) or c.__dict__.get("upvotes", 0) or 0)
+            permalink = c.__dict__.get("permalink", "") or ""
+            url = c.__dict__.get("url", "") or (f"https://reddit.com{permalink}" if permalink else "")
+            text = c.__dict__.get("body", "") or ""
+            created_utc = c.__dict__.get("created_utc", None)
+            
             reviews.append({
                 "id": rid,
                 "source": "reddit",
                 "text": text,
-                "created_utc": getattr(c,"created_utc",None),
+                "created_utc": created_utc,
                 "permalink": permalink,
                 "url": url,
                 "author": author_name,
                 "upvotes": score,
             })
+        
+        # Log detailed timing breakdown
+        filter_time = time.time() - filter_start
         elapsed_time = time.time() - start_time
+        logger.info(f"✅ Filtering completed in {filter_time:.1f}s | Mapping to Review objects completed")
         logger.info(f"🎉 Search completed in {elapsed_time:.1f}s: {len(raw_comments)} raw -> quality_filtered={quality_filtered} -> pattern_filtered={pattern_filtered} -> dedupe_filtered={dedupe_filtered} -> {len(filtered)} filtered -> {len(reviews)} final")
         logger.info(f"📊 API calls made: {search_count}/{total_searches} searches | Avg: {elapsed_time/search_count:.2f}s per search")
         return reviews

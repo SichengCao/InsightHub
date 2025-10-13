@@ -1156,7 +1156,7 @@ class OpenAIService:
 
     # ===== GPT-ONLY PIPELINE METHODS =====
     
-    def detect_intent_and_schema(self, query: str, sample_comments: List[Dict] = None) -> IntentSchema:
+    def detect_intent_and_schema(self,query: str, sample_comments: List[Dict] = None) -> IntentSchema:
         """Detect query intent and generate relevant aspect schema."""
         try:
             # Prepare sample text for analysis
@@ -1349,10 +1349,10 @@ Return JSON array:
 ]"""
 
                 response = self.chat(
-                    system="You are an expert at analyzing Reddit comments for sentiment, aspects, and entities.",
+                    system="You are an expert at analyzing Reddit comments for sentiment, aspects, and entities. Return ONLY valid JSON array, no markdown code blocks.",
                     user=prompt,
                     temperature=0.2,
-                    max_tokens=1500
+                    max_tokens=2500  # Increased from 1500 to prevent truncation
                 )
                 
                 batch_annotations = _safe_json_loads(response)
@@ -1793,10 +1793,10 @@ Return JSON array:
 ]"""
 
                 response = self.chat(
-                    system="You are an expert at analyzing Reddit comments for sentiment, aspects, and entities.",
+                    system="You are an expert at analyzing Reddit comments for sentiment, aspects, and entities. Return ONLY valid JSON array, no markdown code blocks.",
                     user=prompt,
                     temperature=0.2,
-                    max_tokens=1500
+                    max_tokens=2500  # Increased from 1500 to prevent truncation
                 )
                 
                 batch_annotations = _safe_json_loads(response)
