@@ -17,6 +17,8 @@ from insighthub.core.config import settings
 from insighthub.core.constants import SearchConstants
 from insighthub.services.reddit_client import RedditService
 from insighthub.services.llm import LLMServiceFactory
+from insighthub.services.cross_platform_manager import CrossPlatformManager
+from insighthub.core.cross_platform_models import Platform, QueryIntent
 from insighthub.core.scoring import aggregate_generic, rank_entities
 from insighthub.utils.data_prep import export_to_json
 
@@ -57,10 +59,11 @@ st.set_page_config(
 # Initialize services
 reddit_service = RedditService()
 llm_service = LLMServiceFactory.create()
+cross_platform_manager = CrossPlatformManager()
 
 # Main UI
 st.title("📈 InsightHub — Review Analysis")
-st.write("Analyze Reddit reviews with AI-powered sentiment and aspect scoring.")
+st.write("Analyze reviews across multiple platforms (Reddit, YouTube, Yelp, Xiaohongshu) with AI-powered sentiment and aspect scoring.")
 
 # Sidebar for search
 with st.sidebar:
@@ -76,13 +79,36 @@ with st.sidebar:
                      SearchConstants.DEFAULT_COMMENTS_UI, 
                      step=10)
     
-    # Subreddit count slider
-    subreddit_count = st.slider("Number of Subreddits", 
-                               SearchConstants.MIN_SUBREDDITS_UI, 
-                               SearchConstants.MAX_SUBREDDITS_UI, 
-                               SearchConstants.DEFAULT_SUBREDDITS_UI, 
-                               step=1, 
-                               help="More subreddits = better coverage but longer search time")
+    # Platform selection
+    st.subheader("🌐 Platforms")
+    enable_cross_platform = st.checkbox("Enable Cross-Platform Analysis", value=True, 
+                                       help="Analyze reviews from multiple platforms")
+    
+    if enable_cross_platform:
+        default_platforms = [Platform.REDDIT, Platform.YOUTUBE, Platform.YELP]
+        platform_options = [Platform.REDDIT.value, Platform.YOUTUBE.value, Platform.YELP.value]
+        # Future platforms: Platform.GOOGLE.value, Platform.XIAOHONGSHU.value
+        selected_platform_names = st.multiselect(
+            "Select Platforms", 
+            platform_options, 
+            default=[p.value for p in default_platforms],
+            help="Choose which platforms to search"
+        )
+        selected_platforms = [Platform(p) for p in selected_platform_names]
+    else:
+        selected_platforms = [Platform.REDDIT]
+    
+    # Subreddit count slider (only show for Reddit-only mode)
+    if not enable_cross_platform or Platform.REDDIT in selected_platforms:
+        st.subheader("🔍 Reddit Settings")
+        subreddit_count = st.slider("Number of Subreddits", 
+                                   SearchConstants.MIN_SUBREDDITS_UI, 
+                                   SearchConstants.MAX_SUBREDDITS_UI, 
+                                   SearchConstants.DEFAULT_SUBREDDITS_UI, 
+                                   step=1, 
+                                   help="More subreddits = better coverage but longer search time")
+    else:
+        subreddit_count = SearchConstants.DEFAULT_SUBREDDITS_UI
     
     # Analyze button
     run_analysis = st.button("📊 Analyze Reviews", width='stretch')
@@ -91,42 +117,82 @@ with st.sidebar:
 if run_analysis:
     try:
         with st.spinner("Analyzing reviews..."):
-            # Show Reddit search plan (debug)
-            with st.expander("🔎 Reddit search plan (debug)"):
-                try:
-                    # call the internal planner without hitting the network
-                    plan = reddit_service._plan_search(query)
-                    st.json({
-                        "terms": plan.terms,
-                        "subreddits": plan.subreddits,
-                        "time_filter": plan.time_filter,
-                        "strategies": plan.strategies,
-                        "min_comment_score": plan.min_comment_score,
-                        "per_post_top_n": plan.per_post_top_n,
-                        "comment_must_patterns": plan.comment_must_patterns,
-                    })
-                except Exception as e:
-                    st.caption(f"(plan unavailable) {e}")
+            # Detect intent first
+            intent_schema = llm_service.detect_intent_and_schema(query)
+            intent = QueryIntent(intent_schema.intent) if intent_schema.intent in ["RANKING", "SOLUTION", "GENERIC"] else QueryIntent.GENERIC
             
-            # Scrape reviews with timing
-            logger.info(f"Scraping Reddit for '{query}'...")
-            start_time = time.time()
-            reviews = reddit_service.scrape(query, limit, subreddit_count)
-            search_time = time.time() - start_time
+            # Determine search strategy based on platform selection
+            if len(selected_platforms) > 1 or (len(selected_platforms) == 1 and selected_platforms[0] != Platform.REDDIT):
+                # Use cross-platform search
+                logger.info(f"Using cross-platform search across {len(selected_platforms)} platforms...")
+                
+                # Show search plan
+                with st.expander("🔎 Cross-platform search plan"):
+                    st.info(f"**Intent**: {intent.value}")
+                    st.info(f"**Platforms**: {', '.join([p.value for p in selected_platforms])}")
+                    st.info(f"**Limit per platform**: {limit}")
+                
+                # Execute cross-platform search
+                start_time = time.time()
+                cross_platform_results = cross_platform_manager.search_cross_platform(
+                    query, intent, limit_per_platform=limit, enabled_platforms=selected_platforms
+                )
+                search_time = time.time() - start_time
+                
+                # Extract reviews from all platforms
+                all_reviews = []
+                for platform_name, platform_reviews in cross_platform_results["platform_results"].items():
+                    all_reviews.extend(platform_reviews)
+                
+                reviews = all_reviews
+                
+                # Show platform breakdown
+                with st.expander("📊 Platform Results"):
+                    for platform_name, platform_reviews in cross_platform_results["platform_results"].items():
+                        st.write(f"**{platform_name.title()}**: {len(platform_reviews)} reviews")
+                
+                # Show aggregated weights
+                aggregated = cross_platform_results["aggregated"]
+                st.info(f"🤖 **Overall Rating**: {aggregated['overall_rating']:.2f}/5 (confidence: {aggregated['confidence']:.2f})")
+                
+            else:
+                # Use Reddit-only search
+                logger.info(f"Using Reddit-only search...")
+                
+                # Show Reddit search plan (debug)
+                with st.expander("🔎 Reddit search plan"):
+                    try:
+                        plan = reddit_service._plan_search(query)
+                        st.json({
+                            "terms": plan.terms,
+                            "subreddits": plan.subreddits,
+                            "time_filter": plan.time_filter,
+                            "strategies": plan.strategies,
+                            "min_comment_score": plan.min_comment_score,
+                            "per_post_top_n": plan.per_post_top_n,
+                            "comment_must_patterns": plan.comment_must_patterns,
+                        })
+                    except Exception as e:
+                        st.caption(f"(plan unavailable) {e}")
+                
+                # Scrape Reddit reviews with timing
+                start_time = time.time()
+                reviews = reddit_service.scrape(query, limit, subreddit_count)
+                search_time = time.time() - start_time
+            
             logger.info(f"Analyzing {len(reviews)} reviews...")
             
             # Show filtering transparency
-            st.caption(f"🔍 Quality filtering applied: Using {len(reviews)} high-quality comments")
+            st.caption(f"🔍 Total reviews collected: {len(reviews)} in {search_time:.1f}s")
             
             if not reviews:
                 st.warning("No reviews found! Try a different search term.")
             else:
-                # Detect intent and generate schema
-                intent_schema = llm_service.detect_intent_and_schema(query)
-                st.info(f" Detected intent: **{intent_schema.intent}**")
+                # Display intent information (already detected above)
+                st.info(f"🎯 **Detected intent**: {intent_schema.intent}")
                 if intent_schema.entity_type:
-                    st.info(f"Entity type: **{intent_schema.entity_type}**")
-                st.info(f"🔍 Aspects: {', '.join(intent_schema.aspects[:5])}{'...' if len(intent_schema.aspects) > 5 else ''}")
+                    st.info(f"🏷️ **Entity type**: {intent_schema.entity_type}")
+                st.info(f"🔍 **Aspects**: {', '.join(intent_schema.aspects[:5])}{'...' if len(intent_schema.aspects) > 5 else ''}")
                 
                 # Convert reviews to comment format for annotation
                 comments = []

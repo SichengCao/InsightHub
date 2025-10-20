@@ -1,0 +1,92 @@
+# InsightHub Cross-Platform Weighting Strategy
+# Dynamic weights based on query domain, intent, and data quality
+
+# Domain-based priors (what platforms are naturally good at)
+domain_priors:
+  local_business:        # 本地餐饮/商户
+    reddit: 0.15
+    youtube: 0.10
+    yelp: 0.40
+    google: 0.30
+    xiaohongshu: 0.05
+    
+  consumer_electronics:  # 消费电子/数码
+    reddit: 0.30
+    youtube: 0.30
+    yelp: 0.00
+    google: 0.20
+    xiaohongshu: 0.20
+    
+  beauty_fashion:        # 美妆时尚
+    reddit: 0.15
+    youtube: 0.25
+    yelp: 0.00
+    google: 0.10
+    xiaohongshu: 0.50
+    
+  travel_attractions:    # 旅行/景点/酒店
+    reddit: 0.20
+    youtube: 0.25
+    yelp: 0.20
+    google: 0.30
+    xiaohongshu: 0.05
+    
+  apps_software:         # App/软件体验
+    reddit: 0.45
+    youtube: 0.30
+    yelp: 0.00
+    google: 0.25
+    xiaohongshu: 0.00
+    
+  automotive:            # 汽车/配件
+    reddit: 0.35
+    youtube: 0.35
+    yelp: 0.00
+    google: 0.20
+    xiaohongshu: 0.10
+
+# Intent-based boosts (how query intent affects platform preference)
+intent_boosts:
+  RANKING:   # 比较/排名（"best...", "top...", "...vs ..."）
+    reddit: 1.15     # 对比帖/横评多
+    youtube: 1.10
+    yelp: 1.00
+    google: 1.00
+    xiaohongshu: 1.05
+    
+  SOLUTION:  # 解决方案（"how to fix...", "问题排查"）
+    reddit: 1.25     # 技术讨论/解决方案密度高
+    youtube: 1.20    # 教程视频多
+    google: 1.00
+    yelp: 0.90
+    xiaohongshu: 1.05
+    
+  GENERIC:   # 通用认知/口碑
+    reddit: 1.00
+    youtube: 1.00
+    yelp: 1.00
+    google: 1.00
+    xiaohongshu: 1.00
+
+# Quality signal thresholds
+quality_thresholds:
+  freshness_days: 30      # 新鲜度阈值（天）
+  min_engagement: 5       # 最小参与度（点赞/回复）
+  min_text_length: 20     # 最小文本长度
+  max_duplicate_rate: 0.3 # 最大重复率
+  
+# Platform-specific constraints
+platform_constraints:
+  yelp:
+    max_reviews_per_business: 3
+    api_rate_limit: 5000  # per day
+    
+  google:
+    max_reviews_per_place: 5
+    cache_ttl_hours: 24
+    export_restricted: true
+    
+  xiaohongshu:
+    max_posts_per_query: 100
+    cache_ttl_hours: 48
+    requires_proxy: true

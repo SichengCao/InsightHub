@@ -68,7 +68,6 @@ def _looks_english(s: str, min_ratio: float = 0.75) -> bool:
     if total_letters == 0: return False
     return ascii_letters / total_letters >= min_ratio
 
-# Legacy function removed - subreddit selection now handled by LLM planning
 
 def _author_meta(comment):
     """

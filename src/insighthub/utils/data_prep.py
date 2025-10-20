@@ -66,9 +66,6 @@ def prepare_export(
     return export_data
 
 
-# Legacy function removed - build_summary_payload no longer used
-
-
 def export_to_json(data: Dict[str, Any], filename: str) -> None:
     """Export data to JSON file."""
     import datetime

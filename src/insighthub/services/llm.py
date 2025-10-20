@@ -4,7 +4,6 @@ import logging
 import json
 import re
 import unicodedata
-import string
 from textwrap import dedent
 from typing import Dict, List, Any
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -909,115 +908,6 @@ class OpenAIService:
             fallback_aspects = ["Quality", "Performance", "Value", "User Experience"]
             return IntentSchema(intent="GENERIC", entity_type=None, aspects=fallback_aspects)
     
-    # OLD METHOD REMOVED - using new GPT-only pipeline method below
-    def _old_annotate_comments_with_gpt(self, query: str, aspects: List[str], comments: List[Dict], entity_type: str = None) -> List[GPTCommentAnno]:
-        """Annotate comments with GPT for scoring and entity extraction."""
-        annotations = []
-        
-        # Process in batches of 40 comments
-        batch_size = 40
-        for i in range(0, len(comments), batch_size):
-            batch = comments[i:i + batch_size]
-            batch_annotations = self._annotate_batch(query, aspects, batch, entity_type)
-            annotations.extend(batch_annotations)
-        
-        return annotations
-    
-    def _annotate_batch(self, query: str, aspects: List[str], comments: List[Dict], entity_type: str = None) -> List[GPTCommentAnno]:
-        """Annotate a batch of comments."""
-        try:
-            # Prepare comments for annotation
-            comments_text = []
-            for comment in comments:
-                text = comment.get("text", "")[:500]  # Limit text length
-                comments_text.append(f"ID: {comment.get('id', '')}\nText: {text}")
-            
-            comments_str = "\n\n".join(comments_text)
-            
-            entity_type_instruction = ""
-            if entity_type:
-                entity_type_instruction = f"\nIMPORTANT: For entity extraction, use entity_type = \"{entity_type}\" for all relevant entities."
-            
-            prompt = f"""
-            Analyze these Reddit comments about "{query}" and provide detailed annotations.
-            
-            Comments:
-            {comments_str}
-            
-            Return ONLY JSON with this exact schema:
-            {{
-                "annotations": [
-                    {{
-                        "id": "comment_id",
-                        "overall_stars": 3.5,
-                        "aspects": {{"aspect_name": 4.0, "another_aspect": 2.5}},
-                        "entities": [
-                            {{"name": "entity_name", "entity_type": "type", "confidence": 0.8}}
-                        ],
-                        "cluster_key": "solution_cluster_key_or_null"
-                    }}
-                ]
-            }}
-            
-            Rules:
-            - Rate overall_stars from 1.0 to 5.0 based on sentiment
-            - Rate each aspect from 1.0 to 5.0 based on how well the comment addresses it
-            - Extract entities mentioned (products, places, people, etc.) with confidence 0.0-1.0
-            - For SOLUTION queries, provide cluster_key for grouping similar solutions
-            - For RANKING queries, extract entities with the specific entity_type requested
-            - For GENERIC queries, cluster_key should be null{entity_type_instruction}
-            """
-            
-            response = self.chat(
-                system="You are an expert at analyzing user comments and extracting structured information.",
-                user=prompt,
-                temperature=0.3,
-                max_tokens=2000
-            )
-            
-            json_match = re.search(r'\{.*\}', response, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(0)
-                result = json.loads(json_str)
-            else:
-                result = json.loads(response)
-            
-            annotations = []
-            for anno_data in result.get("annotations", []):
-                try:
-                    entities = []
-                    for entity_data in anno_data.get("entities", []):
-                        entity = EntityRef(
-                            name=entity_data.get("name", ""),
-                            entity_type=entity_data.get("entity_type", ""),
-                            mentions=1,
-                            confidence=entity_data.get("confidence", 0.5)
-                        )
-                        entities.append(entity)
-                    
-                    annotation = GPTCommentAnno(
-                        id=anno_data.get("id", ""),
-                        overall_stars=float(anno_data.get("overall_stars", 3.0)),
-                        aspects=anno_data.get("aspects", {}),
-                        entities=entities,
-                        cluster_key=anno_data.get("cluster_key")
-                    )
-                    annotations.append(annotation)
-                    
-                except Exception as e:
-                    logger.warning(f"Failed to parse annotation: {e}")
-                    continue
-            
-            logger.info(f"Successfully annotated {len(annotations)} comments")
-            return annotations
-                
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse annotation response: {e}")
-            return []
-                
-        except Exception as e:
-            logger.error(f"Comment annotation failed: {e}")
-            return []
     
     def summarize_ranking_with_gpt(self, query: str, ranking_items: List[Dict]) -> str:
         """Generate ranking summary focused on top entities."""

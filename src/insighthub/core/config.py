@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     openai_api_key: str = Field("", description="OpenAI API key")
     OPENAI_API_KEY: str = Field("", description="OpenAI API key (alternative naming)")
     
+    # Cross-platform API keys
+    youtube_api_key: str = Field("", description="YouTube Data API v3 key")
+    yelp_api_key: str = Field("", description="Yelp Fusion API key")
+    apify_token: str = Field("", description="Apify token for web scraping")
+    google_places_api_key: str = Field("", description="Google Places API key for reviews")
+    
     @property
     def effective_openai_key(self) -> str:
         """Get the effective OpenAI API key from either field."""
