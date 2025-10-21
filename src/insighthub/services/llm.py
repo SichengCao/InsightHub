@@ -910,49 +910,54 @@ class OpenAIService:
     
     
     def summarize_ranking_with_gpt(self, query: str, ranking_items: List[Dict]) -> str:
-        """Generate ranking summary focused on top entities."""
+        """Generate ranking summary focused on top entities with deduplication."""
         try:
             if not ranking_items:
                 return f"No ranked entities found for {query}. Try adjusting your search terms or filters."
             
-            # Prepare ranking data
-            top_items = ranking_items[:SearchConstants.MAX_ENTITIES_FOR_SUMMARY]  # Top entities for comprehensive ranking
-            ranking_text = "\n".join([
-                f"{i+1}. **{item['name']}** - {item['overall_stars']:.1f}/5 stars ({item['mentions']} mentions)"
-                for i, item in enumerate(top_items)
+            # Let GPT handle deduplication and smart ranking
+            entities_text = "\n".join([
+                f"- **{item['name']}** - {item['overall_stars']:.1f}/5 stars ({item['mentions']} mentions)"
+                for item in ranking_items[:15]  # Show more entities for better deduplication
             ])
             
-            # Get quotes from top entities for detailed insights
+            # Get quotes from all entities
             quotes_text = ""
-            for item in top_items[:SearchConstants.MAX_ENTITIES_FOR_QUOTES]:
+            for item in ranking_items[:10]:
                 if item.get('quotes'):
-                    quotes_text += f"\n**{item['name']}:**\n"
-                    for quote in item['quotes'][:2]:
-                        quotes_text += f"- \"{quote[:150]}...\"\n"
+                    quotes_text += f"\n**{item['name']}**: {', '.join(item['quotes'][:2])}\n"
             
             prompt = f"""
             Generate a ranking summary for "{query}" based on the analysis results.
             
-            Top Ranked Entities:
-            {ranking_text}
+            Raw Entity Data (may contain duplicates and generic descriptions to filter):
+            {entities_text}
             
-            Key Insights:
+            Key User Insights:
             {quotes_text}
             
+            CRITICAL FILTERING RULES:
+            1. **ONLY include specific named entities** - exclude generic descriptions that are not proper nouns, brand names, or specific identifiers that users could search for or purchase
+            
+            2. **Merge duplicate entities** - combine similar names and handle variations in spelling/formatting
+            
+            3. **Include ONLY concrete named entities** - focus on specific names that represent actual searchable/purchasable entities rather than descriptive phrases
+            
             Provide a summary that includes:
-            1. Brief overview of the ranking results
-            2. Highlight the top 3 entities with specific details
-            3. Mention key insights from user reviews
+            1. Brief overview of the ranking results (only specific named entities)
+            2. Highlight the top 3-5 DISTINCT named entities with specific details
+            3. Mention key insights from user reviews for top entities
             4. Provide a concise recommendation
             
-            Write in a natural, engaging style focused on the ranking results. Do NOT use pros/cons format.
+            If no proper named entities are found, explain that the search needs more specific results.
+            Write in a natural, engaging style. Only rank actual named entities.
             """
             
             response = self.chat(
-                system="You are an expert reviewer who creates clear, engaging ranking summaries.",
+                system="You are an expert reviewer who creates clear, engaging ranking summaries. CRITICAL: ONLY include specific named entities in rankings - actual proper nouns, brand names, model numbers, or specific business/location names that users can search for or purchase. DO NOT include generic descriptive phrases, qualifying adjectives, or category descriptions. Use your understanding to distinguish between concrete entities versus vague descriptors. Always filter out non-specific terms and focus on actual named entities.",
                 user=prompt,
-                temperature=0.4,
-                max_tokens=600
+                temperature=0.3,  # Lower temperature for more consistent deduplication
+                max_tokens=800
             )
             
             return response.strip()
@@ -1239,7 +1244,7 @@ Return JSON array:
 ]"""
 
                 response = self.chat(
-                    system="You are an expert at analyzing Reddit comments for sentiment, aspects, and entities. Return ONLY valid JSON array, no markdown code blocks.",
+                    system="You are an expert at analyzing Reddit comments for sentiment, aspects, and entities. CRITICAL: Extract ONLY specific named entities - actual proper nouns, brand names, model numbers, or specific business/location names. DO NOT extract generic descriptive phrases, qualifying adjectives, or category descriptions. Use your understanding to distinguish between specific entities (that users can search for or purchase) versus generic descriptions. Return ONLY valid JSON array, no markdown code blocks.",
                     user=prompt,
                     temperature=0.2,
                     max_tokens=2500  # Increased from 1500 to prevent truncation
@@ -1683,7 +1688,7 @@ Return JSON array:
 ]"""
 
                 response = self.chat(
-                    system="You are an expert at analyzing Reddit comments for sentiment, aspects, and entities. Return ONLY valid JSON array, no markdown code blocks.",
+                    system="You are an expert at analyzing Reddit comments for sentiment, aspects, and entities. CRITICAL: Extract ONLY specific named entities - actual proper nouns, brand names, model numbers, or specific business/location names. DO NOT extract generic descriptive phrases, qualifying adjectives, or category descriptions. Use your understanding to distinguish between specific entities (that users can search for or purchase) versus generic descriptions. Return ONLY valid JSON array, no markdown code blocks.",
                     user=prompt,
                     temperature=0.2,
                     max_tokens=2500  # Increased from 1500 to prevent truncation

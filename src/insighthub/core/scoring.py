@@ -274,8 +274,15 @@ def aggregate_generic(aspect_schema: List[str], annos: List[GPTCommentAnno], upv
 
 def _normalize_entity_name(name: str) -> str:
     """Normalize entity names for better deduplication."""
+    import re
+    
     name = name.strip().lower()
-    # Common variations
+    
+    # Remove common punctuation and normalize apostrophes
+    name = re.sub(r"[''`]", "'", name)
+    name = re.sub(r"[']", "", name)  # Remove apostrophes for comparison
+    
+    # Common variations - specific restaurant mappings
     variations = {
         "joe's pizza": "joe's",
         "joe's": "joe's",
@@ -287,55 +294,42 @@ def _normalize_entity_name(name: str) -> str:
         "tatiana's": "tatiana",
         "l&b": "l&b",
         "l and b": "l&b",
+        # Korean restaurant variations
+        "midos": "midos",
+        "mido's": "midos",
+        "mido cart": "midos",
+        "mido": "midos",
     }
-    return variations.get(name, name)
+    
+    # Check exact matches first
+    if name in variations:
+        return variations[name]
+    
+    # For similar names like "Midos" vs "Mido's", normalize by removing apostrophes
+    normalized = re.sub(r"'", "", name)
+    
+    # If we have a normalized version in variations, use it
+    if normalized in variations:
+        return variations[normalized]
+    
+    return normalized
 
 def _is_valid_entity_name(name: str, entity_type: str) -> bool:
     """
-    Validate if an entity name is a proper name, not a generic descriptor.
+    Basic validation for entity names - let GPT handle the intelligent filtering.
     
-    Filters out:
-    - Generic descriptors (e.g., "two michelin starred restaurant")
-    - Category names (e.g., "italian restaurant", "steakhouse")
-    - Phrases with numbers and common words
+    Only filters out obviously invalid names (too short, empty, etc.).
+    The real filtering for specific vs generic entities happens in GPT analysis.
     """
-    name_lower = name.lower().strip()
+    name = name.strip()
     
-    # Generic descriptors to filter out
-    generic_patterns = [
-        "michelin starred", "michelin star", "fine dining",
-        "starred restaurant", "star restaurant",
-        "fancy restaurant", "upscale", "high end",
-        "casual dining", "fast food", "chain restaurant",
-        "local spot", "neighborhood", "place",
-        "restaurant group", "food group",
-    ]
+    # Only filter out obviously invalid names
+    if len(name) < 2:
+        return False
     
-    # Check if name contains generic patterns
-    for pattern in generic_patterns:
-        if pattern in name_lower:
-            return False
-    
-    # Filter out pure category names for restaurants
-    if entity_type in ["restaurant", "restaurants", "locations"]:
-        category_words = [
-            "italian", "french", "chinese", "japanese", "korean", "thai", "indian",
-            "mexican", "american", "steakhouse", "pizzeria", "cafe", "bar",
-            "bistro", "diner", "eatery", "grill", "tavern", "pub"
-        ]
-        
-        # If the name is ONLY a category word (or with "the"), it's too generic
-        words = name_lower.split()
-        if len(words) <= 2 and any(word in category_words for word in words):
-            return False
-    
-    # Filter out names that start with numbers and common descriptors
-    # e.g., "two michelin starred restaurant", "three course meal"
-    if name_lower.split()[0] in ["one", "two", "three", "four", "five", "1", "2", "3", "4", "5"]:
-        common_descriptors = ["star", "michelin", "course", "fork", "dollar"]
-        if any(desc in name_lower for desc in common_descriptors):
-            return False
-    
+    # Let GPT handle the intelligent distinction between specific entities 
+    # (like "iPhone 15 Pro", "Le Bernardin") and generic descriptions
+    # (like "a good camera", "michelin restaurant")
     return True
 
 def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entity_type: str, min_mentions: int = 3) -> List[RankingItem]:

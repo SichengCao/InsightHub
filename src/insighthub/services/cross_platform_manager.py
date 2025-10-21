@@ -12,7 +12,6 @@ from ..core.config import settings
 from ..core.cross_platform_models import Platform, QueryIntent, WeightedResult
 from .reddit_client import RedditService
 from .youtube_client import YouTubeService
-from .yelp_client import YelpService
 # Future platforms (keep for extensibility)
 # from .google_client import GoogleService
 # from .xiaohongshu_client import XiaohongshuService
@@ -26,7 +25,6 @@ class CrossPlatformManager:
         self.platforms = {
             Platform.REDDIT: RedditService(),
             Platform.YOUTUBE: YouTubeService(),
-            Platform.YELP: YelpService(),
             # Future platforms (keep for extensibility)
             # Platform.GOOGLE: GoogleService(),
             # Platform.XIAOHONGSHU: XiaohongshuService(),
@@ -36,9 +34,19 @@ class CrossPlatformManager:
     def _load_platform_weights(self) -> Dict[str, Any]:
         """Load platform weighting configuration."""
         try:
-            weights_file = os.path.join(os.path.dirname(__file__), "../../config/platform_weights.yaml")
-            with open(weights_file, 'r', encoding='utf-8') as f:
-                return yaml.safe_load(f)
+            # Try multiple possible paths
+            possible_paths = [
+                os.path.join(os.path.dirname(__file__), "../../../config/platform_weights.yaml"),
+                os.path.join(os.path.dirname(__file__), "../../config/platform_weights.yaml"),
+                "config/platform_weights.yaml"
+            ]
+            
+            for weights_file in possible_paths:
+                if os.path.exists(weights_file):
+                    with open(weights_file, 'r', encoding='utf-8') as f:
+                        return yaml.safe_load(f)
+            
+            raise FileNotFoundError("platform_weights.yaml not found in any expected location")
         except Exception as e:
             logger.warning(f"Failed to load platform weights: {e}. Using defaults.")
             return self._get_default_weights()
@@ -107,7 +115,7 @@ class CrossPlatformManager:
         domain_priors = self.platform_weights.get("domain_priors", {}).get(domain, {})
         if not domain_priors:
             # Fallback to equal weights
-            platforms = ["reddit", "youtube", "yelp", "google", "xiaohongshu"]
+            platforms = ["reddit", "youtube"]
             domain_priors = {p: 1.0/len(platforms) for p in platforms}
         
         # Apply intent-based boosts
@@ -119,7 +127,7 @@ class CrossPlatformManager:
         weights = {}
         total_weight = 0.0
         
-        for platform in ["reddit", "youtube", "yelp"]:
+        for platform in ["reddit", "youtube"]:
             # Base weight from domain prior
             base_weight = domain_priors.get(platform, 0.0)
             
@@ -152,13 +160,7 @@ class CrossPlatformManager:
         
         # Set platform-specific limits based on API constraints
         for platform in enabled_platforms:
-            if platform == Platform.YELP:
-                platform_limits[platform] = min(limit_per_platform, 30)  # Yelp has 3 reviews/business limit
-            # Future platforms would go here
-            # elif platform == Platform.XIAOHONGSHU:
-            #     platform_limits[platform] = min(limit_per_platform, 100)  # Apify limits
-            else:
-                platform_limits[platform] = limit_per_platform
+            platform_limits[platform] = limit_per_platform
         
         # Execute scraping in parallel
         with ThreadPoolExecutor(max_workers=len(enabled_platforms)) as executor:
@@ -209,33 +211,14 @@ class CrossPlatformManager:
                 review["platform"] = platform  # Ensure platform is set
                 all_reviews.append(review)
         
-        # Calculate platform-specific ratings (placeholder - would use sentiment analysis)
-        platform_ratings = {}
-        for platform, reviews in platform_results.items():
-            if reviews:
-                # Simple heuristic: average upvotes as proxy for rating
-                avg_upvotes = sum(r.get("upvotes", 0) for r in reviews) / len(reviews)
-                # Convert to 1-5 scale (rough heuristic)
-                platform_ratings[platform] = min(5.0, max(1.0, avg_upvotes / 10.0))
-            else:
-                platform_ratings[platform] = 3.0  # Neutral default
-        
-        # Calculate weighted overall rating
-        weighted_rating = 0.0
-        total_weight = 0.0
-        
-        for platform, rating in platform_ratings.items():
-            weight = platform_weights.get(platform, 0.0)
-            weighted_rating += rating * weight
-            total_weight += weight
-        
-        overall_rating = weighted_rating / total_weight if total_weight > 0 else 3.0
-        
         # Calculate confidence based on data availability and consistency
         confidence = min(1.0, len(all_reviews) / 100.0)  # Simple confidence metric
         
+        # Create platform counts for reference (no ratings since LLM handles analysis)
+        platform_ratings = {platform: 0.0 for platform in platform_results.keys()}
+        
         return WeightedResult(
-            overall_rating=overall_rating,
+            overall_rating=0.0,  # LLM will provide actual rating
             aspect_scores={},  # Would be populated by LLM analysis
             platform_weights=platform_weights,
             confidence=confidence,

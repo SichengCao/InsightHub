@@ -8,7 +8,6 @@ from enum import Enum
 class Platform(Enum):
     REDDIT = "reddit"
     YOUTUBE = "youtube"
-    YELP = "yelp"
     # Future platforms (keep for extensibility)
     # GOOGLE = "google"
     # XIAOHONGSHU = "xiaohongshu"

@@ -130,6 +130,18 @@ class YouTubeService:
             logger.error(f"YouTube comments fetch failed: {e}")
             return self._get_mock_comments(video_id, max_comments)
     
+    def _is_relevant_video(self, video: dict, query: str) -> bool:
+        """Check if video is relevant to the query."""
+        query_words = set(query.lower().split())
+        title_words = set(video.get("title", "").lower().split())
+        desc_words = set(video.get("description", "").lower().split()[:100])  # First 100 words of description
+        
+        # Check if query words appear in title or description
+        title_match = len(query_words.intersection(title_words)) > 0
+        desc_match = len(query_words.intersection(desc_words)) > 0
+        
+        return title_match or desc_match
+
     def scrape(self, query: str, limit: int = 50) -> List[dict]:
         """Scrape YouTube for reviews related to the query."""
         logger.info(f"Scraping YouTube for '{query}' with limit {limit}...")
@@ -137,8 +149,12 @@ class YouTubeService:
         # Search for relevant videos
         videos = self.search_videos(query, max_results=20)
         
+        # Filter for relevant videos only
+        relevant_videos = [v for v in videos if self._is_relevant_video(v, query)]
+        logger.info(f"Found {len(relevant_videos)} relevant videos out of {len(videos)} total")
+        
         all_comments = []
-        for video in videos[:10]:  # Limit to top 10 videos
+        for video in relevant_videos[:10]:  # Limit to top 10 relevant videos
             video_comments = self.get_video_comments(
                 video["video_id"], 
                 max_comments=limit // 10
@@ -158,6 +174,15 @@ class YouTubeService:
         # Convert to dict format matching Reddit client
         reviews = []
         for comment in all_comments[:limit]:
+            # Basic relevance filter for comments
+            comment_text = comment.get("text", "").lower()
+            query_words = set(query.lower().split())
+            comment_words = set(comment_text.split())
+            
+            # Skip if comment doesn't mention any query words and is too short
+            if len(comment_text) < 20 or (len(query_words.intersection(comment_words)) == 0 and len(comment_text) < 50):
+                continue
+                
             try:
                 # Parse timestamp to UTC
                 created_utc = datetime.fromisoformat(

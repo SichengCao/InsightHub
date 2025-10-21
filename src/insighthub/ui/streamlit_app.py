@@ -63,7 +63,7 @@ cross_platform_manager = CrossPlatformManager()
 
 # Main UI
 st.title("📈 InsightHub — Review Analysis")
-st.write("Analyze reviews across multiple platforms (Reddit, YouTube, Yelp, Xiaohongshu) with AI-powered sentiment and aspect scoring.")
+st.write("Analyze reviews across multiple platforms (Reddit, YouTube) with AI-powered sentiment and aspect scoring.")
 
 # Sidebar for search
 with st.sidebar:
@@ -85,8 +85,8 @@ with st.sidebar:
                                        help="Analyze reviews from multiple platforms")
     
     if enable_cross_platform:
-        default_platforms = [Platform.REDDIT, Platform.YOUTUBE, Platform.YELP]
-        platform_options = [Platform.REDDIT.value, Platform.YOUTUBE.value, Platform.YELP.value]
+        default_platforms = [Platform.REDDIT, Platform.YOUTUBE]
+        platform_options = [Platform.REDDIT.value, Platform.YOUTUBE.value]
         # Future platforms: Platform.GOOGLE.value, Platform.XIAOHONGSHU.value
         selected_platform_names = st.multiselect(
             "Select Platforms", 
@@ -151,9 +151,10 @@ if run_analysis:
                     for platform_name, platform_reviews in cross_platform_results["platform_results"].items():
                         st.write(f"**{platform_name.title()}**: {len(platform_reviews)} reviews")
                 
-                # Show aggregated weights
+                # Show platform data availability info
                 aggregated = cross_platform_results["aggregated"]
-                st.info(f"🤖 **Overall Rating**: {aggregated['overall_rating']:.2f}/5 (confidence: {aggregated['confidence']:.2f})")
+                total_reviews = sum(len(reviews) for reviews in cross_platform_results["platform_results"].values())
+                st.info(f"📊 **Total reviews collected**: {total_reviews} across {len(cross_platform_results['platform_results'])} platforms")
                 
             else:
                 # Use Reddit-only search
