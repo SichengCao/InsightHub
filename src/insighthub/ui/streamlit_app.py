@@ -447,10 +447,10 @@ st.subheader("Popular Searches")
 cols = st.columns(4, gap="large")
 
 POPULAR = [
-    {"title": "iPhone 15", "cat": "Phones", "q": "iPhone 15"},
+    {"title": "Top 10 NYC Restaurant", "cat": "Restaurants", "q": "top 10 nyc restaurant"},
     {"title": "Tesla Model Y", "cat": "Cars", "q": "Tesla Model Y"},
     {"title": "Nintendo Switch", "cat": "Tech", "q": "Nintendo Switch"},
-    {"title": "MacBook Pro", "cat": "Tech", "q": "MacBook Pro"},
+    {"title": "Best Golf Course in Bay Area", "cat": "Golf", "q": "best golf course in bay area"},
 ]
 
 for i, p in enumerate(POPULAR):
