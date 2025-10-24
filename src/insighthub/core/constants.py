@@ -18,14 +18,14 @@ class SearchConstants:
     MIN_ACCOUNT_KARMA = 5  # minimum account karma
     
     # Text Processing
-    MAX_COMMENT_LENGTH_FOR_ANNOTATION = 300  # chars for GPT processing
+    MAX_COMMENT_LENGTH_FOR_ANNOTATION = 200  # chars for GPT processing (optimized for speed)
     MAX_QUOTE_LENGTH = 150  # chars for quote display
     MAX_TEXT_HASH_LENGTH = 50  # chars for text hashing
     
     # Batch Processing
-    LLM_BATCH_SIZE = 15  # comments per batch for GPT
-    LLM_MAX_TOKENS = 800  # max tokens per GPT response
-    LLM_TEMPERATURE = 0.2  # GPT temperature for consistency
+    LLM_BATCH_SIZE = 25  # comments per batch for GPT (increased for speed)
+    LLM_MAX_TOKENS = 1500  # max tokens per GPT response (optimized for speed)
+    LLM_TEMPERATURE = 0.1  # GPT temperature for faster responses
     
     # Entity Ranking
     DEFAULT_MIN_MENTIONS = 2  # minimum mentions for entity ranking

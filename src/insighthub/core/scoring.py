@@ -9,6 +9,42 @@ from .constants import SearchConstants, DomainConstants
 
 logger = logging.getLogger(__name__)
 
+# --- Platform bias calibration (configurable) ---
+from typing import Dict
+import math
+
+# 可放到 constants 或 YAML；这里先内置，后续再抽取
+PLATFORM_BIAS: Dict[str, float] = {
+    "reddit": +2.00,    # 大幅增加Reddit的正偏差
+    "youtube": +2.50,   # 大幅增加YouTube的正偏差
+}
+
+_BIAS_ENABLED: bool = True
+_SHRINK_K: int = 40  # alpha = n/(n+k)
+
+def set_bias_enabled(enabled: bool) -> None:
+    global _BIAS_ENABLED
+    _BIAS_ENABLED = bool(enabled)
+
+def set_shrinkage_k(k: int) -> None:
+    global _SHRINK_K
+    _SHRINK_K = max(1, int(k))
+
+def _shrink_factor(n: int, k: int = None) -> float:
+    if n <= 0:
+        return 0.0
+    kk = _SHRINK_K if k is None else max(1, int(k))
+    return n / (n + kk)
+
+def apply_platform_bias(score: float, platform: str, n_reviews: int, *, k: int = None) -> float:
+    """校准平台均值：s' = clip(s + alpha(n)*bias, 1..5)。仅在平台聚合后、跨平台加权前调用一次。"""
+    if not _BIAS_ENABLED:
+        return float(score)
+    bias = PLATFORM_BIAS.get((platform or "").lower(), 0.0)
+    alpha = _shrink_factor(int(n_reviews), k=k)
+    adjusted = float(score) + alpha * float(bias)
+    return min(5.0, max(1.0, adjusted))
+
 def _winsorize(x: float, lo=1.0, hi=5.0) -> float:
     """Clamp value to range [lo, hi]."""
     try:
@@ -28,6 +64,7 @@ def _weighted_mean(pairs):  # [(score, weight)]
     num = sum(s*w for s, w in pairs)
     den = sum(w for _, w in pairs) or 1.0
     return _winsorize(num / den)
+
 
 def aspect_aggregate(reviews):
     """Aggregate aspect scores with winsorized weighted averaging."""
@@ -238,8 +275,8 @@ def crowd_trust_stars(reviews):
     return round(1 + 4*p_lb, 1)
 
 
-def aggregate_generic(aspect_schema: List[str], annos: List[GPTCommentAnno], upvote_map: Dict[str, int]) -> tuple[float, Dict[str, float]]:
-    """Aggregate generic analysis results."""
+def aggregate_generic(aspect_schema: List[str], annos: List[GPTCommentAnno], upvote_map: Dict[str, int], platform_counts: Dict[str, int] = None) -> tuple[float, Dict[str, float]]:
+    """Aggregate generic analysis results with platform bias calibration."""
     if not annos:
         return 3.0, {}
     
@@ -261,6 +298,19 @@ def aggregate_generic(aspect_schema: List[str], annos: List[GPTCommentAnno], upv
     
     # Calculate weighted averages
     overall = _weighted_mean(overall_scores) if overall_scores else 3.0
+    
+    # Apply platform bias calibration (new method)
+    if platform_counts:
+        # Calculate weighted platform bias
+        total_reviews = sum(platform_counts.values())
+        if total_reviews > 0:
+            weighted_bias = 0.0
+            for platform, count in platform_counts.items():
+                weight = count / total_reviews
+                bias = PLATFORM_BIAS.get(platform.lower(), 0.0)
+                alpha = _shrink_factor(count)
+                weighted_bias += weight * alpha * bias
+            overall = min(5.0, max(1.0, overall + weighted_bias))
     
     aspect_averages = {}
     for aspect_name in aspect_schema:
@@ -355,7 +405,7 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
                 entity_type in entity.entity_type or  # substring match
                 entity.entity_type in entity_type or  # reverse substring match
                 # Special cases for location-based queries
-                (entity_type == "locations" and entity.entity_type in ["golf course", "restaurant", "hotel", "store", "shop", "cafe", "bar", "club", "park", "beach", "museum", "theater", "venue"]) or
+                (entity_type == "locations" and entity.entity_type in ["golf course", "golf", "course", "restaurant", "hotel", "store", "shop", "cafe", "bar", "club", "park", "beach", "museum", "theater", "venue"]) or
                 (entity_type == "restaurant" and entity.entity_type in ["restaurant", "cafe", "bar", "diner", "eatery"]) or
                 (entity_type == "hotel" and entity.entity_type in ["hotel", "resort", "inn", "lodge"])):
                 

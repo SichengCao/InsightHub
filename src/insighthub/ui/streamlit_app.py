@@ -110,6 +110,31 @@ with st.sidebar:
     else:
         subreddit_count = SearchConstants.DEFAULT_SUBREDDITS_UI
     
+    # Platform bias calibration settings
+    st.subheader("⚙️ Platform Calibration")
+    
+    # Import calibration functions
+    from insighthub.core.scoring import set_bias_enabled, set_shrinkage_k, PLATFORM_BIAS
+    
+    # Bias calibration toggle
+    bias_enabled = st.checkbox("Enable Platform Bias Calibration", value=True,
+                              help="Adjust scores based on platform sentiment patterns")
+    
+    # Shrinkage parameter
+    shrinkage_k = st.slider("Shrinkage Parameter (k)", 1, 100, 40,
+                           help="Higher k = less aggressive calibration. Formula: α = n/(n+k)")
+    
+    # Apply settings
+    set_bias_enabled(bias_enabled)
+    set_shrinkage_k(shrinkage_k)
+    
+    # Show platform bias factors
+    with st.expander("📊 Platform Bias Factors"):
+        for platform, bias in PLATFORM_BIAS.items():
+            bias_emoji = "📉" if bias < 0 else "📈" if bias > 0 else "➡️"
+            st.write(f"{bias_emoji} **{platform.title()}**: {bias:+.2f}")
+        st.caption("Negative = more critical, Positive = more positive, Zero = neutral")
+    
     # Analyze button
     run_analysis = st.button("📊 Analyze Reviews", width='stretch')
 
@@ -145,11 +170,6 @@ if run_analysis:
                     all_reviews.extend(platform_reviews)
                 
                 reviews = all_reviews
-                
-                # Show platform breakdown
-                with st.expander("📊 Platform Results"):
-                    for platform_name, platform_reviews in cross_platform_results["platform_results"].items():
-                        st.write(f"**{platform_name.title()}**: {len(platform_reviews)} reviews")
                 
                 # Show platform data availability info
                 aggregated = cross_platform_results["aggregated"]
@@ -209,6 +229,48 @@ if run_analysis:
                 # Annotate comments with GPT
                 with st.spinner("Annotating comments with GPT..."):
                     annos = llm_service.annotate_comments_with_gpt(comments, intent_schema.aspects, intent_schema.entity_type, query)
+                
+                # Show platform breakdown with calibration info (for cross-platform searches)
+                if len(selected_platforms) > 1:
+                    with st.expander("📊 Platform Results"):
+                        for platform_name, platform_reviews in cross_platform_results["platform_results"].items():
+                            # Calculate raw platform score (before calibration)
+                            platform_comments = []
+                            for review in platform_reviews:
+                                comment = {
+                                    "id": review.get("id") if isinstance(review, dict) else review.id,
+                                    "text": review.get("text") if isinstance(review, dict) else review.text,
+                                    "upvotes": review.get("upvotes", 0) if isinstance(review, dict) else getattr(review, "upvotes", 0),
+                                }
+                                platform_comments.append(comment)
+                            
+                            # Get platform-specific annotations
+                            platform_annos = [anno for anno in annos if any(comment["id"] == anno.comment_id for comment in platform_comments)]
+                            platform_upvote_map = {comment["id"]: comment["upvotes"] for comment in platform_comments}
+                            
+                            if platform_annos:
+                                # Calculate raw score
+                                raw_scores = [(anno.overall_score, platform_upvote_map.get(anno.comment_id, 1)) for anno in platform_annos]
+                                raw_score = sum(s*w for s, w in raw_scores) / sum(w for _, w in raw_scores) if raw_scores else 3.0
+                                
+                                # Calculate calibrated score
+                                from insighthub.core.scoring import apply_platform_bias
+                                calibrated_score = apply_platform_bias(raw_score, platform_name, len(platform_reviews))
+                                
+                                # Calculate shrinkage factor
+                                from insighthub.core.scoring import _shrink_factor
+                                alpha = _shrink_factor(len(platform_reviews))
+                                
+                                st.write(f"**{platform_name.title()}**: {len(platform_reviews)} reviews")
+                                col1, col2, col3 = st.columns(3)
+                                with col1:
+                                    st.metric("Raw Score", f"{raw_score:.2f}/5")
+                                with col2:
+                                    st.metric("Calibrated", f"{calibrated_score:.2f}/5")
+                                with col3:
+                                    st.metric("Shrink α", f"{alpha:.3f}")
+                            else:
+                                st.write(f"**{platform_name.title()}**: {len(platform_reviews)} reviews (no valid annotations)")
                 
                 # Create upvote map for weighting
                 upvote_map = {comment["id"]: comment["upvotes"] for comment in comments}
@@ -283,7 +345,17 @@ if run_analysis:
                     }
                     
                 else:  # GENERIC
-                    overall, aspect_averages = aggregate_generic(intent_schema.aspects, annos, upvote_map)
+                    # Get platform counts for bias calibration
+                    platform_counts = {}
+                    if len(selected_platforms) > 1 or (len(selected_platforms) == 1 and selected_platforms[0] != Platform.REDDIT):
+                        # Cross-platform search - get counts from results
+                        platform_counts = {platform_name: len(platform_reviews) 
+                                         for platform_name, platform_reviews in cross_platform_results["platform_results"].items()}
+                    else:
+                        # Reddit-only search
+                        platform_counts = {"reddit": len(comments)}
+                    
+                    overall, aspect_averages = aggregate_generic(intent_schema.aspects, annos, upvote_map, platform_counts)
                     
                     # Select high-quality quotes using GPT sentiment analysis
                     quotes = []

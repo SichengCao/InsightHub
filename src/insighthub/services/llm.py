@@ -99,7 +99,59 @@ def _safe_json_loads(s: str):
             except:
                 pass
         
-        raise ValueError(f"Could not parse JSON from: {s[:200]}...")
+        # If all else fails, try to fix incomplete JSON
+        if cleaned.startswith('[') and not cleaned.endswith(']'):
+            # Try to complete the array
+            try:
+                # Find the last complete object
+                last_complete = cleaned.rfind('}')
+                if last_complete > 0:
+                    partial_json = cleaned[:last_complete + 1] + ']'
+                    return json.loads(partial_json)
+            except:
+                pass
+        
+        # Additional fallback: try to extract individual objects from truncated array
+        if cleaned.startswith('['):
+            try:
+                # Find all complete objects in the array
+                objects = []
+                start = 0
+                while True:
+                    obj_start = cleaned.find('{', start)
+                    if obj_start == -1:
+                        break
+                    
+                    # Find matching closing brace
+                    brace_count = 0
+                    obj_end = obj_start
+                    for i, char in enumerate(cleaned[obj_start:], obj_start):
+                        if char == '{':
+                            brace_count += 1
+                        elif char == '}':
+                            brace_count -= 1
+                            if brace_count == 0:
+                                obj_end = i + 1
+                                break
+                    
+                    if brace_count == 0:  # Found complete object
+                        try:
+                            obj_str = cleaned[obj_start:obj_end]
+                            obj = json.loads(obj_str)
+                            objects.append(obj)
+                        except:
+                            pass
+                    
+                    start = obj_end
+                
+                if objects:
+                    return objects
+            except:
+                pass
+        
+        # Final fallback: return empty array for batch processing
+        logger.warning(f"Could not parse JSON from: {s[:200]}... Returning empty array")
+        return []
 
 logger = logging.getLogger(__name__)
 
@@ -1203,8 +1255,8 @@ Return JSON:
                         text = comment.get('text', '')
                     else:
                         text = getattr(comment, 'text', '')
-                    # Truncate long comments to save tokens (keep first 300 chars)
-                    truncated_text = text[:300] + "..." if len(text) > 300 else text
+                    # Truncate long comments to save tokens (keep first 200 chars for speed)
+                    truncated_text = text[:200] + "..." if len(text) > 200 else text
                     batch_text += f"Comment {j+1}: {truncated_text}\n\n"
                 
                 prompt = f"""Analyze these Reddit comments and provide structured annotations.
@@ -1220,12 +1272,14 @@ IMPORTANT FILTERING RULES:
 - For queries with specific years (e.g., "2025", "2024"), ONLY extract entities that match that time period
   * If comment mentions "2020 movie" but query asks for "2025", set overall_score=1 and extract NO entities
   * If comment mentions "Edge of Tomorrow (2014)" but query asks for "2025", set overall_score=1 and extract NO entities
-- For queries with specific locations (e.g., "NYC", "San Francisco", "Bay Area", "Los Angeles"), ONLY extract entities in that location  
-  * If comment mentions a different location than the query specifies, set overall_score=1 and extract NO entities
-  * Examples: "Chicago restaurant" for "NYC" query, "Indiana golf" for "Bay Area" query, "NYC golf" for "Los Angeles" query
-  * Use geographic reasoning: if query asks for location X, only extract entities in location X
-- Only extract entities that are actually comparable and relevant to the query location
-- CRITICAL: If content is from wrong time period or location, set overall_score=1 and entities=[]
+- For queries with specific locations, use intelligent geographic reasoning
+  * Extract entities that are clearly in the specified location or nearby/related areas
+  * Use your geographic knowledge to determine if an entity is reasonably close to the query location
+ * Apply common sense geographic reasoning: consider metropolitan areas, regions, and nearby cities
+  * Only exclude entities that are clearly in completely different regions or states
+  * Think about what a reasonable person would consider "in the area" for the query location
+- Only extract entities that are actually comparable and relevant to the query
+- CRITICAL: If content is from wrong time period or clearly wrong location, set overall_score=1 and entities=[]
 
 For each comment, provide:
 1. Overall star rating (1-5)
@@ -1246,8 +1300,8 @@ Return JSON array:
                 response = self.chat(
                     system="You are an expert at analyzing Reddit comments for sentiment, aspects, and entities. CRITICAL: Extract ONLY specific named entities - actual proper nouns, brand names, model numbers, or specific business/location names. DO NOT extract generic descriptive phrases, qualifying adjectives, or category descriptions. Use your understanding to distinguish between specific entities (that users can search for or purchase) versus generic descriptions. Return ONLY valid JSON array, no markdown code blocks.",
                     user=prompt,
-                    temperature=0.2,
-                    max_tokens=2500  # Increased from 1500 to prevent truncation
+                    temperature=0.1,  # Optimized for speed
+                    max_tokens=2000  # Balanced for speed and completeness
                 )
                 
                 batch_annotations = _safe_json_loads(response)
@@ -1647,8 +1701,8 @@ Return JSON:
                         text = comment.get('text', '')
                     else:
                         text = getattr(comment, 'text', '')
-                    # Truncate long comments to save tokens (keep first 300 chars)
-                    truncated_text = text[:300] + "..." if len(text) > 300 else text
+                    # Truncate long comments to save tokens (keep first 200 chars for speed)
+                    truncated_text = text[:200] + "..." if len(text) > 200 else text
                     batch_text += f"Comment {j+1}: {truncated_text}\n\n"
                 
                 prompt = f"""Analyze these Reddit comments and provide structured annotations.
@@ -1664,12 +1718,14 @@ IMPORTANT FILTERING RULES:
 - For queries with specific years (e.g., "2025", "2024"), ONLY extract entities that match that time period
   * If comment mentions "2020 movie" but query asks for "2025", set overall_score=1 and extract NO entities
   * If comment mentions "Edge of Tomorrow (2014)" but query asks for "2025", set overall_score=1 and extract NO entities
-- For queries with specific locations (e.g., "NYC", "San Francisco", "Bay Area", "Los Angeles"), ONLY extract entities in that location  
-  * If comment mentions a different location than the query specifies, set overall_score=1 and extract NO entities
-  * Examples: "Chicago restaurant" for "NYC" query, "Indiana golf" for "Bay Area" query, "NYC golf" for "Los Angeles" query
-  * Use geographic reasoning: if query asks for location X, only extract entities in location X
-- Only extract entities that are actually comparable and relevant to the query location
-- CRITICAL: If content is from wrong time period or location, set overall_score=1 and entities=[]
+- For queries with specific locations, use intelligent geographic reasoning
+  * Extract entities that are clearly in the specified location or nearby/related areas
+  * Use your geographic knowledge to determine if an entity is reasonably close to the query location
+  * Apply common sense geographic reasoning: consider metropolitan areas, regions, and nearby cities
+  * Only exclude entities that are clearly in completely different regions or states
+  * Think about what a reasonable person would consider "in the area" for the query location
+- Only extract entities that are actually comparable and relevant to the query
+- CRITICAL: If content is from wrong time period or clearly wrong location, set overall_score=1 and entities=[]
 
 For each comment, provide:
 1. Overall star rating (1-5)
@@ -1690,8 +1746,8 @@ Return JSON array:
                 response = self.chat(
                     system="You are an expert at analyzing Reddit comments for sentiment, aspects, and entities. CRITICAL: Extract ONLY specific named entities - actual proper nouns, brand names, model numbers, or specific business/location names. DO NOT extract generic descriptive phrases, qualifying adjectives, or category descriptions. Use your understanding to distinguish between specific entities (that users can search for or purchase) versus generic descriptions. Return ONLY valid JSON array, no markdown code blocks.",
                     user=prompt,
-                    temperature=0.2,
-                    max_tokens=2500  # Increased from 1500 to prevent truncation
+                    temperature=0.1,  # Optimized for speed
+                    max_tokens=2000  # Balanced for speed and completeness
                 )
                 
                 batch_annotations = _safe_json_loads(response)

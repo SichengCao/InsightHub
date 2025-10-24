@@ -2,6 +2,7 @@
 
 import logging
 import time
+import hashlib
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 import requests
@@ -79,12 +80,15 @@ class YouTubeService:
             comments = []
             next_page_token = None
             
-            while len(comments) < max_comments:
+            # 使用新的per_video_limit计算
+            per_video = self._per_video_limit(max_comments)
+            
+            while len(comments) < per_video:
                 # Get comment threads
                 request = self.youtube.commentThreads().list(
                     part="snippet,replies",
                     videoId=video_id,
-                    maxResults=min(100, max_comments - len(comments)),
+                    maxResults=min(100, per_video - len(comments)),
                     pageToken=next_page_token,
                     order="relevance"
                 )
@@ -105,7 +109,7 @@ class YouTubeService:
                     })
                     
                     # Include replies if available
-                    if "replies" in item and len(comments) < max_comments:
+                    if "replies" in item and len(comments) < per_video:
                         for reply in item["replies"]["comments"][:5]:  # Limit replies
                             reply_snippet = reply["snippet"]
                             comments.append({
@@ -123,13 +127,76 @@ class YouTubeService:
                 if not next_page_token:
                     break
             
-            logger.info(f"Retrieved {len(comments)} comments for video {video_id}")
-            return comments[:max_comments]
+            # 如果相关性排序的评论不够，补充时间排序的评论
+            if len(comments) < int(per_video * 0.6):
+                try:
+                    additional_comments = []
+                    next_page_token = None
+                    
+                    while len(additional_comments) < (per_video - len(comments)):
+                        request = self.youtube.commentThreads().list(
+                            part="snippet,replies",
+                            videoId=video_id,
+                            maxResults=min(100, per_video - len(comments) - len(additional_comments)),
+                            pageToken=next_page_token,
+                            order="time"
+                        )
+                        
+                        response = request.execute()
+                        
+                        for item in response.get("items", []):
+                            top_comment = item["snippet"]["topLevelComment"]["snippet"]
+                            additional_comments.append({
+                                "comment_id": item["id"],
+                                "author": top_comment["authorDisplayName"],
+                                "text": top_comment["textDisplay"],
+                                "likes": top_comment["likeCount"],
+                                "published_at": top_comment["publishedAt"],
+                                "updated_at": top_comment["updatedAt"],
+                                "reply_count": item["snippet"]["totalReplyCount"]
+                            })
+                        
+                        next_page_token = response.get("nextPageToken")
+                        if not next_page_token:
+                            break
+                    
+                    comments.extend(additional_comments)
+                except Exception as e:
+                    logger.warning(f"Failed to get additional time-sorted comments: {e}")
+            
+            # 去重：作者+正文 hash
+            uniq = {}
+            for c in comments:
+                key = f"{c.get('author', '')}:{hashlib.md5((c.get('text', '') or '').strip().lower().encode()).hexdigest()}"
+                if key not in uniq:
+                    uniq[key] = c
+            
+            # 质量过滤
+            filtered_comments = [c for c in uniq.values() if self._quality_ok(c.get("text", ""))]
+            
+            logger.info(f"Retrieved {len(filtered_comments)} comments for video {video_id}")
+            return filtered_comments[:per_video]
             
         except HttpError as e:
             logger.error(f"YouTube comments fetch failed: {e}")
             return self._get_mock_comments(video_id, max_comments)
     
+    def _per_video_limit(self, total_limit: int) -> int:
+        # 提量但控上限，避免水评论放大与 quota 压力
+        return max(5, min(50, total_limit // 8))
+
+    def _quality_ok(self, text: str) -> bool:
+        if not text:
+            return False
+        t = (text or "").strip()
+        if len(t) < 20:
+            return False
+        # 过滤纯 emoji/重复标点之类的低信息量文本
+        unique_chars = set(t)
+        if len(unique_chars) <= 4:
+            return False
+        return True
+
     def _is_relevant_video(self, video: dict, query: str) -> bool:
         """Check if video is relevant to the query."""
         query_words = set(query.lower().split())
@@ -154,10 +221,10 @@ class YouTubeService:
         logger.info(f"Found {len(relevant_videos)} relevant videos out of {len(videos)} total")
         
         all_comments = []
-        for video in relevant_videos[:10]:  # Limit to top 10 relevant videos
+        for video in relevant_videos[:15]:  # Increase to top 15 relevant videos
             video_comments = self.get_video_comments(
                 video["video_id"], 
-                max_comments=limit // 10
+                max_comments=limit  # Use the new per_video_limit logic inside get_video_comments
             )
             
             # Add video context to comments
