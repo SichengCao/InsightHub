@@ -49,21 +49,74 @@ def _dedupe_keep_order(items, key=lambda x: x):
 # Page configuration
 st.set_page_config(
     page_title="InsightHub — Review Analysis",
-    page_icon="📈",
-    layout="wide"
+    page_icon="◈",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# Ensure config files exist
-# Config files are no longer needed with GPT-only pipeline
+# Tech-style custom CSS
+st.markdown("""
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Orbitron:wght@500;700&display=swap');
+    
+    .stApp { background: linear-gradient(180deg, #0a0e17 0%, #0d1321 50%, #0a0e17 100%); }
+    .block-container { padding-top: 1.5rem; max-width: 1400px; }
+    
+    .insighthub-hero {
+        text-align: center;
+        padding: 1.5rem 0 1rem 0;
+        margin-bottom: 1.5rem;
+        border-bottom: 1px solid rgba(0, 212, 255, 0.2);
+    }
+    .insighthub-hero h1 {
+        font-family: 'Orbitron', sans-serif;
+        font-weight: 700;
+        font-size: 2.2rem;
+        color: #00d4ff;
+        text-shadow: 0 0 20px rgba(0, 212, 255, 0.3);
+        letter-spacing: 0.08em;
+        margin-bottom: 0.3rem;
+    }
+    .insighthub-hero p {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.9rem;
+        color: #8b9dc3;
+        margin: 0;
+    }
+    
+    .popular-card {
+        background: linear-gradient(145deg, rgba(18, 24, 42, 0.95) 0%, rgba(10, 14, 23, 0.98) 100%);
+        border: 1px solid rgba(0, 212, 255, 0.25);
+        border-radius: 12px;
+        padding: 0.75rem;
+        margin-bottom: 1rem;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3), 0 0 1px rgba(0, 212, 255, 0.2);
+        transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .popular-card:hover { border-color: rgba(0, 212, 255, 0.5); box-shadow: 0 0 24px rgba(0, 212, 255, 0.15); }
+    .popular-card img { border-radius: 8px; width: 100%; height: 120px; object-fit: cover; }
+    .popular-card .cat { font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; color: #00d4ff; text-transform: uppercase; letter-spacing: 0.1em; margin-top: 0.4rem; }
+    .popular-card .title { font-family: 'Orbitron', sans-serif; font-weight: 600; color: #e4e8f0; font-size: 0.95rem; margin: 0.25rem 0 0.5rem 0; }
+    
+    [data-testid="stSidebar"] { background: linear-gradient(180deg, #0d1321 0%, #0a0e17 100%); }
+    [data-testid="stSidebar"] .stMarkdown { color: #8b9dc3; }
+    [data-testid="metric-value"] { font-family: 'Orbitron', sans-serif; color: #00d4ff !important; }
+    h2, h3 { font-family: 'Orbitron', sans-serif !important; color: #e4e8f0 !important; }
+</style>
+""", unsafe_allow_html=True)
 
 # Initialize services
 reddit_service = RedditService()
 llm_service = LLMServiceFactory.create()
 cross_platform_manager = CrossPlatformManager()
 
-# Main UI
-st.title("📈 InsightHub — Review Analysis")
-st.write("Analyze reviews across multiple platforms (Reddit, YouTube) with AI-powered sentiment and aspect scoring.")
+# Main UI — hero
+st.markdown("""
+<div class="insighthub-hero">
+    <h1>◈ INSIGHTHUB</h1>
+    <p>AI-powered review analysis across Reddit & YouTube · Sentiment & aspect scoring</p>
+</div>
+""", unsafe_allow_html=True)
 
 # Sidebar for search
 with st.sidebar:
@@ -342,7 +395,7 @@ if run_analysis:
                 
                 # Add prominent rating display for generic search
                 if intent_schema.intent == "GENERIC":
-                    st.subheader(" Overall Assessment")
+                    st.subheader("Overall Assessment")
                     col1, col2 = st.columns([1, 2])
                     with col1:
                         overall_rating = payload.get("overall", 3.0)
@@ -350,9 +403,9 @@ if run_analysis:
                         if overall_rating >= 4.0:
                             st.success("Highly Recommended")
                         elif overall_rating >= 3.0:
-                            st.info(" Generally Positive")
+                            st.info("Generally Positive")
                         else:
-                            st.warning(" Mixed Reviews")
+                            st.warning("Mixed Reviews")
                     
                     with col2:
                         st.subheader("Aspect Breakdown")
@@ -365,7 +418,7 @@ if run_analysis:
                             st.info("Aspect scores not available")
                 
                 # Detailed Summary Section
-                st.subheader(" Detailed Summary")
+                st.subheader("Detailed Summary")
                 st.write(payload["summary"])
                 
                 # Display results based on intent
@@ -442,21 +495,51 @@ if run_analysis:
         st.error(f"Analysis failed: {e}")
         st.info("Please try again with a different search term.")
 
-# Popular searches
-st.subheader("Popular Searches")
+# Popular searches — cards with images
+st.markdown("---")
+st.subheader("🔮 Recommended Searches")
 cols = st.columns(4, gap="large")
 
 POPULAR = [
-    {"title": "Top 10 NYC Restaurant", "cat": "Restaurants", "q": "top 10 nyc restaurant"},
-    {"title": "Tesla Model Y", "cat": "Cars", "q": "Tesla Model Y"},
-    {"title": "Nintendo Switch", "cat": "Tech", "q": "Nintendo Switch"},
-    {"title": "Best Golf Course in Bay Area", "cat": "Golf", "q": "best golf course in bay area"},
+    {
+        "title": "Top 10 NYC Restaurant",
+        "cat": "Restaurants",
+        "q": "top 10 nyc restaurant",
+        "image": "https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=400&q=80",
+    },
+    {
+        "title": "Tesla Model Y",
+        "cat": "Cars",
+        "q": "Tesla Model Y",
+        "image": "https://images.unsplash.com/photo-1560958089-b8a1929cea89?w=400&q=80",
+    },
+    {
+        "title": "Nintendo Switch",
+        "cat": "Tech",
+        "q": "Nintendo Switch",
+        "image": "https://images.unsplash.com/photo-1578303512597-81e6cc155b3e?w=400&q=80",
+    },
+    {
+        "title": "Best Golf Course in Bay Area",
+        "cat": "Golf",
+        "q": "best golf course in bay area",
+        "image": "https://images.unsplash.com/photo-1535131749006-b7f58c99034b?w=400&q=80",
+    },
 ]
 
 for i, p in enumerate(POPULAR):
     with cols[i]:
-        st.write(f"**{p['title']}** · {p['cat']}")
-        if st.button(f'Use "{p["title"]}"', key=f"use_{i}", width='stretch'):
+        st.markdown(
+            f"""
+            <div class="popular-card">
+                <img src="{p['image']}" alt="{p['title']}" />
+                <p class="cat">{p['cat']}</p>
+                <p class="title">{p['title']}</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.button(f"Use \"{p['title']}\"", key=f"use_{i}", use_container_width=True):
             st.session_state["query"] = p["q"]
             st.rerun()
 

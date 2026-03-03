@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     max_retries: int = Field(3, description="Maximum retry attempts")
     retry_delay: float = Field(1.0, description="Base retry delay in seconds")
     retry_backoff: float = Field(2.0, description="Retry backoff multiplier")
+
+    # Optional: cache directory (from CACHE_DIR env var)
+    cache_dir: str = Field("cache", description="Directory for cache storage")
     
     class Config:
         env_file = ".env"

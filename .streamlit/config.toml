@@ -1,21 +1,16 @@
 [server]
-# Disable telemetry
 enableTelemetry = false
-
-# Set headless mode for cloud deployment
 headless = true
-
-# Increase timeout for long-running operations
 enableCORS = false
 enableXsrfProtection = false
 
 [theme]
-# Use a clean, professional theme
-primaryColor = "#FF6B6B"
-backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F0F2F6"
-textColor = "#262730"
+# Dark tech / sci-fi theme
+primaryColor = "#00d4ff"
+backgroundColor = "#0a0e17"
+secondaryBackgroundColor = "#12182a"
+textColor = "#e4e8f0"
+font = "sans serif"
 
 [browser]
-# Disable browser auto-opening (for cloud)
 gatherUsageStats = false
