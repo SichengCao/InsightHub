@@ -118,12 +118,34 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# Sidebar for search
+# Apply pending query from recommended-card click (before any widget uses search_input)
+if "pending_query" in st.session_state:
+    q = st.session_state.pop("pending_query")
+    st.session_state["search_input"] = q
+    st.session_state["query"] = q
+
+# Use a separate key for the search input so we can set query from recommended cards without widget conflict
+if "search_input" not in st.session_state:
+    st.session_state["search_input"] = st.session_state.get("query", "Tesla Model Y")
+
+# Main page: search bar + Analyze button
+st.markdown("**Search & analyze**")
+search_col1, search_col2 = st.columns([3, 1])
+with search_col1:
+    st.text_input("Search Reviews", key="search_input", label_visibility="collapsed", placeholder="e.g. Tesla Model Y, best laptop 2024...")
+with search_col2:
+    analyze_clicked = st.button("📊 Analyze Reviews", use_container_width=True, type="primary")
+st.markdown("")  # spacing
+
+# Sync search input to query (used for analysis)
+st.session_state["query"] = st.session_state.get("search_input", "Tesla Model Y")
+
+# Run analysis when main button clicked or when a recommended card was clicked
+run_analysis = st.session_state.pop("run_analysis", False) or analyze_clicked
+
+# Sidebar: settings only (no search input, no button)
 with st.sidebar:
-    st.header("🔎 Search")
-    
-    # Search input
-    query = st.text_input("Search Reviews", value=st.session_state.get("query", "Tesla Model Y"))
+    st.header("⚙️ Settings")
     
     # Limit slider
     limit = st.slider("Number of Comments", 
@@ -162,11 +184,11 @@ with st.sidebar:
                                    help="More subreddits = better coverage but longer search time")
     else:
         subreddit_count = SearchConstants.DEFAULT_SUBREDDITS_UI
-    
-    # Analyze button
-    run_analysis = st.button("📊 Analyze Reviews", width='stretch')
 
-# Main content area
+# Use current query from session (updated by text input or recommended card)
+query = st.session_state.get("query", "Tesla Model Y")
+
+# Main content area: run analysis
 if run_analysis:
     try:
         with st.spinner("Analyzing reviews..."):
@@ -237,16 +259,16 @@ if run_analysis:
             logger.info(f"Analyzing {len(reviews)} reviews...")
             
             # Show filtering transparency
-            st.caption(f"🔍 Total reviews collected: {len(reviews)} in {search_time:.1f}s")
+            st.caption(f" Total reviews collected: {len(reviews)} in {search_time:.1f}s")
             
             if not reviews:
                 st.warning("No reviews found! Try a different search term.")
             else:
                 # Display intent information (already detected above)
-                st.info(f"🎯 **Detected intent**: {intent_schema.intent}")
+                st.info(f" **Detected intent**: {intent_schema.intent}")
                 if intent_schema.entity_type:
-                    st.info(f"🏷️ **Entity type**: {intent_schema.entity_type}")
-                st.info(f"🔍 **Aspects**: {', '.join(intent_schema.aspects[:5])}{'...' if len(intent_schema.aspects) > 5 else ''}")
+                    st.info(f" **Entity type**: {intent_schema.entity_type}")
+                st.info(f" **Aspects**: {', '.join(intent_schema.aspects[:5])}{'...' if len(intent_schema.aspects) > 5 else ''}")
                 
                 # Convert reviews to comment format for annotation
                 comments = []
@@ -539,8 +561,9 @@ for i, p in enumerate(POPULAR):
             """,
             unsafe_allow_html=True,
         )
-        if st.button(f"Use \"{p['title']}\"", key=f"use_{i}", use_container_width=True):
-            st.session_state["query"] = p["q"]
+        if st.button("▶ Analyze", key=f"use_{i}", use_container_width=True, type="primary"):
+            st.session_state["pending_query"] = p["q"]
+            st.session_state["run_analysis"] = True
             st.rerun()
 
 def main():
