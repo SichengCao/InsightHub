@@ -243,12 +243,9 @@ class RedditService:
             pass
         subs = list(dict.fromkeys(subs))[:10] + ["all"]
 
-        # Create more flexible comment patterns that require ANY of the main query terms
+        # Require at least one meaningful query word to appear in the comment
         query_words = [w.lower() for w in re.findall(r'\b\w+\b', q) if len(w) > 2]
-        main_patterns = [r"\b(love|hate|recommend|avoid|worth|issue|problem|help|good|bad|great|terrible|best|worst)\b"]
-        if query_words:
-            # Require at least one main query word to appear (more flexible)
-            main_patterns.append(rf"\b({'|'.join(query_words[:4])})\b")
+        main_patterns = [rf"\b({'|'.join(query_words[:4])})\b"] if query_words else []
 
         return SearchPlan(
             terms=terms,
@@ -338,82 +335,6 @@ class RedditService:
         except Exception as e:
             logger.warning(f"LLM planning failed, using fallback: {e}")
             return self._fallback_plan(query)
-    
-    def _get_search_terms(self, query: str) -> List[str]:
-        """Generate multiple search terms for better coverage."""
-        query_lower = query.lower()
-        terms = [query]  # Original query
-        
-        # Add review-specific terms
-        review_terms = ['review', 'opinion', 'experience', 'thoughts', 'impression']
-        for term in review_terms:
-            terms.append(f"{query} {term}")
-        
-        # Add product-specific terms
-        if any(word in query_lower for word in ['iphone', 'samsung', 'google pixel', 'oneplus']):
-            terms.extend([f"{query} camera", f"{query} battery", f"{query} performance"])
-        elif any(word in query_lower for word in ['tesla', 'model y', 'model 3', 'ford', 'bmw']):
-            terms.extend([f"{query} range", f"{query} charging", f"{query} autopilot"])
-        elif any(word in query_lower for word in ['macbook', 'laptop', 'dell', 'hp']):
-            terms.extend([f"{query} performance", f"{query} battery", f"{query} keyboard"])
-        
-        # Add ownership terms
-        ownership_terms = ['own', 'owned', 'using', 'bought', 'purchased']
-        for term in ownership_terms:
-            terms.append(f"{term} {query}")
-        
-        return terms[:5]  # Limit to 5 terms to avoid rate limiting
-    
-    def _is_review_relevant(self, submission, query: str) -> bool:
-        """Check if a Reddit post is review-relevant."""
-        title = getattr(submission, 'title', '').lower()
-        selftext = getattr(submission, 'selftext', '').lower()
-        query_lower = query.lower()
-        
-        # Must contain the main query term
-        if query_lower not in title and query_lower not in selftext:
-            return False
-        
-        # Look for review indicators
-        review_indicators = [
-            'review', 'opinion', 'experience', 'thoughts', 'impression',
-            'own', 'owned', 'using', 'bought', 'purchased', 'have had',
-            'pros and cons', 'good and bad', 'likes and dislikes',
-            'worth it', 'recommend', 'avoid', 'love', 'hate'
-        ]
-        
-        content = f"{title} {selftext}"
-        return any(indicator in content for indicator in review_indicators)
-    
-    def _is_comment_review_relevant(self, comment, query: str) -> bool:
-        """Check if a comment contains review-relevant content."""
-        body = getattr(comment, 'body', '').lower()
-        query_lower = query.lower()
-        
-        # Must mention the product
-        if query_lower not in body:
-            return False
-        
-        # Look for review language patterns (more lenient)
-        review_patterns = [
-            # Ownership indicators
-            r'\b(own|owned|using|bought|purchased|have had|got|received|have|had)\b',
-            # Experience indicators  
-            r'\b(experience|experienced|tried|tested|used|using|use)\b',
-            # Opinion indicators (expanded)
-            r'\b(love|hate|like|dislike|recommend|avoid|worth|not worth|amazing|terrible|awesome|sucks|perfect|awful)\b',
-            # Quality indicators (expanded)
-            r'\b(good|bad|great|terrible|excellent|awful|amazing|horrible|nice|poor|fantastic|disappointing|impressive|mediocre)\b',
-            # Specific feature mentions (expanded)
-            r'\b(camera|battery|performance|design|price|quality|build|screen|display|audio|sound|speed|fast|slow|lag|bug|issue|problem)\b',
-            # Comparison indicators
-            r'\b(compared to|vs|versus|better than|worse than|instead of|rather than)\b',
-            # General sentiment words
-            r'\b(yes|no|definitely|absolutely|never|always|sometimes|often|rarely|usually)\b'
-        ]
-        
-        import re
-        return any(re.search(pattern, body) for pattern in review_patterns)
     
     @retry(
         stop=stop_after_attempt(settings.max_retries),

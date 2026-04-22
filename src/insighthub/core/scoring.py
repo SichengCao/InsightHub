@@ -366,38 +366,23 @@ def _context_contradicts_location(mention_context: str, query_location: str) -> 
     query_tokens = set(re.findall(r"[a-z]+", query_location.lower()))
     ctx_lower = mention_context.lower()
 
-    # Match "in <place>" where <place> is two or more words and does NOT start
-    # with an article or common preposition (avoids "in the heart of X" idioms).
-    # Single-word places are skipped — too many sub-regions share no tokens
-    # with their parent metro (e.g. "Silicon Valley" ≠ "bay area" tokens).
     STOP = {"the", "a", "an", "my", "your", "our", "their", "this", "that",
             "these", "those", "its", "her", "his"}
+
+    # Match "in <place>" where <place> is two or more words.
+    # Requiring two words avoids false positives from single-word sub-regions
+    # that may legitimately belong to the query's metro area.
     loc_signals = re.findall(
         r"\bin\s+([a-z][a-z]+(?:\s+[a-z][a-z]+)+)(?:\s|,|\.|$)",
         ctx_lower,
     )
 
-    # Also expand query tokens to include single-word sub-region aliases so
-    # that known sub-regions (e.g. "manhattan" for "nyc") are not falsely flagged.
-    # This is a small, principled mapping — not a city index.
-    METRO_ALIASES: dict[frozenset, set] = {
-        frozenset(["bay", "area"]):  {"silicon", "valley", "peninsula", "marin"},
-        frozenset(["nyc"]):          {"manhattan", "brooklyn", "queens", "bronx", "staten"},
-        frozenset(["new", "york"]):  {"manhattan", "brooklyn", "queens", "bronx", "staten"},
-        frozenset(["los", "angeles"]): {"la", "hollywood", "beverly"},
-    }
-    expanded_query_tokens = set(query_tokens)
-    for metro_tokens, aliases in METRO_ALIASES.items():
-        if metro_tokens.issubset(query_tokens):
-            expanded_query_tokens |= aliases
-
     for phrase in loc_signals:
         phrase = phrase.strip()
-        first_word = phrase.split()[0]
-        if first_word in STOP:
-            continue  # skip idioms like "in the heart of X"
+        if phrase.split()[0] in STOP:
+            continue
         phrase_tokens = set(re.findall(r"[a-z]+", phrase))
-        if phrase_tokens and phrase_tokens.isdisjoint(expanded_query_tokens):
+        if phrase_tokens and phrase_tokens.isdisjoint(query_tokens):
             logger.debug(
                 f"Context '{mention_context}' contradicts query location '{query_location}' "
                 f"(found 'in {phrase}')"
