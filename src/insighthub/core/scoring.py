@@ -345,36 +345,64 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
     
     # Aggregate entity data
     for anno in annos:
-        weight = _winsor_weight(upvote_map.get(anno.comment_id, 1))
-        
+        base_weight = _winsor_weight(upvote_map.get(anno.comment_id, 1))
+
         for entity in anno.entities:
-            # Flexible entity type matching
-            if (entity.entity_type == entity_type or 
-                entity.entity_type == entity_type.rstrip('s') or  # singular/plural
-                entity.entity_type == entity_type + 's' or  # plural
-                entity_type in entity.entity_type or  # substring match
-                entity.entity_type in entity_type or  # reverse substring match
-                # Special cases for location-based queries
-                (entity_type == "locations" and entity.entity_type in ["golf course", "restaurant", "hotel", "store", "shop", "cafe", "bar", "club", "park", "beach", "museum", "theater", "venue"]) or
-                (entity_type == "restaurant" and entity.entity_type in ["restaurant", "cafe", "bar", "diner", "eatery"]) or
-                (entity_type == "hotel" and entity.entity_type in ["hotel", "resort", "inn", "lodge"])):
-                
-                # Validate entity name (filter out generic descriptors)
-                if not _is_valid_entity_name(entity.name, entity_type):
-                    logger.debug(f"Filtered out generic entity name: '{entity.name}'")
-                    continue
-                
-                # Normalize entity name for deduplication
-                normalized_name = _normalize_entity_name(entity.name)
-                entity_stats[normalized_name]['mentions'] += 1
-                entity_stats[normalized_name]['confidence_sum'] += entity.confidence
-                entity_stats[normalized_name]['overall_scores'].append((anno.overall_score, weight))
-                entity_stats[normalized_name]['comment_ids'].append(anno.comment_id)
-                entity_stats[normalized_name]['original_names'].add(entity.name)
-                
-                # Add aspect scores
-                for aspect_name, score in anno.aspect_scores.items():
-                    entity_stats[normalized_name]['aspect_scores'][aspect_name].append((score, weight))
+            # ── Filtering rules ──────────────────────────────────────────────
+            # 1. Drop low-confidence extractions — likely hallucinations
+            if entity.confidence < 0.5:
+                logger.debug(f"Dropped low-confidence entity '{entity.name}' ({entity.confidence:.2f})")
+                continue
+
+            # 2. Flexible entity type matching
+            if not (
+                entity.entity_type == entity_type
+                or entity.entity_type == entity_type.rstrip('s')
+                or entity.entity_type == entity_type + 's'
+                or entity_type in entity.entity_type
+                or entity.entity_type in entity_type
+                or (entity_type == "locations" and entity.entity_type in [
+                    "golf course", "restaurant", "hotel", "store", "shop",
+                    "cafe", "bar", "club", "park", "beach", "museum", "theater", "venue"])
+                or (entity_type == "restaurant" and entity.entity_type in [
+                    "restaurant", "cafe", "bar", "diner", "eatery"])
+                or (entity_type == "hotel" and entity.entity_type in [
+                    "hotel", "resort", "inn", "lodge"])
+            ):
+                continue
+
+            # 3. Validate entity name (filter out generic descriptors)
+            if not _is_valid_entity_name(entity.name, entity_type):
+                logger.debug(f"Filtered out generic entity name: '{entity.name}'")
+                continue
+
+            # ── Scoring ──────────────────────────────────────────────────────
+            # Use entity-specific sentiment_score (new field).
+            # Fall back to anno.overall_score only for primary entities; non-primary
+            # entities without an explicit score get a neutral 3.0 to avoid polluting
+            # rankings with misattributed comment-level sentiment.
+            is_primary = getattr(entity, 'is_primary', True)
+            entity_sentiment = getattr(entity, 'sentiment_score', None)
+            if entity_sentiment is None or entity_sentiment == 3.0:
+                entity_sentiment = anno.overall_score if is_primary else 3.0
+
+            # 4. Non-primary entities (comparison/context mentions) get 0.75× weight
+            # so they still contribute but don't dominate the ranking.
+            effective_weight = base_weight if is_primary else base_weight * 0.75
+
+            normalized_name = _normalize_entity_name(entity.name)
+            entity_stats[normalized_name]['mentions'] += 1
+            entity_stats[normalized_name]['confidence_sum'] += entity.confidence
+            entity_stats[normalized_name]['overall_scores'].append((entity_sentiment, effective_weight))
+            entity_stats[normalized_name]['comment_ids'].append(anno.comment_id)
+            entity_stats[normalized_name]['original_names'].add(entity.name)
+
+            # Use entity-specific aspect scores when available; fall back to
+            # comment-level aspect scores only for primary entities.
+            entity_aspects = getattr(entity, 'aspect_scores', {}) or {}
+            aspect_src = entity_aspects if entity_aspects else (anno.aspect_scores if is_primary else {})
+            for aspect_name, score in aspect_src.items():
+                entity_stats[normalized_name]['aspect_scores'][aspect_name].append((score, effective_weight))
     
     # Create ranking items
     ranking_items = []

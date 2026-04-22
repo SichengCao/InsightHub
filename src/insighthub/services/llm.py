@@ -1216,98 +1216,125 @@ Comments:
 
 Aspects to score: {', '.join(aspects)}
 
-IMPORTANT FILTERING RULES:
-- For queries with specific years (e.g., "2025", "2024"), ONLY extract entities that match that time period
-  * If comment mentions "2020 movie" but query asks for "2025", set overall_score=1 and extract NO entities
-  * If comment mentions "Edge of Tomorrow (2014)" but query asks for "2025", set overall_score=1 and extract NO entities
-- For queries with specific locations (e.g., "NYC", "San Francisco", "Bay Area", "Los Angeles"), ONLY extract entities in that location  
-  * If comment mentions a different location than the query specifies, set overall_score=1 and extract NO entities
-  * Examples: "Chicago restaurant" for "NYC" query, "Indiana golf" for "Bay Area" query, "NYC golf" for "Los Angeles" query
-  * Use geographic reasoning: if query asks for location X, only extract entities in location X
-- Only extract entities that are actually comparable and relevant to the query location
-- CRITICAL: If content is from wrong time period or location, set overall_score=1 and entities=[]
+ENTITY DISAMBIGUATION RULES (critical for accuracy):
+- Extract ALL named entities mentioned, even those used for comparison.
+- For EACH entity provide a SEPARATE sentiment_score (1-5) based solely on how the author
+  feels about THAT entity in this comment — not the comment's overall tone.
+  Example: "iPhone 15 blows away the Samsung S24" → iPhone 15 sentiment=5, Samsung S24 sentiment=2
+- Set is_primary=true for the entity that is the main subject/focus.
+  Set is_primary=false for entities mentioned only as comparisons or context.
+- include mention_context: a verbatim excerpt (≤80 chars) showing how the entity was mentioned.
+- Only extract SPECIFIC named entities (proper nouns, brand names, model numbers, place names).
+  Do NOT extract generic phrases like "a good camera" or "michelin restaurant".
 
-For each comment, provide:
-1. Overall star rating (1-5)
-2. Per-aspect scores (1-5 for each aspect)
-3. Entities mentioned (for ranking queries)
-4. Solution cluster key (for solution queries)
+LOCATION / TIME FILTERING:
+- For location-specific queries (e.g. "NYC", "Bay Area"), only extract entities in that location.
+  If a comment mentions a different location, set overall_score=1 and entities=[].
+- For year-specific queries (e.g. "2025 movies"), only extract entities from that period.
+  If the comment is about a different year, set overall_score=1 and entities=[].
 
-Return JSON array:
+For each comment return:
+1. overall_score: 1-5 (general comment sentiment about the main topic)
+2. aspect_scores: per-aspect scores (1-5) for the main topic
+3. primary_entity: name of the main sentiment-focus entity (string or null)
+4. entities: all named entities with per-entity scores
+5. solution_key: cluster label for SOLUTION queries (null otherwise)
+
+Return a JSON array — one object per comment, in input order:
 [
     {{
         "overall_score": 4,
         "aspect_scores": {{"quality": 4, "value": 3, "performance": 5}},
-        "entities": [{{"name": "iPhone 15", "type": "product", "confidence": 0.9}}],
-        "solution_key": "battery_replacement"
+        "primary_entity": "iPhone 15 Pro",
+        "entities": [
+            {{
+                "name": "iPhone 15 Pro",
+                "type": "phone",
+                "confidence": 0.95,
+                "sentiment_score": 4.5,
+                "aspect_scores": {{"quality": 5, "value": 3}},
+                "is_primary": true,
+                "mention_context": "iPhone 15 Pro camera is outstanding"
+            }},
+            {{
+                "name": "Samsung Galaxy S24",
+                "type": "phone",
+                "confidence": 0.85,
+                "sentiment_score": 2.0,
+                "aspect_scores": {{"quality": 3, "value": 2}},
+                "is_primary": false,
+                "mention_context": "compared to my old Samsung which felt cheap"
+            }}
+        ],
+        "solution_key": null
     }}
 ]"""
 
                 response = self.chat(
-                    system="You are an expert at analyzing Reddit comments for sentiment, aspects, and entities. CRITICAL: Extract ONLY specific named entities - actual proper nouns, brand names, model numbers, or specific business/location names. DO NOT extract generic descriptive phrases, qualifying adjectives, or category descriptions. Use your understanding to distinguish between specific entities (that users can search for or purchase) versus generic descriptions. Return ONLY valid JSON array, no markdown code blocks.",
+                    system=(
+                        "You are an expert at analyzing Reddit comments for sentiment, aspects, and entities. "
+                        "CRITICAL: (1) Assign each entity its OWN sentiment_score based on how the author feels "
+                        "about that specific entity — do not reuse the comment's overall score for every entity. "
+                        "(2) Extract ONLY specific named entities (proper nouns, brands, model numbers, place names). "
+                        "(3) Return ONLY valid JSON array, no markdown code blocks."
+                    ),
                     user=prompt,
                     temperature=0.2,
-                    max_tokens=2500  # Increased from 1500 to prevent truncation
+                    max_tokens=2500,
                 )
-                
+
                 batch_annotations = _safe_json_loads(response)
-                
+
                 # Convert to GPTCommentAnno objects
                 for j, annotation_data in enumerate(batch_annotations):
                     if j < len(batch):
                         comment = batch[j]
-                        
-                        # Extract comment ID
-                        if isinstance(comment, dict):
-                            comment_id = comment.get("id", "")
-                        else:
-                            comment_id = getattr(comment, "id", "")
-                        
-                        # Extract entities
+
+                        comment_id = comment.get("id", "") if isinstance(comment, dict) else getattr(comment, "id", "")
+
                         entities = []
-                        for entity_data in annotation_data.get("entities", []):
+                        for ed in annotation_data.get("entities", []):
                             entities.append(EntityRef(
-                                name=entity_data.get("name", ""),
-                                entity_type=entity_data.get("type", entity_type or "unknown"),
-                                confidence=entity_data.get("confidence", 0.5)
+                                name=ed.get("name", ""),
+                                entity_type=ed.get("type", entity_type or "unknown"),
+                                confidence=float(ed.get("confidence", 0.5)),
+                                sentiment_score=float(ed.get("sentiment_score", annotation_data.get("overall_score", 3.0))),
+                                aspect_scores={k: float(v) for k, v in (ed.get("aspect_scores") or {}).items()},
+                                is_primary=bool(ed.get("is_primary", True)),
+                                mention_context=str(ed.get("mention_context", ""))[:100],
                             ))
-                        
+
                         annotations.append(GPTCommentAnno(
                             comment_id=comment_id,
                             overall_score=annotation_data.get("overall_score", 3),
                             aspect_scores=annotation_data.get("aspect_scores", {}),
                             entities=entities,
-                            solution_key=annotation_data.get("solution_key", "")
+                            primary_entity=annotation_data.get("primary_entity") or None,
+                            solution_key=annotation_data.get("solution_key") or "",
                         ))
-                
+
             except Exception as e:
                 logger.error(f"GPT annotation batch failed: {e}")
-                # Add default annotations for failed batch
                 for comment in batch:
-                    # Extract comment ID
-                    if isinstance(comment, dict):
-                        comment_id = comment.get("id", "")
-                    else:
-                        comment_id = getattr(comment, "id", "")
-                    
+                    comment_id = comment.get("id", "") if isinstance(comment, dict) else getattr(comment, "id", "")
                     annotations.append(GPTCommentAnno(
                         comment_id=comment_id,
                         overall_score=3,
                         aspect_scores={aspect: 3 for aspect in aspects},
                         entities=[],
-                        solution_key=""
+                        primary_entity=None,
+                        solution_key="",
                     ))
-        
+
         return annotations
 
     def generate_dynamic_aspects(self, query: str, sample_comments: List[Dict] = None) -> List[str]:
         """Generate dynamic aspects based on query and sample comments."""
         try:
-            # Prepare sample text
             sample_text = ""
             if sample_comments:
                 sample_text = "\n".join([c.get("text", "")[:200] for c in sample_comments[:3]])
-            
+
             prompt = f"""Generate relevant aspects for analyzing this query:
 
 Query: "{query}"
@@ -1322,17 +1349,16 @@ Return as a JSON array: ["aspect1", "aspect2", "aspect3"]"""
                 system="You are an expert at identifying relevant aspects for any topic.",
                 user=prompt,
                 temperature=0.2,
-                max_tokens=300
+                max_tokens=300,
             )
-            
+
             aspects = _safe_json_loads(response)
             if isinstance(aspects, list) and all(isinstance(a, str) for a in aspects):
-                return aspects[:6]  # Limit to 6 aspects
-            
+                return aspects[:6]
+
         except Exception as e:
             logger.error(f"Dynamic aspect generation failed: {e}")
-        
-        # Fallback to domain-specific aspects
+
         return get_domain_aspects(query)
 
 
@@ -1660,98 +1686,104 @@ Comments:
 
 Aspects to score: {', '.join(aspects)}
 
-IMPORTANT FILTERING RULES:
-- For queries with specific years (e.g., "2025", "2024"), ONLY extract entities that match that time period
-  * If comment mentions "2020 movie" but query asks for "2025", set overall_score=1 and extract NO entities
-  * If comment mentions "Edge of Tomorrow (2014)" but query asks for "2025", set overall_score=1 and extract NO entities
-- For queries with specific locations (e.g., "NYC", "San Francisco", "Bay Area", "Los Angeles"), ONLY extract entities in that location  
-  * If comment mentions a different location than the query specifies, set overall_score=1 and extract NO entities
-  * Examples: "Chicago restaurant" for "NYC" query, "Indiana golf" for "Bay Area" query, "NYC golf" for "Los Angeles" query
-  * Use geographic reasoning: if query asks for location X, only extract entities in location X
-- Only extract entities that are actually comparable and relevant to the query location
-- CRITICAL: If content is from wrong time period or location, set overall_score=1 and entities=[]
+ENTITY DISAMBIGUATION RULES (critical for accuracy):
+- Extract ALL named entities mentioned, even those used for comparison.
+- For EACH entity provide a SEPARATE sentiment_score (1-5) based solely on how the author
+  feels about THAT entity in this comment — not the comment's overall tone.
+  Example: "iPhone 15 blows away the Samsung S24" → iPhone 15 sentiment=5, Samsung S24 sentiment=2
+- Set is_primary=true for the entity that is the main subject/focus.
+  Set is_primary=false for entities mentioned only as comparisons or context.
+- include mention_context: a verbatim excerpt (≤80 chars) showing how the entity was mentioned.
+- Only extract SPECIFIC named entities (proper nouns, brand names, model numbers, place names).
 
-For each comment, provide:
-1. Overall star rating (1-5)
-2. Per-aspect scores (1-5 for each aspect)
-3. Entities mentioned (for ranking queries)
-4. Solution cluster key (for solution queries)
+LOCATION / TIME FILTERING:
+- For location-specific queries, only extract entities in that location.
+- For year-specific queries, only extract entities from that period.
+  If the comment is out of scope, set overall_score=1 and entities=[].
 
-Return JSON array:
+Return a JSON array — one object per comment, in input order:
 [
     {{
         "overall_score": 4,
         "aspect_scores": {{"quality": 4, "value": 3, "performance": 5}},
-        "entities": [{{"name": "iPhone 15", "type": "product", "confidence": 0.9}}],
-        "solution_key": "battery_replacement"
+        "primary_entity": "iPhone 15 Pro",
+        "entities": [
+            {{
+                "name": "iPhone 15 Pro",
+                "type": "phone",
+                "confidence": 0.95,
+                "sentiment_score": 4.5,
+                "aspect_scores": {{"quality": 5, "value": 3}},
+                "is_primary": true,
+                "mention_context": "iPhone 15 Pro camera is outstanding"
+            }}
+        ],
+        "solution_key": null
     }}
 ]"""
 
                 response = self.chat(
-                    system="You are an expert at analyzing Reddit comments for sentiment, aspects, and entities. CRITICAL: Extract ONLY specific named entities - actual proper nouns, brand names, model numbers, or specific business/location names. DO NOT extract generic descriptive phrases, qualifying adjectives, or category descriptions. Use your understanding to distinguish between specific entities (that users can search for or purchase) versus generic descriptions. Return ONLY valid JSON array, no markdown code blocks.",
+                    system=(
+                        "You are an expert at analyzing Reddit comments for sentiment, aspects, and entities. "
+                        "CRITICAL: (1) Assign each entity its OWN sentiment_score based on how the author feels "
+                        "about that specific entity. (2) Extract ONLY specific named entities. "
+                        "(3) Return ONLY valid JSON array, no markdown code blocks."
+                    ),
                     user=prompt,
                     temperature=0.2,
-                    max_tokens=2500  # Increased from 1500 to prevent truncation
+                    max_tokens=2500,
                 )
-                
+
                 batch_annotations = _safe_json_loads(response)
-                
-                # Convert to GPTCommentAnno objects
+
                 for j, annotation_data in enumerate(batch_annotations):
                     if j < len(batch):
                         comment = batch[j]
-                        
-                        # Extract comment ID
-                        if isinstance(comment, dict):
-                            comment_id = comment.get("id", "")
-                        else:
-                            comment_id = getattr(comment, "id", "")
-                        
-                        # Extract entities
+                        comment_id = comment.get("id", "") if isinstance(comment, dict) else getattr(comment, "id", "")
+
                         entities = []
-                        for entity_data in annotation_data.get("entities", []):
+                        for ed in annotation_data.get("entities", []):
                             entities.append(EntityRef(
-                                name=entity_data.get("name", ""),
-                                entity_type=entity_data.get("type", entity_type or "unknown"),
-                                confidence=entity_data.get("confidence", 0.5)
+                                name=ed.get("name", ""),
+                                entity_type=ed.get("type", entity_type or "unknown"),
+                                confidence=float(ed.get("confidence", 0.5)),
+                                sentiment_score=float(ed.get("sentiment_score", annotation_data.get("overall_score", 3.0))),
+                                aspect_scores={k: float(v) for k, v in (ed.get("aspect_scores") or {}).items()},
+                                is_primary=bool(ed.get("is_primary", True)),
+                                mention_context=str(ed.get("mention_context", ""))[:100],
                             ))
-                        
+
                         annotations.append(GPTCommentAnno(
                             comment_id=comment_id,
                             overall_score=annotation_data.get("overall_score", 3),
                             aspect_scores=annotation_data.get("aspect_scores", {}),
                             entities=entities,
-                            solution_key=annotation_data.get("solution_key", "")
+                            primary_entity=annotation_data.get("primary_entity") or None,
+                            solution_key=annotation_data.get("solution_key") or "",
                         ))
-                
+
             except Exception as e:
                 logger.error(f"GPT annotation batch failed: {e}")
-                # Add default annotations for failed batch
                 for comment in batch:
-                    # Extract comment ID
-                    if isinstance(comment, dict):
-                        comment_id = comment.get("id", "")
-                    else:
-                        comment_id = getattr(comment, "id", "")
-                    
+                    comment_id = comment.get("id", "") if isinstance(comment, dict) else getattr(comment, "id", "")
                     annotations.append(GPTCommentAnno(
                         comment_id=comment_id,
                         overall_score=3,
                         aspect_scores={aspect: 3 for aspect in aspects},
                         entities=[],
-                        solution_key=""
+                        primary_entity=None,
+                        solution_key="",
                     ))
-        
+
         return annotations
 
     def generate_dynamic_aspects(self, query: str, sample_comments: List[Dict] = None) -> List[str]:
         """Generate dynamic aspects based on query and sample comments."""
         try:
-            # Prepare sample text
             sample_text = ""
             if sample_comments:
                 sample_text = "\n".join([c.get("text", "")[:200] for c in sample_comments[:3]])
-            
+
             prompt = f"""Generate relevant aspects for analyzing this query:
 
 Query: "{query}"
@@ -1766,16 +1798,15 @@ Return as a JSON array: ["aspect1", "aspect2", "aspect3"]"""
                 system="You are an expert at identifying relevant aspects for any topic.",
                 user=prompt,
                 temperature=0.2,
-                max_tokens=300
+                max_tokens=300,
             )
-            
+
             aspects = _safe_json_loads(response)
             if isinstance(aspects, list) and all(isinstance(a, str) for a in aspects):
-                return aspects[:6]  # Limit to 6 aspects
-            
+                return aspects[:6]
+
         except Exception as e:
             logger.error(f"Dynamic aspect generation failed: {e}")
-        
-        # Fallback to domain-specific aspects
+
         return get_domain_aspects(query)
 
