@@ -372,38 +372,8 @@ class OpenAIService:
             plan["terms"] = list(dict.fromkeys([t for t in plan["terms"] if isinstance(t, str) and t.strip()]))[:SearchConstants.MAX_SEARCH_TERMS]  # Comprehensive search: up to 10 terms
 
             subs = [s.replace("r/","").strip() for s in plan.get("subreddits", []) if isinstance(s, str)]
-            # Remove "all" subreddit to avoid irrelevant content - prioritize specific subreddits
             subs = [s for s in subs if s.lower() != "all"]
-            
-            # Expand subreddit list if it's too short to meet user's preference
-            if len(subs) < max_subreddits:
-                # Add common general subreddits based on query type
-                query_lower = query.lower()
-                additional_subs = []
-                
-                if any(word in query_lower for word in ['restaurant', 'food', 'dining', 'eat']):
-                    additional_subs = ['food', 'restaurants', 'AskReddit', 'cooking', 'FoodPorn']
-                elif any(word in query_lower for word in ['iphone', 'apple', 'phone']):
-                    additional_subs = ['technology', 'Apple', 'smartphones', 'AskReddit', 'gadgets']
-                elif any(word in query_lower for word in ['tesla', 'car', 'vehicle', 'electric']):
-                    additional_subs = ['cars', 'ElectricVehicles', 'TeslaMotors', 'AskReddit', 'technology']
-                elif any(word in query_lower for word in ['movie', 'film', 'cinema']):
-                    additional_subs = ['movies', 'films', 'AskReddit', 'entertainment', 'NetflixBestOf']
-                elif any(word in query_lower for word in ['camera', 'photography', 'photo', 'lens']):
-                    additional_subs = ['photography', 'cameras', 'CameraGear', 'AskPhotography', 'PhotoCritique']
-                elif any(word in query_lower for word in ['golf', 'course', 'club']):
-                    additional_subs = ['golf', 'golfcoursereview', 'AskReddit', 'sports']
-                else:
-                    additional_subs = ['AskReddit']
-                
-                # Add additional subreddits up to max_subreddits
-                for sub in additional_subs:
-                    if len(subs) >= max_subreddits:
-                        break
-                    if sub.lower() not in [s.lower() for s in subs]:
-                        subs.append(sub)
-            
-            plan["subreddits"] = subs[:max_subreddits]  # User-configurable subreddit count
+            plan["subreddits"] = subs[:max_subreddits]
 
             # Intent-aware defaults
             plan["time_filter"] = plan.get("time_filter") or "month"
@@ -1237,9 +1207,10 @@ SENTIMENT GROUNDING RULES:
   or references it geographically only), set confidence=0.4.
 
 LOCATION / TIME FILTERING:
-- For location-specific queries (e.g. "Bay Area golf"), only extract entities confirmed to be
-  in that location. If the comment explicitly places an entity in a DIFFERENT location
-  (e.g. "Long Island", "Chicago"), exclude that entity entirely — set its entry to entities=[].
+- For location-specific queries (e.g. "Bay Area golf"), only extract SPECIFIC NAMED VENUES
+  confirmed to be in that location. NEVER extract city names, metro abbreviations, or geographic
+  regions (e.g. "LA", "NY", "NYC", "Chicago", "California") as entity names — those are locations,
+  not venues. If a comment mentions a venue in a DIFFERENT location, exclude it (entities=[]).
 - For year-specific queries, only extract entities from that period.
   If the comment is about a different year, set overall_score=1 and entities=[].
 
@@ -1715,8 +1686,10 @@ SENTIMENT GROUNDING RULES:
 - If a comment only names an entity without reviewing it, set confidence=0.4.
 
 LOCATION / TIME FILTERING:
-- For location-specific queries, only extract entities confirmed to be in that location.
-  If the comment places an entity in a DIFFERENT location, exclude that entity entirely.
+- For location-specific queries, only extract SPECIFIC NAMED VENUES confirmed to be in that
+  location. NEVER extract city names, metro abbreviations, or geographic regions (e.g. "LA",
+  "NY", "NYC", "Chicago") as entity names — those are locations, not venues.
+  If a comment mentions a venue in a DIFFERENT location, exclude it entirely (entities=[]).
 - For year-specific queries, only extract entities from that period.
   If the comment is out of scope, set overall_score=1 and entities=[].
 

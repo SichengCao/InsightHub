@@ -273,46 +273,12 @@ def aggregate_generic(aspect_schema: List[str], annos: List[GPTCommentAnno], upv
 
 
 def _normalize_entity_name(name: str) -> str:
-    """Normalize entity names for better deduplication."""
+    """Normalize entity name for deduplication: lowercase, strip punctuation."""
     import re
-    
     name = name.strip().lower()
-    
-    # Remove common punctuation and normalize apostrophes
-    name = re.sub(r"[''`]", "'", name)
-    name = re.sub(r"[']", "", name)  # Remove apostrophes for comparison
-    
-    # Common variations - specific restaurant mappings
-    variations = {
-        "joe's pizza": "joe's",
-        "joe's": "joe's",
-        "joes": "joe's",
-        "joes pizza": "joe's",
-        "le bernardin": "le bernardin",
-        "bernardin": "le bernardin",
-        "tatiana": "tatiana",
-        "tatiana's": "tatiana",
-        "l&b": "l&b",
-        "l and b": "l&b",
-        # Korean restaurant variations
-        "midos": "midos",
-        "mido's": "midos",
-        "mido cart": "midos",
-        "mido": "midos",
-    }
-    
-    # Check exact matches first
-    if name in variations:
-        return variations[name]
-    
-    # For similar names like "Midos" vs "Mido's", normalize by removing apostrophes
-    normalized = re.sub(r"'", "", name)
-    
-    # If we have a normalized version in variations, use it
-    if normalized in variations:
-        return variations[normalized]
-    
-    return normalized
+    name = re.sub(r"[''`]", "", name)
+    name = re.sub(r"[^\w\s]", "", name)
+    return re.sub(r"\s+", " ", name).strip()
 
 def _is_valid_entity_name(name: str, entity_type: str) -> bool:
     """Validate entity name: filter obvious non-entities before scoring."""
@@ -347,49 +313,6 @@ def _extract_query_location(query: str) -> str:
     return ""
 
 
-def _context_contradicts_location(mention_context: str, query_location: str) -> bool:
-    """
-    Return True only when the mention_context contains an explicit "in <place>"
-    phrase where <place> shares NO tokens with the query location AND is at least
-    two words (reducing false positives from single-word place names that may be
-    sub-regions of the query location).
-
-    Conservative by design: we only block when we are highly confident the entity
-    is in a different location. False negatives (missing some cross-location
-    entities) are preferable to false positives (dropping valid local entities).
-    """
-    if not query_location or not mention_context:
-        return False
-
-    import re
-
-    query_tokens = set(re.findall(r"[a-z]+", query_location.lower()))
-    ctx_lower = mention_context.lower()
-
-    STOP = {"the", "a", "an", "my", "your", "our", "their", "this", "that",
-            "these", "those", "its", "her", "his"}
-
-    # Match "in <place>" where <place> is two or more words.
-    # Requiring two words avoids false positives from single-word sub-regions
-    # that may legitimately belong to the query's metro area.
-    loc_signals = re.findall(
-        r"\bin\s+([a-z][a-z]+(?:\s+[a-z][a-z]+)+)(?:\s|,|\.|$)",
-        ctx_lower,
-    )
-
-    for phrase in loc_signals:
-        phrase = phrase.strip()
-        if phrase.split()[0] in STOP:
-            continue
-        phrase_tokens = set(re.findall(r"[a-z]+", phrase))
-        if phrase_tokens and phrase_tokens.isdisjoint(query_tokens):
-            logger.debug(
-                f"Context '{mention_context}' contradicts query location '{query_location}' "
-                f"(found 'in {phrase}')"
-            )
-            return True
-
-    return False
 
 def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entity_type: str, min_mentions: int = 3, query: str = "") -> List[RankingItem]:
     """Rank entities based on mentions and scores."""
@@ -409,45 +332,16 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
         base_weight = _winsor_weight(upvote_map.get(anno.comment_id, 1))
 
         for entity in anno.entities:
-            # ── Filtering rules ──────────────────────────────────────────────
-            # 1. Drop low-confidence extractions — likely hallucinations
+            # Drop low-confidence extractions
             if entity.confidence < 0.5:
-                logger.debug(f"Dropped low-confidence entity '{entity.name}' ({entity.confidence:.2f})")
                 continue
 
-            # 2. Flexible entity type matching
-            if not (
-                entity.entity_type == entity_type
-                or entity.entity_type == entity_type.rstrip('s')
-                or entity.entity_type == entity_type + 's'
-                or entity_type in entity.entity_type
-                or entity.entity_type in entity_type
-                or (entity_type == "locations" and entity.entity_type in [
-                    "golf course", "restaurant", "hotel", "store", "shop",
-                    "cafe", "bar", "club", "park", "beach", "museum", "theater", "venue"])
-                or (entity_type == "restaurant" and entity.entity_type in [
-                    "restaurant", "cafe", "bar", "diner", "eatery"])
-                or (entity_type == "hotel" and entity.entity_type in [
-                    "hotel", "resort", "inn", "lodge"])
-            ):
-                continue
-
-            # 3. Validate entity name (filter generic placeholders)
-            if not _is_valid_entity_name(entity.name, entity_type):
-                logger.debug(f"Filtered out generic entity name: '{entity.name}'")
-                continue
-
-            # 4. Drop the entity if its name IS the query location
-            #    e.g. "Bay Area" in a "bay area golf" query
-            mention_ctx = getattr(entity, 'mention_context', '') or ''
+            # Drop the entity if its name IS the query location (e.g. "Bay Area" in a bay area query)
             if query_location and entity.name.strip().lower() == query_location:
-                logger.debug(f"Filtered query-location entity name: '{entity.name}'")
                 continue
 
-            # 5. Drop the entity if its mention_context places it in a different location
-            #    e.g. context says "in Long Island" but query asks for "bay area"
-            if _context_contradicts_location(mention_ctx, query_location):
-                logger.debug(f"Filtered cross-location entity: '{entity.name}' ctx='{mention_ctx}'")
+            # Drop generic placeholder names (e.g. "the area", "the city")
+            if not _is_valid_entity_name(entity.name, entity_type):
                 continue
 
             # ── Scoring ──────────────────────────────────────────────────────
