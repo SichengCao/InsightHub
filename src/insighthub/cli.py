@@ -103,7 +103,7 @@ def cmd_analyze(args):
     # Process based on intent
     if intent_schema.intent == "RANKING":
         # Rank entities
-        ranking = rank_entities(annos, upvote_map, intent_schema.entity_type, min_mentions=1)
+        ranking = rank_entities(annos, upvote_map, intent_schema.entity_type, min_mentions=1, query=query)
         print(f"Found {len(ranking)} ranked entities")
         
         # Attach quotes to ranking items

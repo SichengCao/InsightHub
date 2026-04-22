@@ -494,7 +494,7 @@ if run_analysis:
             st.write("📊 Scoring and summarising…")
             if intent_schema.intent == "RANKING":
                 ranking = rank_entities(
-                    annos, upvote_map, intent_schema.entity_type, min_mentions=1
+                    annos, upvote_map, intent_schema.entity_type, min_mentions=1, query=query
                 )
                 for item in ranking:
                     item.quotes = [

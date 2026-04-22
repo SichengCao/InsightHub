@@ -315,32 +315,108 @@ def _normalize_entity_name(name: str) -> str:
     return normalized
 
 def _is_valid_entity_name(name: str, entity_type: str) -> bool:
-    """
-    Basic validation for entity names - let GPT handle the intelligent filtering.
-    
-    Only filters out obviously invalid names (too short, empty, etc.).
-    The real filtering for specific vs generic entities happens in GPT analysis.
-    """
+    """Validate entity name: filter obvious non-entities before scoring."""
     name = name.strip()
-    
-    # Only filter out obviously invalid names
     if len(name) < 2:
         return False
-    
-    # Let GPT handle the intelligent distinction between specific entities 
-    # (like "iPhone 15 Pro", "Le Bernardin") and generic descriptions
-    # (like "a good camera", "michelin restaurant")
+    if name.lower() in DomainConstants.GEO_REGION_FILTER:
+        logger.debug(f"Filtered generic placeholder name: '{name}'")
+        return False
     return True
 
-def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entity_type: str, min_mentions: int = 3) -> List[RankingItem]:
+
+def _extract_query_location(query: str) -> str:
+    """
+    Pull the location phrase out of the query so we can filter entities
+    that belong to a different place — without maintaining a hardcoded city list.
+
+    Examples:
+      "top 10 golf course in bay area"  → "bay area"
+      "best restaurants in NYC"         → "nyc"
+      "Tesla Model Y review"            → ""   (no location)
+    """
+    import re
+    # Match everything after a location preposition
+    m = re.search(
+        r"\b(?:in|near|around|at|for)\s+(.+)$",
+        query.strip(),
+        re.IGNORECASE,
+    )
+    if m:
+        return m.group(1).strip().lower()
+    return ""
+
+
+def _context_contradicts_location(mention_context: str, query_location: str) -> bool:
+    """
+    Return True only when the mention_context contains an explicit "in <place>"
+    phrase where <place> shares NO tokens with the query location AND is at least
+    two words (reducing false positives from single-word place names that may be
+    sub-regions of the query location).
+
+    Conservative by design: we only block when we are highly confident the entity
+    is in a different location. False negatives (missing some cross-location
+    entities) are preferable to false positives (dropping valid local entities).
+    """
+    if not query_location or not mention_context:
+        return False
+
+    import re
+
+    query_tokens = set(re.findall(r"[a-z]+", query_location.lower()))
+    ctx_lower = mention_context.lower()
+
+    # Match "in <place>" where <place> is two or more words and does NOT start
+    # with an article or common preposition (avoids "in the heart of X" idioms).
+    # Single-word places are skipped — too many sub-regions share no tokens
+    # with their parent metro (e.g. "Silicon Valley" ≠ "bay area" tokens).
+    STOP = {"the", "a", "an", "my", "your", "our", "their", "this", "that",
+            "these", "those", "its", "her", "his"}
+    loc_signals = re.findall(
+        r"\bin\s+([a-z][a-z]+(?:\s+[a-z][a-z]+)+)(?:\s|,|\.|$)",
+        ctx_lower,
+    )
+
+    # Also expand query tokens to include single-word sub-region aliases so
+    # that known sub-regions (e.g. "manhattan" for "nyc") are not falsely flagged.
+    # This is a small, principled mapping — not a city index.
+    METRO_ALIASES: dict[frozenset, set] = {
+        frozenset(["bay", "area"]):  {"silicon", "valley", "peninsula", "marin"},
+        frozenset(["nyc"]):          {"manhattan", "brooklyn", "queens", "bronx", "staten"},
+        frozenset(["new", "york"]):  {"manhattan", "brooklyn", "queens", "bronx", "staten"},
+        frozenset(["los", "angeles"]): {"la", "hollywood", "beverly"},
+    }
+    expanded_query_tokens = set(query_tokens)
+    for metro_tokens, aliases in METRO_ALIASES.items():
+        if metro_tokens.issubset(query_tokens):
+            expanded_query_tokens |= aliases
+
+    for phrase in loc_signals:
+        phrase = phrase.strip()
+        first_word = phrase.split()[0]
+        if first_word in STOP:
+            continue  # skip idioms like "in the heart of X"
+        phrase_tokens = set(re.findall(r"[a-z]+", phrase))
+        if phrase_tokens and phrase_tokens.isdisjoint(expanded_query_tokens):
+            logger.debug(
+                f"Context '{mention_context}' contradicts query location '{query_location}' "
+                f"(found 'in {phrase}')"
+            )
+            return True
+
+    return False
+
+def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entity_type: str, min_mentions: int = 3, query: str = "") -> List[RankingItem]:
     """Rank entities based on mentions and scores."""
+    query_location = _extract_query_location(query)
     entity_stats = defaultdict(lambda: {
         'mentions': 0,
+        'primary_mentions': 0,
         'confidence_sum': 0.0,
         'overall_scores': [],
         'aspect_scores': defaultdict(list),
         'comment_ids': [],
-        'original_names': set()
+        'original_names': set(),
     })
     
     # Aggregate entity data
@@ -371,9 +447,22 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
             ):
                 continue
 
-            # 3. Validate entity name (filter out generic descriptors)
+            # 3. Validate entity name (filter generic placeholders)
             if not _is_valid_entity_name(entity.name, entity_type):
                 logger.debug(f"Filtered out generic entity name: '{entity.name}'")
+                continue
+
+            # 4. Drop the entity if its name IS the query location
+            #    e.g. "Bay Area" in a "bay area golf" query
+            mention_ctx = getattr(entity, 'mention_context', '') or ''
+            if query_location and entity.name.strip().lower() == query_location:
+                logger.debug(f"Filtered query-location entity name: '{entity.name}'")
+                continue
+
+            # 5. Drop the entity if its mention_context places it in a different location
+            #    e.g. context says "in Long Island" but query asks for "bay area"
+            if _context_contradicts_location(mention_ctx, query_location):
+                logger.debug(f"Filtered cross-location entity: '{entity.name}' ctx='{mention_ctx}'")
                 continue
 
             # ── Scoring ──────────────────────────────────────────────────────
@@ -396,6 +485,8 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
             entity_stats[normalized_name]['overall_scores'].append((entity_sentiment, effective_weight))
             entity_stats[normalized_name]['comment_ids'].append(anno.comment_id)
             entity_stats[normalized_name]['original_names'].add(entity.name)
+            if is_primary:
+                entity_stats[normalized_name]['primary_mentions'] += 1
 
             # Use entity-specific aspect scores when available; fall back to
             # comment-level aspect scores only for primary entities.
@@ -408,40 +499,39 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
     ranking_items = []
     for normalized_name, stats in entity_stats.items():
         if stats['mentions'] >= min_mentions:
-            # Calculate overall score
             overall_stars = _weighted_mean(stats['overall_scores']) if stats['overall_scores'] else 3.0
-            
-            # Calculate aspect scores
+
+            # Entities that were NEVER a primary mention (only appeared in
+            # comparison lists or passing context) get blended toward neutral.
+            # This prevents "Course A, B, C are all great" from inflating B and C
+            # to the same 5★ as the comment's primary focus (Course A).
+            if stats['primary_mentions'] == 0:
+                overall_stars = 0.6 * overall_stars + 0.4 * 3.0
+
             aspect_scores = {}
             for aspect_name, scores in stats['aspect_scores'].items():
-                if scores:
-                    aspect_scores[aspect_name] = _weighted_mean(scores)
-                else:
-                    aspect_scores[aspect_name] = 3.0
-            
-            # Calculate confidence
+                aspect_scores[aspect_name] = _weighted_mean(scores) if scores else 3.0
+
             confidence = stats['confidence_sum'] / stats['mentions'] if stats['mentions'] > 0 else 0.0
-            
-            # Choose the best original name (prefer longer, more complete names)
+
             original_names = list(stats['original_names'])
             display_name = max(original_names, key=len) if original_names else normalized_name
-            
-            ranking_item = RankingItem(
+
+            ranking_items.append(RankingItem(
                 name=display_name,
-                overall_stars=overall_stars,
+                overall_stars=round(overall_stars, 2),
                 aspect_scores=aspect_scores,
                 mentions=stats['mentions'],
                 confidence=confidence,
-                quotes=[]  # Will be filled by caller
-            )
-            ranking_items.append(ranking_item)
+                quotes=[],
+            ))
     
     # Sort by overall score descending, then by mentions descending
     ranking_items.sort(key=lambda x: (-x.overall_stars, -x.mentions))
     
     return ranking_items
 
-def rank_entities_with_relaxation(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entity_type: str, min_mentions: int = SearchConstants.DEFAULT_MIN_MENTIONS) -> List[RankingItem]:
+def rank_entities_with_relaxation(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entity_type: str, min_mentions: int = SearchConstants.DEFAULT_MIN_MENTIONS, query: str = "") -> List[RankingItem]:
     """
     Rank entities with automatic relaxation if too few results.
     
@@ -467,7 +557,7 @@ def rank_entities_with_relaxation(annos: List[GPTCommentAnno], upvote_map: Dict[
     for attempt in range(max_retries):
         logger.info(f"Entity ranking attempt {attempt + 1}: min_mentions={current_min_mentions}")
         
-        ranked = rank_entities(annos, upvote_map, entity_type, current_min_mentions)
+        ranked = rank_entities(annos, upvote_map, entity_type, current_min_mentions, query=query)
         
         if len(ranked) >= 3:
             logger.info(f"Entity ranking: {len(ranked)} entities ranked with min_mentions={current_min_mentions}")

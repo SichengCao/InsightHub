@@ -1227,10 +1227,20 @@ ENTITY DISAMBIGUATION RULES (critical for accuracy):
 - Only extract SPECIFIC named entities (proper nouns, brand names, model numbers, place names).
   Do NOT extract generic phrases like "a good camera" or "michelin restaurant".
 
+SENTIMENT GROUNDING RULES:
+- sentiment_score must reflect the author's direct experience with the entity's CORE quality.
+  Golf course: conditions, layout, scenery, value, pace of play, facilities.
+  Restaurant: food quality, service, atmosphere, price. Product: performance, build, features.
+- Do NOT score based on peripheral details: logos, aesthetics, travel context, or any text
+  that does not describe hands-on experience with the entity.
+- If a comment only names an entity without reviewing it (e.g. lists it, mentions its logo,
+  or references it geographically only), set confidence=0.4.
+
 LOCATION / TIME FILTERING:
-- For location-specific queries (e.g. "NYC", "Bay Area"), only extract entities in that location.
-  If a comment mentions a different location, set overall_score=1 and entities=[].
-- For year-specific queries (e.g. "2025 movies"), only extract entities from that period.
+- For location-specific queries (e.g. "Bay Area golf"), only extract entities confirmed to be
+  in that location. If the comment explicitly places an entity in a DIFFERENT location
+  (e.g. "Long Island", "Chicago"), exclude that entity entirely — set its entry to entities=[].
+- For year-specific queries, only extract entities from that period.
   If the comment is about a different year, set overall_score=1 and entities=[].
 
 For each comment return:
@@ -1696,8 +1706,17 @@ ENTITY DISAMBIGUATION RULES (critical for accuracy):
 - include mention_context: a verbatim excerpt (≤80 chars) showing how the entity was mentioned.
 - Only extract SPECIFIC named entities (proper nouns, brand names, model numbers, place names).
 
+SENTIMENT GROUNDING RULES:
+- sentiment_score must reflect the author's direct experience with the entity's CORE quality.
+  Golf course: conditions, layout, scenery, value, pace, facilities.
+  Restaurant: food quality, service, atmosphere, price. Product: performance, build, features.
+- Do NOT score based on peripheral details: logos, aesthetics, travel context, or any text
+  that does not describe hands-on experience with the entity.
+- If a comment only names an entity without reviewing it, set confidence=0.4.
+
 LOCATION / TIME FILTERING:
-- For location-specific queries, only extract entities in that location.
+- For location-specific queries, only extract entities confirmed to be in that location.
+  If the comment places an entity in a DIFFERENT location, exclude that entity entirely.
 - For year-specific queries, only extract entities from that period.
   If the comment is out of scope, set overall_score=1 and entities=[].
 

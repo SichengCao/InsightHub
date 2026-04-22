@@ -121,6 +121,14 @@ class DomainConstants:
     ]
     
     NYC_KEYWORDS = [
-        "nyc", "new york", "manhattan", "brooklyn", "queens", 
+        "nyc", "new york", "manhattan", "brooklyn", "queens",
         "bronx", "staten island", "new york city"
     ]
+
+    # Generic placeholder words that are never valid entity names regardless of query.
+    # Keep this list minimal — location-specific filtering is done dynamically
+    # by extracting the location from the query at runtime (see scoring._extract_query_location).
+    GEO_REGION_FILTER = {
+        "the area", "the region", "the city", "the bay", "the valley",
+        "the town", "the neighborhood", "the district", "the zone",
+    }
