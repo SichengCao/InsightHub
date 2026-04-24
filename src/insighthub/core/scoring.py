@@ -272,6 +272,12 @@ def aggregate_generic(aspect_schema: List[str], annos: List[GPTCommentAnno], upv
     return overall, aspect_averages
 
 
+_GEOGRAPHIC_ENTITY_TYPES = {
+    "location", "city", "region", "area", "country", "state",
+    "neighborhood", "district", "metro", "borough", "county",
+    "province", "territory", "continent",
+}
+
 def _normalize_entity_name(name: str) -> str:
     """Normalize entity name for deduplication: lowercase, strip punctuation."""
     import re
@@ -336,6 +342,10 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
             if entity.confidence < 0.5:
                 continue
 
+            # Drop entities GPT itself classified as geographic types (domain-agnostic: uses GPT's own type field)
+            if (entity.entity_type or "").lower() in _GEOGRAPHIC_ENTITY_TYPES:
+                continue
+
             # Drop the entity if its name IS the query location (e.g. "Bay Area" in a bay area query)
             if query_location and entity.name.strip().lower() == query_location:
                 continue
@@ -374,6 +384,34 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
             for aspect_name, score in aspect_src.items():
                 entity_stats[normalized_name]['aspect_scores'][aspect_name].append((score, effective_weight))
     
+    # Merge entities where one name's words are a strict subset of another's
+    # (e.g. "half moon" collapses into "half moon bay"). Requires ≥2 matching words
+    # so single-word overlaps like "park" don't cause spurious merges.
+    _names = sorted(entity_stats.keys(), key=lambda n: len(set(n.split())))
+    _absorbed = {}
+    for _short in _names:
+        _sw = set(_short.split())
+        if len(_sw) < 2:
+            continue
+        for _long in _names:
+            if _long == _short or _long in _absorbed:
+                continue
+            if _sw < set(_long.split()):
+                _absorbed[_short] = _long
+                break
+    for _short, _long in _absorbed.items():
+        if _short in entity_stats and _long in entity_stats:
+            s, t = entity_stats[_short], entity_stats[_long]
+            t['mentions'] += s['mentions']
+            t['primary_mentions'] += s['primary_mentions']
+            t['confidence_sum'] += s['confidence_sum']
+            t['overall_scores'].extend(s['overall_scores'])
+            t['comment_ids'].extend(s['comment_ids'])
+            t['original_names'].update(s['original_names'])
+            for _asp, _scores in s['aspect_scores'].items():
+                t['aspect_scores'][_asp].extend(_scores)
+            del entity_stats[_short]
+
     # Create ranking items
     ranking_items = []
     for normalized_name, stats in entity_stats.items():

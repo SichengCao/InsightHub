@@ -1043,14 +1043,23 @@ Determine the INTENT:
 
 Generate relevant ASPECTS for this query (3-8 aspects):
 - For tech products: performance, battery, camera, design, price, software, etc.
-- For services: quality, customer service, value, reliability, etc.
-- For locations: atmosphere, accessibility, value, quality, etc.
+- For services/venues: quality, value, atmosphere, accessibility, conditions, etc.
+
+For RANKING queries, set entity_type to the SPECIFIC type of entity being compared.
+NEVER use "locations", "location", "places", or "area" — those are WHERE, not WHAT.
+Use the exact venue or product category instead:
+  * "best golf course in bay area" → entity_type: "golf_course"
+  * "best restaurant in NYC"       → entity_type: "restaurant"
+  * "best hotel in Paris"          → entity_type: "hotel"
+  * "best gym in London"           → entity_type: "gym"
+  * "best iPhone model"            → entity_type: "phone"
+  * "best neighborhoods in SF"     → entity_type: "neighborhood" (query IS about areas)
 
 Return JSON:
 {{
     "intent": "RANKING|SOLUTION|GENERIC",
     "aspects": ["aspect1", "aspect2", "aspect3"],
-    "entity_type": "products|services|locations|etc" (for RANKING queries)
+    "entity_type": "specific_entity_type_or_null"
 }}"""
 
             response = self.chat(
@@ -1176,26 +1185,39 @@ Return JSON:
                     # Truncate long comments to save tokens (keep first 300 chars)
                     truncated_text = text[:300] + "..." if len(text) > 300 else text
                     batch_text += f"Comment {j+1}: {truncated_text}\n\n"
-                
+
+                entity_type_line = (
+                    f"\nEXTRACT ONLY: {entity_type} entities — skip people, organizations, "
+                    f"and anything that is not a {entity_type}."
+                ) if entity_type else ""
                 prompt = f"""Analyze these Reddit comments and provide structured annotations.
 
-USER QUERY: "{query or 'General analysis'}"
+USER QUERY: "{query or 'General analysis'}"{entity_type_line}
 
 Comments:
 {batch_text}
 
 Aspects to score: {', '.join(aspects)}
 
-ENTITY DISAMBIGUATION RULES (critical for accuracy):
-- Extract ALL named entities mentioned, even those used for comparison.
+ENTITY EXTRACTION RULES (critical for accuracy):
+- Extract specific named VENUES, PRODUCTS, or BUSINESSES that the author directly experienced.
+  These are proper nouns representing reviewable things: golf courses, restaurants, phones, hotels.
+- If EXTRACT ONLY is specified above, only extract entities of that exact category.
+  Skip people, instructors, media channels, brands, events, or anything not of that category.
+  Example: EXTRACT ONLY golf_course → extract "Harding Park" but NOT "Tom Hsieh" or "Fried Egg Golf".
+- NEVER extract geographic labels as entities: city abbreviations (LA, NY, NYC, SD, SF),
+  metro area names, states, regions, or vague references like "Bay Area courses" or "SoCal spots".
+  Geographic labels describe WHERE, not WHAT is being reviewed — they are not entities.
+- For comparison mentions (e.g. "better than Samsung"), extract the compared entity with
+  is_primary=false and its own sentiment_score reflecting the author's view of it.
 - For EACH entity provide a SEPARATE sentiment_score (1-5) based solely on how the author
-  feels about THAT entity in this comment — not the comment's overall tone.
+  feels about THAT specific entity — not the comment's overall tone.
   Example: "iPhone 15 blows away the Samsung S24" → iPhone 15 sentiment=5, Samsung S24 sentiment=2
 - Set is_primary=true for the entity that is the main subject/focus.
   Set is_primary=false for entities mentioned only as comparisons or context.
-- include mention_context: a verbatim excerpt (≤80 chars) showing how the entity was mentioned.
-- Only extract SPECIFIC named entities (proper nouns, brand names, model numbers, place names).
-  Do NOT extract generic phrases like "a good camera" or "michelin restaurant".
+- Include mention_context: a verbatim excerpt (≤80 chars) showing how the entity was mentioned.
+- The type field must be the specific entity category (e.g. "golf_course", "phone", "restaurant"),
+  NEVER a geographic type like "location", "city", "region", "area", or "country".
 
 SENTIMENT GROUNDING RULES:
 - sentiment_score must reflect the author's direct experience with the entity's CORE quality.
@@ -1207,12 +1229,16 @@ SENTIMENT GROUNDING RULES:
   or references it geographically only), set confidence=0.4.
 
 LOCATION / TIME FILTERING:
-- For location-specific queries (e.g. "Bay Area golf"), only extract SPECIFIC NAMED VENUES
-  confirmed to be in that location. NEVER extract city names, metro abbreviations, or geographic
-  regions (e.g. "LA", "NY", "NYC", "Chicago", "California") as entity names — those are locations,
-  not venues. If a comment mentions a venue in a DIFFERENT location, exclude it (entities=[]).
+- For location-specific queries (e.g. "Bay Area golf courses"):
+  * Only extract SPECIFIC NAMED VENUES confirmed to be IN that location.
+  * If a venue is in a DIFFERENT location, exclude it entirely (entities=[]).
+  * Geographic references used as comparisons ("better than LA courses", "beats NY") must NOT
+    become entities — skip them entirely, do not extract "LA" or "NY" as entity names.
 - For year-specific queries, only extract entities from that period.
-  If the comment is about a different year, set overall_score=1 and entities=[].
+  If the comment is out of scope, set overall_score=1 and entities=[].
+
+WRONG (for query "Bay Area golf"): {{"name":"LA","type":"location"}} or {{"name":"SoCal courses","type":"region"}}
+RIGHT (for query "Bay Area golf"): {{"name":"Harding Park","type":"golf_course","confidence":0.9}}
 
 For each comment return:
 1. overall_score: 1-5 (general comment sentiment about the main topic)
@@ -1255,8 +1281,8 @@ Return a JSON array — one object per comment, in input order:
                     system=(
                         "You are an expert at analyzing Reddit comments for sentiment, aspects, and entities. "
                         "CRITICAL: (1) Assign each entity its OWN sentiment_score based on how the author feels "
-                        "about that specific entity — do not reuse the comment's overall score for every entity. "
-                        "(2) Extract ONLY specific named entities (proper nouns, brands, model numbers, place names). "
+                        "about that specific entity. (2) Extract ONLY specific named venues, products, or businesses — "
+                        "NEVER extract city names, regions, or geographic labels as entities. "
                         "(3) Return ONLY valid JSON array, no markdown code blocks."
                     ),
                     user=prompt,
@@ -1278,7 +1304,7 @@ Return a JSON array — one object per comment, in input order:
                             entities.append(EntityRef(
                                 name=ed.get("name", ""),
                                 entity_type=ed.get("type", entity_type or "unknown"),
-                                confidence=float(ed.get("confidence", 0.5)),
+                                confidence=float(ed.get("confidence", 0.0)),
                                 sentiment_score=float(ed.get("sentiment_score", annotation_data.get("overall_score", 3.0))),
                                 aspect_scores={k: float(v) for k, v in (ed.get("aspect_scores") or {}).items()},
                                 is_primary=bool(ed.get("is_primary", True)),
@@ -1535,14 +1561,23 @@ Determine the INTENT:
 
 Generate relevant ASPECTS for this query (3-8 aspects):
 - For tech products: performance, battery, camera, design, price, software, etc.
-- For services: quality, customer service, value, reliability, etc.
-- For locations: atmosphere, accessibility, value, quality, etc.
+- For services/venues: quality, value, atmosphere, accessibility, conditions, etc.
+
+For RANKING queries, set entity_type to the SPECIFIC type of entity being compared.
+NEVER use "locations", "location", "places", or "area" — those are WHERE, not WHAT.
+Use the exact venue or product category instead:
+  * "best golf course in bay area" → entity_type: "golf_course"
+  * "best restaurant in NYC"       → entity_type: "restaurant"
+  * "best hotel in Paris"          → entity_type: "hotel"
+  * "best gym in London"           → entity_type: "gym"
+  * "best iPhone model"            → entity_type: "phone"
+  * "best neighborhoods in SF"     → entity_type: "neighborhood" (query IS about areas)
 
 Return JSON:
 {{
     "intent": "RANKING|SOLUTION|GENERIC",
     "aspects": ["aspect1", "aspect2", "aspect3"],
-    "entity_type": "products|services|locations|etc" (for RANKING queries)
+    "entity_type": "specific_entity_type_or_null"
 }}"""
 
             response = self.chat(
@@ -1657,25 +1692,39 @@ Return JSON:
                     # Truncate long comments to save tokens (keep first 300 chars)
                     truncated_text = text[:300] + "..." if len(text) > 300 else text
                     batch_text += f"Comment {j+1}: {truncated_text}\n\n"
-                
+
+                entity_type_line = (
+                    f"\nEXTRACT ONLY: {entity_type} entities — skip people, organizations, "
+                    f"and anything that is not a {entity_type}."
+                ) if entity_type else ""
                 prompt = f"""Analyze these Reddit comments and provide structured annotations.
 
-USER QUERY: "{query or 'General analysis'}"
+USER QUERY: "{query or 'General analysis'}"{entity_type_line}
 
 Comments:
 {batch_text}
 
 Aspects to score: {', '.join(aspects)}
 
-ENTITY DISAMBIGUATION RULES (critical for accuracy):
-- Extract ALL named entities mentioned, even those used for comparison.
+ENTITY EXTRACTION RULES (critical for accuracy):
+- Extract specific named VENUES, PRODUCTS, or BUSINESSES that the author directly experienced.
+  These are proper nouns representing reviewable things: golf courses, restaurants, phones, hotels.
+- If EXTRACT ONLY is specified above, only extract entities of that exact category.
+  Skip people, instructors, media channels, brands, events, or anything not of that category.
+  Example: EXTRACT ONLY golf_course → extract "Harding Park" but NOT "Tom Hsieh" or "Fried Egg Golf".
+- NEVER extract geographic labels as entities: city abbreviations (LA, NY, NYC, SD, SF),
+  metro area names, states, regions, or vague references like "Bay Area courses" or "SoCal spots".
+  Geographic labels describe WHERE, not WHAT is being reviewed — they are not entities.
+- For comparison mentions (e.g. "better than Samsung"), extract the compared entity with
+  is_primary=false and its own sentiment_score reflecting the author's view of it.
 - For EACH entity provide a SEPARATE sentiment_score (1-5) based solely on how the author
-  feels about THAT entity in this comment — not the comment's overall tone.
+  feels about THAT specific entity — not the comment's overall tone.
   Example: "iPhone 15 blows away the Samsung S24" → iPhone 15 sentiment=5, Samsung S24 sentiment=2
 - Set is_primary=true for the entity that is the main subject/focus.
   Set is_primary=false for entities mentioned only as comparisons or context.
-- include mention_context: a verbatim excerpt (≤80 chars) showing how the entity was mentioned.
-- Only extract SPECIFIC named entities (proper nouns, brand names, model numbers, place names).
+- Include mention_context: a verbatim excerpt (≤80 chars) showing how the entity was mentioned.
+- The type field must be the specific entity category (e.g. "golf_course", "phone", "restaurant"),
+  NEVER a geographic type like "location", "city", "region", "area", or "country".
 
 SENTIMENT GROUNDING RULES:
 - sentiment_score must reflect the author's direct experience with the entity's CORE quality.
@@ -1686,12 +1735,16 @@ SENTIMENT GROUNDING RULES:
 - If a comment only names an entity without reviewing it, set confidence=0.4.
 
 LOCATION / TIME FILTERING:
-- For location-specific queries, only extract SPECIFIC NAMED VENUES confirmed to be in that
-  location. NEVER extract city names, metro abbreviations, or geographic regions (e.g. "LA",
-  "NY", "NYC", "Chicago") as entity names — those are locations, not venues.
-  If a comment mentions a venue in a DIFFERENT location, exclude it entirely (entities=[]).
+- For location-specific queries (e.g. "Bay Area golf courses"):
+  * Only extract SPECIFIC NAMED VENUES confirmed to be IN that location.
+  * If a venue is in a DIFFERENT location, exclude it entirely (entities=[]).
+  * Geographic references used as comparisons ("better than LA courses", "beats NY") must NOT
+    become entities — skip them entirely, do not extract "LA" or "NY" as entity names.
 - For year-specific queries, only extract entities from that period.
   If the comment is out of scope, set overall_score=1 and entities=[].
+
+WRONG (for query "Bay Area golf"): {{"name":"LA","type":"location"}} or {{"name":"SoCal courses","type":"region"}}
+RIGHT (for query "Bay Area golf"): {{"name":"Harding Park","type":"golf_course","confidence":0.9}}
 
 Return a JSON array — one object per comment, in input order:
 [
@@ -1738,7 +1791,7 @@ Return a JSON array — one object per comment, in input order:
                             entities.append(EntityRef(
                                 name=ed.get("name", ""),
                                 entity_type=ed.get("type", entity_type or "unknown"),
-                                confidence=float(ed.get("confidence", 0.5)),
+                                confidence=float(ed.get("confidence", 0.0)),
                                 sentiment_score=float(ed.get("sentiment_score", annotation_data.get("overall_score", 3.0))),
                                 aspect_scores={k: float(v) for k, v in (ed.get("aspect_scores") or {}).items()},
                                 is_primary=bool(ed.get("is_primary", True)),
