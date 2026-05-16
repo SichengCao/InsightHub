@@ -7,8 +7,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 import yaml
 import os
+from diskcache import Cache
 
 from ..core.config import settings
+from ..core.constants import FileConstants
 from ..core.cross_platform_models import Platform, QueryIntent, WeightedResult
 from .reddit_client import RedditService
 from .youtube_client import YouTubeService
@@ -30,6 +32,7 @@ class CrossPlatformManager:
             # Platform.XIAOHONGSHU: XiaohongshuService(),
         }
         self.platform_weights = self._load_platform_weights()
+        self._scrape_cache = Cache(FileConstants.CACHE_DIR)
     
     def _load_platform_weights(self) -> Dict[str, Any]:
         """Load platform weighting configuration."""
@@ -148,20 +151,33 @@ class CrossPlatformManager:
         
         return weights
     
-    def scrape_all_platforms(self, query: str, limit_per_platform: int = 50, 
+    def scrape_all_platforms(self, query: str, limit_per_platform: int = 50,
                            enabled_platforms: Optional[List[Platform]] = None) -> Dict[str, List[dict]]:
-        """Scrape all enabled platforms in parallel."""
-        
+        """Scrape all enabled platforms in parallel, with 1-hour result cache."""
+
         if enabled_platforms is None:
             enabled_platforms = list(Platform)
-        
+
+        # Cache key includes query, limit, and sorted platform list so any change busts it.
+        cache_key = (
+            "scrape_v1",
+            query.lower().strip(),
+            limit_per_platform,
+            tuple(sorted(p.value for p in enabled_platforms)),
+        )
+        cached = self._scrape_cache.get(cache_key)
+        if cached is not None:
+            total = sum(len(v) for v in cached.values())
+            logger.info(f"✅ Scrape cache hit for '{query}' → {total} reviews (skipping API calls)")
+            return cached
+
         results = {}
         platform_limits = {}
-        
+
         # Set platform-specific limits based on API constraints
         for platform in enabled_platforms:
             platform_limits[platform] = limit_per_platform
-        
+
         # Execute scraping in parallel
         with ThreadPoolExecutor(max_workers=len(enabled_platforms)) as executor:
             future_to_platform = {}
@@ -188,7 +204,9 @@ class CrossPlatformManager:
                 except Exception as e:
                     logger.error(f"❌ {platform.value}: failed with error: {e}")
                     results[platform.value] = []
-        
+
+        # Cache for 1 hour so repeat queries skip all API calls.
+        self._scrape_cache.set(cache_key, results, expire=3600)
         return results
     
     def aggregate_results(self, platform_results: Dict[str, List[dict]], 

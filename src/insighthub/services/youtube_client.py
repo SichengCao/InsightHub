@@ -1,7 +1,7 @@
 """YouTube data collection service for InsightHub."""
 
 import logging
-import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 import requests
@@ -153,23 +153,25 @@ class YouTubeService:
         relevant_videos = [v for v in videos if self._is_relevant_video(v, query)]
         logger.info(f"Found {len(relevant_videos)} relevant videos out of {len(videos)} total")
         
+        target_videos = relevant_videos[:10]
+        per_video_limit = max(1, limit // max(1, len(target_videos)))
+
+        def _fetch_video(video: dict) -> List[dict]:
+            comments = self.get_video_comments(video["video_id"], max_comments=per_video_limit)
+            for c in comments:
+                c["video_title"] = video["title"]
+                c["video_id"] = video["video_id"]
+                c["channel_title"] = video["channel_title"]
+            return comments
+
         all_comments = []
-        for video in relevant_videos[:10]:  # Limit to top 10 relevant videos
-            video_comments = self.get_video_comments(
-                video["video_id"], 
-                max_comments=limit // 10
-            )
-            
-            # Add video context to comments
-            for comment in video_comments:
-                comment["video_title"] = video["title"]
-                comment["video_id"] = video["video_id"]
-                comment["channel_title"] = video["channel_title"]
-            
-            all_comments.extend(video_comments)
-            
-            # Rate limiting
-            time.sleep(0.1)
+        with ThreadPoolExecutor(max_workers=min(5, max(1, len(target_videos)))) as executor:
+            futures = [executor.submit(_fetch_video, v) for v in target_videos]
+            for future in as_completed(futures):
+                try:
+                    all_comments.extend(future.result())
+                except Exception as e:
+                    logger.warning(f"Failed to fetch video comments: {e}")
         
         # Convert to dict format matching Reddit client
         reviews = []

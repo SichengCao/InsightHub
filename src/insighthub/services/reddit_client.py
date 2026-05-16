@@ -3,6 +3,7 @@
 import logging
 import time
 import random
+import threading
 import unicodedata
 import re
 from typing import List
@@ -265,7 +266,7 @@ class RedditService:
             return any(rx.search(text or "") for rx in em)
         return _ok
     
-    def _execute_single_search(self, bucket: str, term: str, strategy: str, plan: SearchPlan, seen_posts: set) -> tuple:
+    def _execute_single_search(self, bucket: str, term: str, strategy: str, plan: SearchPlan, seen_posts: set, stop_event: threading.Event = None) -> tuple:
         """
         Execute a single Reddit search and return comments.
         
@@ -281,7 +282,10 @@ class RedditService:
         """
         comments = []
         search_id = f"r/{bucket} '{term}' ({strategy})"
-        
+
+        if stop_event and stop_event.is_set():
+            return ([], 0, f"{search_id} [skipped]")
+
         try:
             sr = self.reddit.subreddit(bucket)
             submissions = sr.search(term, sort=strategy, time_filter=plan.time_filter, syntax="lucene", limit=SearchConstants.REDDIT_SEARCH_LIMIT)
@@ -397,35 +401,40 @@ class RedditService:
             start_time = time.time()
             logger.info(f"🚀 Starting {total_searches} parallel Reddit API searches...")
             
-            # Execute searches in parallel using ThreadPoolExecutor
-            # Max 8 workers for maximum speed
+            # Execute searches in parallel using ThreadPoolExecutor.
+            # A shared stop_event lets completed workers signal queued ones to skip.
+            stop_event = threading.Event()
+            target_raw = limit * 4  # stop collecting once we have 4× the target
             max_workers = min(8, total_searches)
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # Submit all search tasks at once
                 future_to_task = {
-                    executor.submit(self._execute_single_search, bucket, term, strategy, plan, seen_posts): (bucket, term, strategy)
+                    executor.submit(self._execute_single_search, bucket, term, strategy, plan, seen_posts, stop_event): (bucket, term, strategy)
                     for bucket, term, strategy in search_tasks
                 }
-                
-                # Process completed searches as they finish
+
                 for future in as_completed(future_to_task):
                     bucket, term, strategy = future_to_task[future]
                     search_count += 1
                     elapsed = time.time() - start_time
-                    
+
                     try:
                         comments, submissions_processed, search_id = future.result()
                         raw_comments.extend(comments)
-                        
                         logger.info(f"🔍 [{search_count}/{total_searches}] {search_id} | Posts: {submissions_processed} | Comments: {len(raw_comments)} | {elapsed:.1f}s")
-                            
+
+                        # True early termination: signal remaining queued tasks to skip.
+                        if len(raw_comments) >= target_raw and not stop_event.is_set():
+                            stop_event.set()
+                            for f in future_to_task:
+                                f.cancel()
+                            logger.info(f"⚡ Early stop: {len(raw_comments)} raw comments ≥ target {target_raw}")
+
                     except Exception as e:
-                        logger.debug(f"Search task failed for r/{bucket} '{term}' ({strategy}': {e}")
+                        logger.debug(f"Search task failed for r/{bucket} '{term}' ({strategy}): {e}")
                         continue
-                
-                # Log completion after all searches finish
-                elapsed_final = time.time() - start_time
-                logger.info(f"✅ All {search_count} searches completed in {elapsed_final:.1f}s")
+
+            elapsed_final = time.time() - start_time
+            logger.info(f"✅ {search_count} searches done in {elapsed_final:.1f}s")
         except Exception as e:
             logger.error(f"Reddit scraping failed: {e}")
             return self._scrape_mock(query, limit)
