@@ -4,6 +4,7 @@ import logging
 import json
 import re
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from textwrap import dedent
 from typing import Dict, List, Any
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -1084,39 +1085,46 @@ Return JSON:
             - aspect_scores: Dict of aspect -> score mappings
             - entities: List of extracted entities with confidence
         """
-        annotations = []
-        
-        # Process in batches to avoid token limits and timeouts
-        # Smaller batches = more reliable, larger batches = faster processing
-        batch_size = SearchConstants.LLM_BATCH_SIZE  # Balanced batch size for speed and stability
-        for i in range(0, len(comments), batch_size):
-            batch = comments[i:i + batch_size]
-            
+        batch_size = SearchConstants.LLM_BATCH_SIZE
+        batches = [comments[i:i + batch_size] for i in range(0, len(comments), batch_size)]
+
+        # Build the static parts of the prompt once (shared across all batches).
+        entity_type_line = (
+            f"\nEXTRACT ONLY: {entity_type} entities -- skip people, organizations, "
+            f"and anything that is not a {entity_type}."
+        ) if entity_type else ""
+        aspects_str = ', '.join(aspects) if aspects else 'quality, value, experience'
+        query_str = query or 'General analysis'
+        entity_or_venue = entity_type or 'venue/product'
+
+        system_msg = (
+            "You are an expert at analyzing Reddit comments for sentiment, aspects, and entities. "
+            "CRITICAL: (1) Assign each entity its OWN sentiment_score based on how the author feels "
+            "about that specific entity. (2) Extract ONLY specific named venues, products, or businesses -- "
+            "NEVER extract city names, regions, or geographic labels as entities. "
+            "(3) ALL entity names must be in English or romanized Latin script -- never output Korean, "
+            "Chinese, Japanese, Arabic, or any other non-Latin script characters in the 'name' field. "
+            "Romanize if necessary. "
+            "(4) Return ONLY valid JSON array, no markdown code blocks."
+        )
+
+        def _process_batch(batch_idx: int, batch: list) -> tuple:
+            """Annotate one batch; returns (batch_idx, List[GPTCommentAnno])."""
             try:
-                # Prepare batch text
                 batch_text = ""
                 for j, comment in enumerate(batch):
-                    # Handle both dict and object formats
-                    if isinstance(comment, dict):
-                        text = comment.get('text', '')
-                    else:
-                        text = getattr(comment, 'text', '')
-                    # Truncate long comments to save tokens (keep first 300 chars)
-                    truncated_text = text[:300] + "..." if len(text) > 300 else text
-                    batch_text += f"Comment {j+1}: {truncated_text}\n\n"
+                    text = comment.get('text', '') if isinstance(comment, dict) else getattr(comment, 'text', '')
+                    truncated = text[:300] + "..." if len(text) > 300 else text
+                    batch_text += f"Comment {j+1}: {truncated}\n\n"
 
-                entity_type_line = (
-                    f"\nEXTRACT ONLY: {entity_type} entities -- skip people, organizations, "
-                    f"and anything that is not a {entity_type}."
-                ) if entity_type else ""
                 prompt = f"""Analyze these Reddit comments and provide structured annotations.
 
-USER QUERY: "{query or 'General analysis'}"{entity_type_line}
+USER QUERY: "{query_str}"{entity_type_line}
 
 Comments:
 {batch_text}
 
-Aspects to score: {', '.join(aspects) if aspects else 'quality, value, experience'}
+Aspects to score: {aspects_str}
 
 ENTITY EXTRACTION RULES (critical for accuracy):
 - Extract specific named VENUES, PRODUCTS, or BUSINESSES that the author directly experienced.
@@ -1164,8 +1172,8 @@ LOCATION / TIME FILTERING:
 - For year-specific queries, only extract entities from that period.
   If the comment is out of scope, set overall_score=1 and entities=[].
 
-WRONG (for query "{query or 'your query'}"): {{"name":"[city abbreviation]","type":"location"}} or {{"name":"[region] spots","type":"region"}}
-RIGHT (for query "{query or 'your query'}"): {{"name":"[specific named {entity_type or 'venue/product'}]","type":"{entity_type or 'venue/product'}","confidence":0.9}}
+WRONG (for query "{query_str}"): {{"name":"[city abbreviation]","type":"location"}} or {{"name":"[region] spots","type":"region"}}
+RIGHT (for query "{query_str}"): {{"name":"[specific named {entity_or_venue}]","type":"{entity_or_venue}","confidence":0.9}}
 
 For each comment return:
 1. overall_score: 1-5 (general comment sentiment about the main topic)
@@ -1205,65 +1213,71 @@ Return a JSON array -- one object per comment, in input order:
 ]"""
 
                 response = self.chat(
-                    system=(
-                        "You are an expert at analyzing Reddit comments for sentiment, aspects, and entities. "
-                        "CRITICAL: (1) Assign each entity its OWN sentiment_score based on how the author feels "
-                        "about that specific entity. (2) Extract ONLY specific named venues, products, or businesses -- "
-                        "NEVER extract city names, regions, or geographic labels as entities. "
-                        "(3) ALL entity names must be in English or romanized Latin script -- never output Korean, "
-                        "Chinese, Japanese, Arabic, or any other non-Latin script characters in the 'name' field. "
-                        "Romanize if necessary. "
-                        "(4) Return ONLY valid JSON array, no markdown code blocks."
-                    ),
+                    system=system_msg,
                     user=prompt,
                     temperature=0.2,
                     max_tokens=4000,
                 )
 
                 batch_annotations = _safe_json_loads(response)
-
-                # Build lookup by position; pad with empty dicts if GPT returned fewer
-                # items than comments (GPT sometimes skips comments with no entities).
                 anno_by_pos = {j: d for j, d in enumerate(batch_annotations) if isinstance(d, dict)}
 
+                batch_results = []
                 for j, comment in enumerate(batch):
-                        comment_id = comment.get("id", "") if isinstance(comment, dict) else getattr(comment, "id", "")
-                        annotation_data = anno_by_pos.get(j, {})
-
-                        entities = []
-                        for ed in annotation_data.get("entities", []):
-                            entities.append(EntityRef(
-                                name=ed.get("name", ""),
-                                entity_type=ed.get("type", entity_type or "unknown"),
-                                confidence=float(ed.get("confidence", 0.0)),
-                                sentiment_score=float(ed.get("sentiment_score", annotation_data.get("overall_score", 3.0))),
-                                aspect_scores={k: float(v) for k, v in (ed.get("aspect_scores") or {}).items()},
-                                is_primary=bool(ed.get("is_primary", True)),
-                                mention_context=str(ed.get("mention_context", ""))[:100],
-                            ))
-
-                        annotations.append(GPTCommentAnno(
-                            comment_id=comment_id,
-                            overall_score=annotation_data.get("overall_score", 3),
-                            aspect_scores=annotation_data.get("aspect_scores", {}),
-                            entities=entities,
-                            primary_entity=annotation_data.get("primary_entity") or None,
-                            solution_key=annotation_data.get("solution_key") or "",
+                    comment_id = comment.get("id", "") if isinstance(comment, dict) else getattr(comment, "id", "")
+                    annotation_data = anno_by_pos.get(j, {})
+                    entities = []
+                    for ed in annotation_data.get("entities", []):
+                        entities.append(EntityRef(
+                            name=ed.get("name", ""),
+                            entity_type=ed.get("type", entity_type or "unknown"),
+                            confidence=float(ed.get("confidence", 0.0)),
+                            sentiment_score=float(ed.get("sentiment_score", annotation_data.get("overall_score", 3.0))),
+                            aspect_scores={k: float(v) for k, v in (ed.get("aspect_scores") or {}).items()},
+                            is_primary=bool(ed.get("is_primary", True)),
+                            mention_context=str(ed.get("mention_context", ""))[:100],
                         ))
+                    batch_results.append(GPTCommentAnno(
+                        comment_id=comment_id,
+                        overall_score=annotation_data.get("overall_score", 3),
+                        aspect_scores=annotation_data.get("aspect_scores", {}),
+                        entities=entities,
+                        primary_entity=annotation_data.get("primary_entity") or None,
+                        solution_key=annotation_data.get("solution_key") or "",
+                    ))
+                return batch_idx, batch_results
 
             except Exception as e:
-                logger.error(f"GPT annotation batch failed: {e}")
+                logger.error(f"GPT annotation batch {batch_idx} failed: {e}")
+                fallbacks = []
                 for comment in batch:
                     comment_id = comment.get("id", "") if isinstance(comment, dict) else getattr(comment, "id", "")
-                    annotations.append(GPTCommentAnno(
+                    fallbacks.append(GPTCommentAnno(
                         comment_id=comment_id,
                         overall_score=3,
-                        aspect_scores={aspect: 3 for aspect in aspects},
+                        aspect_scores={a: 3 for a in aspects},
                         entities=[],
                         primary_entity=None,
                         solution_key="",
                     ))
+                return batch_idx, fallbacks
 
+        # Run all batches concurrently (diskcache is thread-safe).
+        # max_workers=5 keeps well within OpenAI rate limits for any tier.
+        max_workers = min(5, len(batches))
+        results_by_idx: dict = {}
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_process_batch, idx, batch): idx
+                       for idx, batch in enumerate(batches)}
+            for future in as_completed(futures):
+                batch_idx, batch_annos = future.result()
+                results_by_idx[batch_idx] = batch_annos
+                logger.debug(f"Annotation batch {batch_idx + 1}/{len(batches)} complete")
+
+        # Reassemble in original comment order.
+        annotations = []
+        for idx in range(len(batches)):
+            annotations.extend(results_by_idx.get(idx, []))
         return annotations
 
     def generate_dynamic_aspects(self, query: str, sample_comments: List[Dict] = None) -> List[str]:
