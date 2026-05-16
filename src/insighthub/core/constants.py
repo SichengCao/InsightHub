@@ -23,7 +23,7 @@ class SearchConstants:
     MAX_TEXT_HASH_LENGTH = 50  # chars for text hashing
     
     # Batch Processing
-    LLM_BATCH_SIZE = 15  # comments per batch for GPT
+    LLM_BATCH_SIZE = 8  # comments per batch for GPT
     LLM_MAX_TOKENS = 800  # max tokens per GPT response
     LLM_TEMPERATURE = 0.2  # GPT temperature for consistency
     
@@ -35,9 +35,9 @@ class SearchConstants:
     MAX_QUOTES_PER_ENTITY = 3  # quotes per entity
     
     # UI Limits
-    MAX_COMMENTS_UI = 200  # maximum comments user can request
-    MIN_COMMENTS_UI = 10  # minimum comments user can request
-    DEFAULT_COMMENTS_UI = 30  # default comment count (reduced for faster results)
+    MAX_COMMENTS_UI = 500  # maximum comments user can request
+    MIN_COMMENTS_UI = 10   # minimum comments user can request
+    DEFAULT_COMMENTS_UI = 100  # default comment count
     
     MAX_SUBREDDITS_UI = 8  # maximum subreddits user can request (reduced from 12)
     MIN_SUBREDDITS_UI = 2  # minimum subreddits user can request (reduced from 3)

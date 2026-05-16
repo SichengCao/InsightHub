@@ -17,7 +17,7 @@ from insighthub.services.reddit_client import RedditService
 from insighthub.services.llm import LLMServiceFactory
 from insighthub.services.cross_platform_manager import CrossPlatformManager
 from insighthub.core.cross_platform_models import Platform, QueryIntent
-from insighthub.core.scoring import aggregate_generic, rank_entities
+from insighthub.core.scoring import aggregate_generic, rank_entities_with_relaxation
 from insighthub.utils.data_prep import export_to_json
 
 logging.basicConfig(level=logging.INFO)
@@ -377,11 +377,12 @@ with st.sidebar:
 
     st.markdown("### Volume")
     limit = st.slider(
-        "Comments to collect",
+        "Comments to collect (per platform)",
         SearchConstants.MIN_COMMENTS_UI,
         SearchConstants.MAX_COMMENTS_UI,
         SearchConstants.DEFAULT_COMMENTS_UI,
-        step=10,
+        step=25,
+        help="With Reddit + YouTube both active, total reviews = this × 2. Set to 250 for ~500 total.",
     )
 
     st.markdown("---")
@@ -493,9 +494,14 @@ if run_analysis:
             # Step 4 — scoring + summarisation
             st.write("📊 Scoring and summarising…")
             if intent_schema.intent == "RANKING":
-                ranking = rank_entities(
-                    annos, upvote_map, intent_schema.entity_type, min_mentions=1, query=query
+                ranking = rank_entities_with_relaxation(
+                    annos, upvote_map, intent_schema.entity_type, query=query
                 )
+                if intent_schema.entity_type and ranking:
+                    valid_names = set(llm_service.filter_entities_by_type(
+                        [e.name for e in ranking], intent_schema.entity_type
+                    ))
+                    ranking = [e for e in ranking if e.name in valid_names]
                 for item in ranking:
                     item.quotes = [
                         c["text"][:200] + "…"

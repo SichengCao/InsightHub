@@ -10,7 +10,7 @@ from .core.config import settings
 from .core.models import Review
 from .services.reddit_client import RedditService
 from .services.llm import LLMServiceFactory
-from .core.scoring import aggregate_generic, rank_entities
+from .core.scoring import aggregate_generic, rank_entities_with_relaxation
 from .utils.data_prep import export_to_json
 import time
 from collections import defaultdict
@@ -102,8 +102,8 @@ def cmd_analyze(args):
     
     # Process based on intent
     if intent_schema.intent == "RANKING":
-        # Rank entities
-        ranking = rank_entities(annos, upvote_map, intent_schema.entity_type, min_mentions=1, query=query)
+        # Rank entities with progressive relaxation for sparse data
+        ranking = rank_entities_with_relaxation(annos, upvote_map, intent_schema.entity_type, query=args.query)
         print(f"Found {len(ranking)} ranked entities")
         
         # Attach quotes to ranking items
@@ -116,11 +116,10 @@ def cmd_analyze(args):
             item.quotes = entity_comments[:3]  # Top 3 quotes
         
         # Generate summary
-        summary = llm_service.summarize_generic_with_gpt(
-            args.query, 
-            {item.name: item.overall_stars for item in ranking[:5]}, 
-            sum(item.overall_stars for item in ranking[:5]) / len(ranking[:5]) if ranking else 3.0,
-            [quote for item in ranking[:3] for quote in item.quotes]
+        summary = llm_service.summarize_ranking_with_gpt(
+            args.query,
+            [{"name": item.name, "overall_stars": item.overall_stars, "mentions": item.mentions, "quotes": item.quotes}
+             for item in ranking[:15]]
         )
         
         # Prepare payload

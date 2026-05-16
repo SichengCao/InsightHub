@@ -29,9 +29,9 @@ Rules:
   * brand/model aliases, common abbreviations, and for places: local nicknames (e.g., "SF Bay Area","East Bay","Peninsula","Silicon Valley","Marin").
 - SUBREDDIT SELECTION STRATEGY:
   * For location queries: prioritize LOCAL subreddits (city/region names) over general topic subreddits
-    Example: "NYC restaurants" → ['AskNYC', 'NewYorkCity', 'FoodNYC'] NOT ['food', 'restaurants']
+    Example: "NYC restaurants" -> ['AskNYC', 'NewYorkCity', 'FoodNYC'] NOT ['food', 'restaurants']
   * For product queries: prioritize BRAND-SPECIFIC subreddits over general category subreddits  
-    Example: "iPhone 15" → ['iPhone', 'Apple'] NOT ['smartphones', 'technology']
+    Example: "iPhone 15" -> ['iPhone', 'Apple'] NOT ['smartphones', 'technology']
   * For services: prioritize SERVICE-SPECIFIC subreddits
   * NEVER include "all" subreddit - it returns too much irrelevant content
   * Prefer active, relevant subreddits with 10K+ members
@@ -47,22 +47,22 @@ Also infer an internal intent to guide your choices:
 - Otherwise: GENERIC.
 
 Produce JSON with exactly these keys:
-- "terms": 2–4 short search strings (must include the exact raw query once).
+- "terms": 2-4 short search strings (must include the exact raw query once).
   * Make terms SPECIFIC and TARGETED to avoid irrelevant results
   * For location queries: include specific place names, avoid generic terms like "best food"
   * For product queries: include specific model names, avoid generic category terms
   * PRIORITIZE specificity over recall - better to get fewer, more relevant results
-- "subreddits": 2–6 names (no "r/" prefix). AVOID "all" unless absolutely necessary. PRIORITIZE the most relevant and active subreddits.
+- "subreddits": 2-4 names (no "r/" prefix). AVOID "all" unless absolutely necessary. PRIORITIZE the most relevant and active subreddits.
 - "time_filter": one of ["day","week","month","year","all"].
-- "strategies": 1–2 from ["relevance","top","new"].
+- "strategies": 1-3 from ["relevance","top","new"].
 - "min_comment_score": integer 0..50.
 - "per_post_top_n": integer 3..8.
 - "comment_must_patterns": Always empty list [].
 
 Heuristics by inferred intent:
-- RANKING → strategies: ["top","relevance"]; time_filter: "year" (if evergreen) else "all"; per_post_top_n: 5–8; min_comment_score: 3–8 (higher for quality).
-- SOLUTION → strategies: ["new","relevance"]; time_filter: "week" or "month"; per_post_top_n: 6–10; min_comment_score: 0–3.
-- GENERIC → strategies: ["relevance","top"]; time_filter: "month" or "year"; per_post_top_n: 5–8; min_comment_score: 2–5 (higher for quality).
+- RANKING -> strategies: ["top","relevance"]; time_filter: "all" (recommendations are evergreen -- never use "week" or "month"); per_post_top_n: 5-8; min_comment_score: 3-5 (higher for quality).
+- SOLUTION -> strategies: ["new","relevance"]; time_filter: "week" or "month"; per_post_top_n: 6-10; min_comment_score: 0-2.
+- GENERIC -> strategies: ["relevance","top"]; time_filter: "month" or "year"; per_post_top_n: 5-8; min_comment_score: 2-4 (higher for quality).
 
 Output strict JSON only. No comments, no trailing commas.
 """).strip()
@@ -152,7 +152,7 @@ Merge multiple partial JSONs about the same topic. Return ONLY valid JSON.
 Rules:
 - Deduplicate pros/cons by meaning; keep clearest phrasing; union ids.
 - Aspects: weighted average by `count`, round to 1 decimal.
-- Keep the 6–10 best quotes maximizing coverage and variety.
+- Keep the 6-10 best quotes maximizing coverage and variety.
 - Only cite covered ids; no new claims.
 
 IMPORTANT: Return ONLY valid JSON. No explanations, no markdown, no code fences.
@@ -215,27 +215,6 @@ def _norm_for_substring(s: str) -> str:
 def _contains_norm(hay: str, needle: str) -> bool:
     H = _norm_for_substring(hay); N = _norm_for_substring(needle)
     return bool(N) and (N in H)
-
-def _validate_and_fix_coverage(final: dict, id2text: dict) -> dict:
-    cov = set()
-    quotes_ok = []
-    for q in final.get("quotes", []) or []:
-        rid = str(q.get("id", ""))
-        qt  = q.get("quote", "")
-        src = id2text.get(rid, "")
-        if _contains_norm(src, qt):
-            quotes_ok.append(q); cov.add(rid)
-    final["quotes"] = quotes_ok
-
-    # fold in IDs attached to pros/cons
-    for sec in ("pros","cons"):
-        for item in final.get(sec, []) or []:
-            for rid in (item.get("ids", []) or []):
-                rid = str(rid)
-                if rid in id2text:
-                    cov.add(rid)
-    final["coverage_ids"] = list(cov)
-    return final
 
 def _coverage_fallback(final: dict, id2text: dict):
     if final.get("coverage_ids"): 
@@ -359,6 +338,31 @@ class OpenAIService:
                     logger.error(f"Chat failed after {max_retries} attempts: {e}")
                     raise
     
+    def filter_entities_by_type(self, names: list, entity_type: str) -> list:
+        """Return only names whose primary identity matches entity_type, via a single GPT call."""
+        if not names or not entity_type:
+            return names
+        label = entity_type.replace("_", " ")
+        try:
+            verdict = self.chat(
+                system="You are a fact-checker. Answer ONLY with a JSON array of booleans.",
+                user=(
+                    f"For each name below, return true if it is primarily known as a {label} "
+                    f"and false if it is not. Use your world knowledge, not just the name itself.\n"
+                    f"Names: {names}\nReturn ONLY a JSON array like [true, false, true, ...]"
+                ),
+                temperature=0.0,
+                max_tokens=len(names) * 10 + 20,
+            )
+            import re as _re, json as _json
+            flags = _json.loads(_re.search(r'\[.*\]', verdict, _re.S).group(0))
+            kept = [n for n, ok in zip(names, flags) if ok]
+            logger.info(f"Entity type filter: {len(kept)}/{len(names)} kept for {entity_type}")
+            return kept
+        except Exception as e:
+            logger.warning(f"Entity type filter failed ({e}), returning all names")
+            return names
+
     def plan_reddit_search(self, query: str, max_subreddits: int = 4) -> dict:
         """Plan Reddit search strategy using LLM."""
         try:
@@ -686,7 +690,7 @@ class OpenAIService:
             - Focus on actionable insights and specific user experiences
             
             Comments:
-            {concatenated_text[:8000]}  # Limit to avoid token limits
+            {concatenated_text[:8000]}
             """
             
             response = self.client.chat.completions.create(
@@ -797,87 +801,6 @@ class OpenAIService:
         except Exception as e:
             logger.error(f"LLM aspect generation failed: {e}")
             return {}
-    
-    def detect_intent_and_schema(self, query: str) -> IntentSchema:
-        """Detect query intent and generate aspect schema."""
-        try:
-            prompt = f"""
-            Analyze the query "{query}" and determine the user's intent and generate relevant aspects.
-            
-            Return ONLY JSON with this exact schema:
-            {{
-                "intent": "RANKING|SOLUTION|GENERIC",
-                "entity_type": "entity_type_for_ranking_or_null",
-                "aspects": ["aspect1", "aspect2", "aspect3"]
-            }}
-            
-            Intent Rules:
-            - RANKING: User wants to compare/rank specific entities (e.g., "best golf courses", "top restaurants", "iPhone vs Samsung")
-            - SOLUTION: User wants solutions/fixes/how-to (e.g., "fix wind noise", "how to improve battery", "troubleshooting")
-            - GENERIC: General product/service review analysis (e.g., "iPhone 15", "Tesla Model Y", "restaurant reviews")
-            
-            Entity Type Rules (for RANKING queries):
-            - For restaurant queries: use "restaurant" (not "locations")
-            - For product queries: use "product" or specific type like "phone", "car", "movie"
-            - For service queries: use "service" or specific type like "hotel", "gym"
-            - For location queries: use "location" or specific type like "city", "neighborhood"
-            - Examples:
-              * "best restaurant in NYC" → entity_type: "restaurant"
-              * "best iPhone" → entity_type: "phone" 
-              * "best hotel in Paris" → entity_type: "hotel"
-              * "best neighborhoods in SF" → entity_type: "neighborhood"
-            
-            Aspect Rules:
-            - Generate 4-8 relevant aspects based on the query domain
-            - Use specific, actionable aspect names
-            - Focus on aspects users actually discuss in reviews
-            - Make aspects specific to the query domain
-            """
-            
-            response = self.chat(
-                system="You are an expert at analyzing user queries and determining their intent for review analysis.",
-                user=prompt,
-                temperature=0.2,
-                max_tokens=600
-            )
-            
-            json_match = re.search(r'\{.*\}', response, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(0)
-                result = json.loads(json_str)
-            else:
-                result = json.loads(response)
-            
-            intent = result.get("intent", "GENERIC")
-            entity_type = result.get("entity_type")
-            aspects = result.get("aspects", [])
-            
-            if intent not in ["RANKING", "SOLUTION", "GENERIC"]:
-                intent = "GENERIC"
-            
-            clean_aspects = [a.strip() for a in aspects if a.strip()][:8]
-            
-            # Fix common entity_type mismatches
-            if "restaurant" in query.lower() and entity_type == "locations":
-                entity_type = "restaurant"
-            elif "hotel" in query.lower() and entity_type == "locations":
-                entity_type = "hotel"
-            elif "gym" in query.lower() and entity_type == "services":
-                entity_type = "gym"
-            
-            logger.info(f"Detected intent: {intent}, entity_type: {entity_type}, aspects: {len(clean_aspects)}")
-            return IntentSchema(intent=intent, entity_type=entity_type, aspects=clean_aspects)
-                
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse intent detection response: {e}")
-            fallback_aspects = ["Quality", "Performance", "Value", "User Experience"]
-            return IntentSchema(intent="GENERIC", entity_type=None, aspects=fallback_aspects)
-                
-        except Exception as e:
-            logger.error(f"Intent detection failed: {e}")
-            fallback_aspects = ["Quality", "Performance", "Value", "User Experience"]
-            return IntentSchema(intent="GENERIC", entity_type=None, aspects=fallback_aspects)
-    
     
     def summarize_ranking_with_gpt(self, query: str, ranking_items: List[Dict]) -> str:
         """Generate ranking summary focused on top entities with deduplication."""
@@ -1045,15 +968,16 @@ Generate relevant ASPECTS for this query (3-8 aspects):
 - For tech products: performance, battery, camera, design, price, software, etc.
 - For services/venues: quality, value, atmosphere, accessibility, conditions, etc.
 
-For RANKING queries, set entity_type to the SPECIFIC type of entity being compared.
-NEVER use "locations", "location", "places", or "area" — those are WHERE, not WHAT.
-Use the exact venue or product category instead:
-  * "best golf course in bay area" → entity_type: "golf_course"
-  * "best restaurant in NYC"       → entity_type: "restaurant"
-  * "best hotel in Paris"          → entity_type: "hotel"
-  * "best gym in London"           → entity_type: "gym"
-  * "best iPhone model"            → entity_type: "phone"
-  * "best neighborhoods in SF"     → entity_type: "neighborhood" (query IS about areas)
+For RANKING queries, set entity_type to the SPECIFIC venue/product type being compared.
+NEVER use "locations", "location", "places", "area", "food", or bare cuisine names.
+entity_type is the VENUE/SHOP TYPE, not the item served:
+  * "best ramen in Tokyo"             -> entity_type: "ramen_restaurant"
+  * "best Korean restaurant in NYC"   -> entity_type: "Korean_restaurant"
+  * "best pizza in NYC"               -> entity_type: "pizza_restaurant"
+  * "best coffee in Seattle"          -> entity_type: "coffee_shop"
+  * "best golf course in bay area"    -> entity_type: "golf_course"
+  * "best hotel in Paris"             -> entity_type: "hotel"
+  * "best iPhone model"               -> entity_type: "phone"
 
 Return JSON:
 {{
@@ -1083,61 +1007,58 @@ Return JSON:
                 return IntentSchema(
                     intent="GENERIC",
                     aspects=aspect_names,
-                    entity_type="products"
+                    entity_type=None
                 )
-            
+
             # Ensure result is a dictionary
             if not isinstance(result, dict):
                 logger.error(f"Intent detection failed: Expected dict, got {type(result)}")
-                # Generate dynamic aspects instead of hardcoded fallback
                 try:
                     dynamic_aspects = self.generate_dynamic_aspects(query)
                     aspect_names = list(dynamic_aspects.keys()) if dynamic_aspects else ["quality", "value", "performance"]
                 except:
                     aspect_names = ["quality", "value", "performance"]
-                
+
                 return IntentSchema(
                     intent="GENERIC",
                     aspects=aspect_names,
-                    entity_type="products"
+                    entity_type=None
                 )
-            
+
             # Validate and set defaults
             intent = result.get("intent", "GENERIC")
             if intent not in ["RANKING", "SOLUTION", "GENERIC"]:
                 intent = "GENERIC"
-            
+
             aspects = result.get("aspects", [])
             if not aspects:
-                # Generate dynamic aspects instead of hardcoded fallback
                 try:
                     dynamic_aspects = self.generate_dynamic_aspects(query)
                     aspects = list(dynamic_aspects.keys()) if dynamic_aspects else ["quality", "value", "performance"]
                 except:
                     aspects = ["quality", "value", "performance"]
-            
-            entity_type = result.get("entity_type", "products")
-            
-            # Fix common entity_type mismatches
-            if "restaurant" in query.lower() and entity_type == "locations":
-                entity_type = "restaurant"
-            elif "hotel" in query.lower() and entity_type == "locations":
-                entity_type = "hotel"
-            elif "gym" in query.lower() and entity_type == "services":
-                entity_type = "gym"
-            
+
+            entity_type = result.get("entity_type")
+
+            # Null out values the prompt explicitly forbids — enforcement of prompt contract,
+            # not domain logic. GPT was told: "NEVER use 'locations', 'location', 'places',
+            # 'area', 'food', or bare cuisine names."
+            _FORBIDDEN = frozenset({"locations", "location", "places", "place", "area", "areas", "food", "services"})
+            if entity_type and entity_type.lower() in _FORBIDDEN:
+                entity_type = None
+
             return IntentSchema(
                 intent=intent,
                 aspects=aspects,
                 entity_type=entity_type
             )
-            
+
         except Exception as e:
             logger.error(f"Intent detection failed: {e}")
             return IntentSchema(
                 intent="GENERIC",
                 aspects=["quality", "value", "performance"],
-                entity_type="products"
+                entity_type=None
             )
 
     def annotate_comments_with_gpt(self, comments: List[Dict], aspects: List[str], entity_type: str = None, query: str = None) -> List[GPTCommentAnno]:
@@ -1163,8 +1084,6 @@ Return JSON:
             - aspect_scores: Dict of aspect -> score mappings
             - entities: List of extracted entities with confidence
         """
-        import time
-        start_time = time.time()
         annotations = []
         
         # Process in batches to avoid token limits and timeouts
@@ -1187,7 +1106,7 @@ Return JSON:
                     batch_text += f"Comment {j+1}: {truncated_text}\n\n"
 
                 entity_type_line = (
-                    f"\nEXTRACT ONLY: {entity_type} entities — skip people, organizations, "
+                    f"\nEXTRACT ONLY: {entity_type} entities -- skip people, organizations, "
                     f"and anything that is not a {entity_type}."
                 ) if entity_type else ""
                 prompt = f"""Analyze these Reddit comments and provide structured annotations.
@@ -1197,25 +1116,33 @@ USER QUERY: "{query or 'General analysis'}"{entity_type_line}
 Comments:
 {batch_text}
 
-Aspects to score: {', '.join(aspects)}
+Aspects to score: {', '.join(aspects) if aspects else 'quality, value, experience'}
 
 ENTITY EXTRACTION RULES (critical for accuracy):
 - Extract specific named VENUES, PRODUCTS, or BUSINESSES that the author directly experienced.
   These are proper nouns representing reviewable things: golf courses, restaurants, phones, hotels.
 - If EXTRACT ONLY is specified above, only extract entities of that exact category.
   Skip people, instructors, media channels, brands, events, or anything not of that category.
-  Example: EXTRACT ONLY golf_course → extract "Harding Park" but NOT "Tom Hsieh" or "Fried Egg Golf".
+  Example: EXTRACT ONLY golf_course -> extract "Harding Park" but NOT "Tom Hsieh" or "Fried Egg Golf".
+  If the category includes a cuisine (e.g. Korean_restaurant), only extract restaurants whose
+  PRIMARY identity, menu, and cuisine tradition match that cuisine. The restaurant must be
+  recognizable as that type of restaurant by name or description -- serving a few dishes inspired
+  by that cuisine is NOT enough. If you are uncertain, exclude it.
 - NEVER extract geographic labels as entities: city abbreviations (LA, NY, NYC, SD, SF),
   metro area names, states, regions, or vague references like "Bay Area courses" or "SoCal spots".
-  Geographic labels describe WHERE, not WHAT is being reviewed — they are not entities.
+  Geographic labels describe WHERE, not WHAT is being reviewed -- they are not entities.
 - For comparison mentions (e.g. "better than Samsung"), extract the compared entity with
   is_primary=false and its own sentiment_score reflecting the author's view of it.
 - For EACH entity provide a SEPARATE sentiment_score (1-5) based solely on how the author
-  feels about THAT specific entity — not the comment's overall tone.
-  Example: "iPhone 15 blows away the Samsung S24" → iPhone 15 sentiment=5, Samsung S24 sentiment=2
+  feels about THAT specific entity -- not the comment's overall tone.
+  Example: "iPhone 15 blows away the Samsung S24" -> iPhone 15 sentiment=5, Samsung S24 sentiment=2
 - Set is_primary=true for the entity that is the main subject/focus.
   Set is_primary=false for entities mentioned only as comparisons or context.
-- Include mention_context: a verbatim excerpt (≤80 chars) showing how the entity was mentioned.
+- Include mention_context: a verbatim excerpt (~10 chars) showing how the entity was mentioned.
+- ALWAYS write entity names in English or romanized Latin script. If a name appears in a
+  non-Latin script (Korean, Chinese, Japanese, Arabic, etc.), romanize it to its standard
+  English transliteration (e.g., 기사식당 → "Kisa Sikdang", 돈부리 → "Donburi"). This is
+  mandatory for consistent deduplication -- never output raw non-Latin characters in "name".
 - The type field must be the specific entity category (e.g. "golf_course", "phone", "restaurant"),
   NEVER a geographic type like "location", "city", "region", "area", or "country".
 
@@ -1233,12 +1160,12 @@ LOCATION / TIME FILTERING:
   * Only extract SPECIFIC NAMED VENUES confirmed to be IN that location.
   * If a venue is in a DIFFERENT location, exclude it entirely (entities=[]).
   * Geographic references used as comparisons ("better than LA courses", "beats NY") must NOT
-    become entities — skip them entirely, do not extract "LA" or "NY" as entity names.
+    become entities -- skip them entirely, do not extract "LA" or "NY" as entity names.
 - For year-specific queries, only extract entities from that period.
   If the comment is out of scope, set overall_score=1 and entities=[].
 
-WRONG (for query "Bay Area golf"): {{"name":"LA","type":"location"}} or {{"name":"SoCal courses","type":"region"}}
-RIGHT (for query "Bay Area golf"): {{"name":"Harding Park","type":"golf_course","confidence":0.9}}
+WRONG (for query "{query or 'your query'}"): {{"name":"[city abbreviation]","type":"location"}} or {{"name":"[region] spots","type":"region"}}
+RIGHT (for query "{query or 'your query'}"): {{"name":"[specific named {entity_type or 'venue/product'}]","type":"{entity_type or 'venue/product'}","confidence":0.9}}
 
 For each comment return:
 1. overall_score: 1-5 (general comment sentiment about the main topic)
@@ -1247,7 +1174,7 @@ For each comment return:
 4. entities: all named entities with per-entity scores
 5. solution_key: cluster label for SOLUTION queries (null otherwise)
 
-Return a JSON array — one object per comment, in input order:
+Return a JSON array -- one object per comment, in input order:
 [
     {{
         "overall_score": 4,
@@ -1281,23 +1208,27 @@ Return a JSON array — one object per comment, in input order:
                     system=(
                         "You are an expert at analyzing Reddit comments for sentiment, aspects, and entities. "
                         "CRITICAL: (1) Assign each entity its OWN sentiment_score based on how the author feels "
-                        "about that specific entity. (2) Extract ONLY specific named venues, products, or businesses — "
+                        "about that specific entity. (2) Extract ONLY specific named venues, products, or businesses -- "
                         "NEVER extract city names, regions, or geographic labels as entities. "
-                        "(3) Return ONLY valid JSON array, no markdown code blocks."
+                        "(3) ALL entity names must be in English or romanized Latin script -- never output Korean, "
+                        "Chinese, Japanese, Arabic, or any other non-Latin script characters in the 'name' field. "
+                        "Romanize if necessary. "
+                        "(4) Return ONLY valid JSON array, no markdown code blocks."
                     ),
                     user=prompt,
                     temperature=0.2,
-                    max_tokens=2500,
+                    max_tokens=4000,
                 )
 
                 batch_annotations = _safe_json_loads(response)
 
-                # Convert to GPTCommentAnno objects
-                for j, annotation_data in enumerate(batch_annotations):
-                    if j < len(batch):
-                        comment = batch[j]
+                # Build lookup by position; pad with empty dicts if GPT returned fewer
+                # items than comments (GPT sometimes skips comments with no entities).
+                anno_by_pos = {j: d for j, d in enumerate(batch_annotations) if isinstance(d, dict)}
 
+                for j, comment in enumerate(batch):
                         comment_id = comment.get("id", "") if isinstance(comment, dict) else getattr(comment, "id", "")
+                        annotation_data = anno_by_pos.get(j, {})
 
                         entities = []
                         for ed in annotation_data.get("entities", []):
@@ -1379,7 +1310,11 @@ class FallbackLLMService:
         """Fallback chat method - returns empty string."""
         logger.warning("Fallback LLM service chat called - no actual LLM available")
         return ""
-    
+
+    def filter_entities_by_type(self, names: list, entity_type: str) -> list:
+        """Fallback: return all names unchanged."""
+        return names
+
     def plan_reddit_search(self, query: str) -> dict:
         """Fallback search planning with intent awareness."""
         logger.warning("Using fallback Reddit search planning")
@@ -1509,7 +1444,7 @@ class FallbackLLMService:
         return IntentSchema(
             intent="GENERIC",
             aspects=["quality", "value", "performance"],
-            entity_type="products"
+            entity_type=None
         )
 
     def annotate_comments_with_gpt(self, comments: List[Dict], aspects: List[str], entity_type: str = None, query: str = None) -> List[GPTCommentAnno]:
@@ -1537,321 +1472,22 @@ class FallbackLLMService:
         logger.warning("Fallback LLM service dynamic aspect generation called - using domain aspects")
         return get_domain_aspects(query)
 
-    # ===== GPT-ONLY PIPELINE METHODS =====
-    
-    def detect_intent_and_schema(self, query: str, sample_comments: List[Dict] = None) -> IntentSchema:
-        """Detect query intent and generate relevant aspect schema."""
-        try:
-            # Prepare sample text for analysis
-            sample_text = ""
-            if sample_comments:
-                sample_text = "\n".join([c.get("text", "")[:200] for c in sample_comments[:5]])
-            
-            prompt = f"""Analyze this query and determine its intent and relevant aspects:
+    def summarize_ranking_with_gpt(self, query: str, ranking_items: List[Dict]) -> str:
+        if not ranking_items:
+            return f"No ranked entities found for {query}."
+        top = ranking_items[:5]
+        lines = [f"{i+1}. {item['name']} -- {item['overall_stars']:.1f}/5 ({item['mentions']} mentions)" for i, item in enumerate(top)]
+        return f"Top results for '{query}':\n" + "\n".join(lines)
 
-Query: "{query}"
+    def summarize_generic_with_gpt(self, query: str, aspects: Dict[str, float], overall: float, quotes: List[str]) -> str:
+        verdict = "positive" if overall >= 3.5 else "mixed" if overall >= 2.5 else "negative"
+        return f"Analysis of '{query}': overall {overall:.1f}/5 ({verdict} sentiment). " + \
+               "No LLM available for detailed summary."
 
-Sample comments (if available):
-{sample_text}
+    def summarize_solutions_with_gpt(self, query: str, clusters: List[Dict]) -> str:
+        if not clusters:
+            return f"No solution clusters found for '{query}'."
+        return f"Found {len(clusters)} solution approach(es) for '{query}': " + \
+               ", ".join(c.get("title", "Untitled") for c in clusters[:3]) + "."
 
-Determine the INTENT:
-- RANKING: User wants to compare/rank specific items (e.g., "best iPhone", "iPhone vs Samsung")
-- SOLUTION: User wants solutions to a problem (e.g., "how to fix iPhone battery", "iPhone problems")
-- GENERIC: General discussion/reviews (e.g., "iPhone reviews", "iPhone experience")
-
-Generate relevant ASPECTS for this query (3-8 aspects):
-- For tech products: performance, battery, camera, design, price, software, etc.
-- For services/venues: quality, value, atmosphere, accessibility, conditions, etc.
-
-For RANKING queries, set entity_type to the SPECIFIC type of entity being compared.
-NEVER use "locations", "location", "places", or "area" — those are WHERE, not WHAT.
-Use the exact venue or product category instead:
-  * "best golf course in bay area" → entity_type: "golf_course"
-  * "best restaurant in NYC"       → entity_type: "restaurant"
-  * "best hotel in Paris"          → entity_type: "hotel"
-  * "best gym in London"           → entity_type: "gym"
-  * "best iPhone model"            → entity_type: "phone"
-  * "best neighborhoods in SF"     → entity_type: "neighborhood" (query IS about areas)
-
-Return JSON:
-{{
-    "intent": "RANKING|SOLUTION|GENERIC",
-    "aspects": ["aspect1", "aspect2", "aspect3"],
-    "entity_type": "specific_entity_type_or_null"
-}}"""
-
-            response = self.chat(
-                system="You are an expert at analyzing user queries and determining intent and relevant aspects.",
-                user=prompt,
-                temperature=0.2,
-                max_tokens=500
-            )
-            
-            try:
-                result = _safe_json_loads(response)
-            except Exception as e:
-                logger.error(f"Intent detection JSON parsing failed: {e}")
-                # Generate dynamic aspects instead of hardcoded fallback
-                try:
-                    dynamic_aspects = self.generate_dynamic_aspects(query)
-                    aspect_names = list(dynamic_aspects.keys()) if dynamic_aspects else ["quality", "value", "performance"]
-                except:
-                    aspect_names = ["quality", "value", "performance"]
-                
-                return IntentSchema(
-                    intent="GENERIC",
-                    aspects=aspect_names,
-                    entity_type="products"
-                )
-            
-            # Ensure result is a dictionary
-            if not isinstance(result, dict):
-                logger.error(f"Intent detection failed: Expected dict, got {type(result)}")
-                # Generate dynamic aspects instead of hardcoded fallback
-                try:
-                    dynamic_aspects = self.generate_dynamic_aspects(query)
-                    aspect_names = list(dynamic_aspects.keys()) if dynamic_aspects else ["quality", "value", "performance"]
-                except:
-                    aspect_names = ["quality", "value", "performance"]
-                
-                return IntentSchema(
-                    intent="GENERIC",
-                    aspects=aspect_names,
-                    entity_type="products"
-                )
-            
-            # Validate and set defaults
-            intent = result.get("intent", "GENERIC")
-            if intent not in ["RANKING", "SOLUTION", "GENERIC"]:
-                intent = "GENERIC"
-            
-            aspects = result.get("aspects", [])
-            if not aspects:
-                # Generate dynamic aspects instead of hardcoded fallback
-                try:
-                    dynamic_aspects = self.generate_dynamic_aspects(query)
-                    aspects = list(dynamic_aspects.keys()) if dynamic_aspects else ["quality", "value", "performance"]
-                except:
-                    aspects = ["quality", "value", "performance"]
-            
-            entity_type = result.get("entity_type", "products")
-            
-            # Fix common entity_type mismatches
-            if "restaurant" in query.lower() and entity_type == "locations":
-                entity_type = "restaurant"
-            elif "hotel" in query.lower() and entity_type == "locations":
-                entity_type = "hotel"
-            elif "gym" in query.lower() and entity_type == "services":
-                entity_type = "gym"
-            
-            return IntentSchema(
-                intent=intent,
-                aspects=aspects,
-                entity_type=entity_type
-            )
-            
-        except Exception as e:
-            logger.error(f"Intent detection failed: {e}")
-            return IntentSchema(
-                intent="GENERIC",
-                aspects=["quality", "value", "performance"],
-                entity_type="products"
-            )
-
-    def annotate_comments_with_gpt(self, comments: List[Dict], aspects: List[str], entity_type: str = None, query: str = None) -> List[GPTCommentAnno]:
-        """Annotate comments with GPT for scoring and entity extraction."""
-        annotations = []
-        
-        # Smart comment selection: prioritize high-quality comments
-        if len(comments) > 30:
-            # Sort by upvotes and take top 30 most relevant comments
-            sorted_comments = sorted(comments, key=lambda c: c.get('upvotes', 0) if isinstance(c, dict) else getattr(c, 'upvotes', 0), reverse=True)
-            comments = sorted_comments[:30]
-            logger.info(f"Selected top 30 comments from {len(sorted_comments)} total comments")
-        
-        # Process comments for annotation
-        logger.info(f"annotate_comments_with_gpt called with {len(comments)} comments")
-        if comments:
-            logger.info(f"First comment type: {type(comments[0])}, content: {comments[0]}")
-        
-        # Adaptive batch sizing: start with 8, reduce if timeouts occur
-        batch_size = 8
-        timeout_count = 0
-        for i in range(0, len(comments), batch_size):
-            batch = comments[i:i + batch_size]
-            
-            try:
-                # Prepare batch text
-                batch_text = ""
-                for j, comment in enumerate(batch):
-                    # Handle both dict and object formats
-                    if isinstance(comment, dict):
-                        text = comment.get('text', '')
-                    else:
-                        text = getattr(comment, 'text', '')
-                    # Truncate long comments to save tokens (keep first 300 chars)
-                    truncated_text = text[:300] + "..." if len(text) > 300 else text
-                    batch_text += f"Comment {j+1}: {truncated_text}\n\n"
-
-                entity_type_line = (
-                    f"\nEXTRACT ONLY: {entity_type} entities — skip people, organizations, "
-                    f"and anything that is not a {entity_type}."
-                ) if entity_type else ""
-                prompt = f"""Analyze these Reddit comments and provide structured annotations.
-
-USER QUERY: "{query or 'General analysis'}"{entity_type_line}
-
-Comments:
-{batch_text}
-
-Aspects to score: {', '.join(aspects)}
-
-ENTITY EXTRACTION RULES (critical for accuracy):
-- Extract specific named VENUES, PRODUCTS, or BUSINESSES that the author directly experienced.
-  These are proper nouns representing reviewable things: golf courses, restaurants, phones, hotels.
-- If EXTRACT ONLY is specified above, only extract entities of that exact category.
-  Skip people, instructors, media channels, brands, events, or anything not of that category.
-  Example: EXTRACT ONLY golf_course → extract "Harding Park" but NOT "Tom Hsieh" or "Fried Egg Golf".
-- NEVER extract geographic labels as entities: city abbreviations (LA, NY, NYC, SD, SF),
-  metro area names, states, regions, or vague references like "Bay Area courses" or "SoCal spots".
-  Geographic labels describe WHERE, not WHAT is being reviewed — they are not entities.
-- For comparison mentions (e.g. "better than Samsung"), extract the compared entity with
-  is_primary=false and its own sentiment_score reflecting the author's view of it.
-- For EACH entity provide a SEPARATE sentiment_score (1-5) based solely on how the author
-  feels about THAT specific entity — not the comment's overall tone.
-  Example: "iPhone 15 blows away the Samsung S24" → iPhone 15 sentiment=5, Samsung S24 sentiment=2
-- Set is_primary=true for the entity that is the main subject/focus.
-  Set is_primary=false for entities mentioned only as comparisons or context.
-- Include mention_context: a verbatim excerpt (≤80 chars) showing how the entity was mentioned.
-- The type field must be the specific entity category (e.g. "golf_course", "phone", "restaurant"),
-  NEVER a geographic type like "location", "city", "region", "area", or "country".
-
-SENTIMENT GROUNDING RULES:
-- sentiment_score must reflect the author's direct experience with the entity's CORE quality.
-  Golf course: conditions, layout, scenery, value, pace, facilities.
-  Restaurant: food quality, service, atmosphere, price. Product: performance, build, features.
-- Do NOT score based on peripheral details: logos, aesthetics, travel context, or any text
-  that does not describe hands-on experience with the entity.
-- If a comment only names an entity without reviewing it, set confidence=0.4.
-
-LOCATION / TIME FILTERING:
-- For location-specific queries (e.g. "Bay Area golf courses"):
-  * Only extract SPECIFIC NAMED VENUES confirmed to be IN that location.
-  * If a venue is in a DIFFERENT location, exclude it entirely (entities=[]).
-  * Geographic references used as comparisons ("better than LA courses", "beats NY") must NOT
-    become entities — skip them entirely, do not extract "LA" or "NY" as entity names.
-- For year-specific queries, only extract entities from that period.
-  If the comment is out of scope, set overall_score=1 and entities=[].
-
-WRONG (for query "Bay Area golf"): {{"name":"LA","type":"location"}} or {{"name":"SoCal courses","type":"region"}}
-RIGHT (for query "Bay Area golf"): {{"name":"Harding Park","type":"golf_course","confidence":0.9}}
-
-Return a JSON array — one object per comment, in input order:
-[
-    {{
-        "overall_score": 4,
-        "aspect_scores": {{"quality": 4, "value": 3, "performance": 5}},
-        "primary_entity": "iPhone 15 Pro",
-        "entities": [
-            {{
-                "name": "iPhone 15 Pro",
-                "type": "phone",
-                "confidence": 0.95,
-                "sentiment_score": 4.5,
-                "aspect_scores": {{"quality": 5, "value": 3}},
-                "is_primary": true,
-                "mention_context": "iPhone 15 Pro camera is outstanding"
-            }}
-        ],
-        "solution_key": null
-    }}
-]"""
-
-                response = self.chat(
-                    system=(
-                        "You are an expert at analyzing Reddit comments for sentiment, aspects, and entities. "
-                        "CRITICAL: (1) Assign each entity its OWN sentiment_score based on how the author feels "
-                        "about that specific entity. (2) Extract ONLY specific named entities. "
-                        "(3) Return ONLY valid JSON array, no markdown code blocks."
-                    ),
-                    user=prompt,
-                    temperature=0.2,
-                    max_tokens=2500,
-                )
-
-                batch_annotations = _safe_json_loads(response)
-
-                for j, annotation_data in enumerate(batch_annotations):
-                    if j < len(batch):
-                        comment = batch[j]
-                        comment_id = comment.get("id", "") if isinstance(comment, dict) else getattr(comment, "id", "")
-
-                        entities = []
-                        for ed in annotation_data.get("entities", []):
-                            entities.append(EntityRef(
-                                name=ed.get("name", ""),
-                                entity_type=ed.get("type", entity_type or "unknown"),
-                                confidence=float(ed.get("confidence", 0.0)),
-                                sentiment_score=float(ed.get("sentiment_score", annotation_data.get("overall_score", 3.0))),
-                                aspect_scores={k: float(v) for k, v in (ed.get("aspect_scores") or {}).items()},
-                                is_primary=bool(ed.get("is_primary", True)),
-                                mention_context=str(ed.get("mention_context", ""))[:100],
-                            ))
-
-                        annotations.append(GPTCommentAnno(
-                            comment_id=comment_id,
-                            overall_score=annotation_data.get("overall_score", 3),
-                            aspect_scores=annotation_data.get("aspect_scores", {}),
-                            entities=entities,
-                            primary_entity=annotation_data.get("primary_entity") or None,
-                            solution_key=annotation_data.get("solution_key") or "",
-                        ))
-
-            except Exception as e:
-                logger.error(f"GPT annotation batch failed: {e}")
-                for comment in batch:
-                    comment_id = comment.get("id", "") if isinstance(comment, dict) else getattr(comment, "id", "")
-                    annotations.append(GPTCommentAnno(
-                        comment_id=comment_id,
-                        overall_score=3,
-                        aspect_scores={aspect: 3 for aspect in aspects},
-                        entities=[],
-                        primary_entity=None,
-                        solution_key="",
-                    ))
-
-        return annotations
-
-    def generate_dynamic_aspects(self, query: str, sample_comments: List[Dict] = None) -> List[str]:
-        """Generate dynamic aspects based on query and sample comments."""
-        try:
-            sample_text = ""
-            if sample_comments:
-                sample_text = "\n".join([c.get("text", "")[:200] for c in sample_comments[:3]])
-
-            prompt = f"""Generate relevant aspects for analyzing this query:
-
-Query: "{query}"
-
-Sample comments:
-{sample_text}
-
-Generate 4-6 relevant aspects that people would care about for this topic.
-Return as a JSON array: ["aspect1", "aspect2", "aspect3"]"""
-
-            response = self.chat(
-                system="You are an expert at identifying relevant aspects for any topic.",
-                user=prompt,
-                temperature=0.2,
-                max_tokens=300,
-            )
-
-            aspects = _safe_json_loads(response)
-            if isinstance(aspects, list) and all(isinstance(a, str) for a in aspects):
-                return aspects[:6]
-
-        except Exception as e:
-            logger.error(f"Dynamic aspect generation failed: {e}")
-
-        return get_domain_aspects(query)
-
+    # FallbackLLMService ends here. OpenAI pipeline methods are only in OpenAIService.

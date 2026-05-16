@@ -589,6 +589,19 @@ class RedditService:
         neg_count = int(target_total * 0.35)
         neu_count = target_total - pos_count - neg_count
         
+        class MockComment:
+            def __init__(self, text, author, score, cid):
+                self.body = text
+                self.text = text
+                self.author = author
+                self.score = score
+                self.upvotes = score
+                self.id = f"mock_{cid}"
+                self.created_utc = time.time() - random.randint(0, 86400 * 365)
+                self.subreddit = random.choice(['technology', 'cars', 'iphone', 'android', 'gaming'])
+                self.permalink = f"/r/{self.subreddit}/comments/{self.id}/"
+                self.url = f"https://reddit.com{self.permalink}"
+
         # Generate positive comments
         for i in range(pos_count):
             if comment_id >= target_total:
@@ -607,79 +620,36 @@ class RedditService:
                 f"Real user experience: {template}"
             ]
             variation = random.choice(variations)
-            
-            class MockComment:
-                def __init__(self, text, author, score):
-                    self.body = text
-                    self.text = text  # alias for compatibility
-                    self.author = author
-                    self.score = score
-                    self.upvotes = score  # alias for compatibility
-                    self.id = f"mock_{comment_id}"
-                    self.created_utc = time.time() - random.randint(0, 86400 * 365)
-                    self.subreddit = random.choice(['technology', 'cars', 'iphone', 'android', 'gaming'])
-                    self.permalink = f"/r/{self.subreddit}/comments/{self.id}/"
-                    self.url = f"https://reddit.com{self.permalink}"
-            
-            mock_comment = MockComment(
-                text=variation,
-                author=f"user_{comment_id}",
-                score=random.randint(5, 50)  # Higher scores for positive
-            )
+
+            mock_comment = MockComment(variation, f"user_{comment_id}", random.randint(5, 50), comment_id)
             mock_comments.append(mock_comment)
             comment_id += 1
-        
+
         # Generate negative comments
         for i in range(neg_count):
             if comment_id >= target_total:
                 break
             template = random.choice(negative_templates)
             variations = [
-                template,
-                f"Update: {template}",
-                f"After 2 years of use: {template}",
-                f"Long-term review: {template}",
-                f"Final verdict: {template}",
-                f"Quick update: {template}",
-                f"6 months later: {template}",
-                f"One year review: {template}",
-                f"Honest review: {template}",
-                f"Real user experience: {template}"
+                template, f"Update: {template}", f"After 2 years of use: {template}",
+                f"Long-term review: {template}", f"Final verdict: {template}",
             ]
             variation = random.choice(variations)
-            
-            mock_comment = MockComment(
-                text=variation,
-                author=f"user_{comment_id}",
-                score=random.randint(1, 5)  # Lower scores for negative
-            )
+            mock_comment = MockComment(variation, f"user_{comment_id}", random.randint(1, 5), comment_id)
             mock_comments.append(mock_comment)
             comment_id += 1
-        
+
         # Generate neutral comments
         for i in range(neu_count):
             if comment_id >= target_total:
                 break
             template = random.choice(neutral_templates)
             variations = [
-                template,
-                f"Update: {template}",
-                f"After 2 years of use: {template}",
-                f"Long-term review: {template}",
-                f"Final verdict: {template}",
-                f"Quick update: {template}",
-                f"6 months later: {template}",
-                f"One year review: {template}",
-                f"Honest review: {template}",
-                f"Real user experience: {template}"
+                template, f"Update: {template}", f"After 2 years of use: {template}",
+                f"Long-term review: {template}", f"Final verdict: {template}",
             ]
             variation = random.choice(variations)
-            
-            mock_comment = MockComment(
-                text=variation,
-                author=f"user_{comment_id}",
-                score=random.randint(2, 15)  # Medium scores for neutral
-            )
+            mock_comment = MockComment(variation, f"user_{comment_id}", random.randint(2, 15), comment_id)
             mock_comments.append(mock_comment)
             comment_id += 1
         

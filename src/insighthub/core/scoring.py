@@ -9,6 +9,19 @@ from .constants import SearchConstants, DomainConstants
 
 logger = logging.getLogger(__name__)
 
+def _bayesian_stars(raw: float, n: int, k: float = 2.0, mu: float = 3.0) -> float:
+    """Credibility-adjusted star rating (IMDb-style Bayesian average).
+
+    Pulls low-evidence scores toward neutral (3.0) so a single glowing mention
+    doesn't equal a consistently-praised entity with many data points.
+
+    k=2 means "equivalent to 2 neutral prior observations":
+      n=1, raw=5.0 → 3.67   n=3, raw=5.0 → 4.20   n=10, raw=5.0 → 4.67
+      n=1, raw=1.0 → 1.67   n=3, raw=1.0 → 1.80    n=10, raw=1.0 → 1.33
+    """
+    return _winsorize((n * raw + k * mu) / (n + k))
+
+
 def _winsorize(x: float, lo=1.0, hi=5.0) -> float:
     """Clamp value to range [lo, hi]."""
     try:
@@ -416,14 +429,18 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
     ranking_items = []
     for normalized_name, stats in entity_stats.items():
         if stats['mentions'] >= min_mentions:
-            overall_stars = _weighted_mean(stats['overall_scores']) if stats['overall_scores'] else 3.0
+            raw_stars = _weighted_mean(stats['overall_scores']) if stats['overall_scores'] else 3.0
 
             # Entities that were NEVER a primary mention (only appeared in
             # comparison lists or passing context) get blended toward neutral.
             # This prevents "Course A, B, C are all great" from inflating B and C
             # to the same 5★ as the comment's primary focus (Course A).
             if stats['primary_mentions'] == 0:
-                overall_stars = 0.6 * overall_stars + 0.4 * 3.0
+                raw_stars = 0.6 * raw_stars + 0.4 * 3.0
+
+            # Apply Bayesian credibility adjustment so a single glowing mention
+            # doesn't appear equal to an entity praised across many reviews.
+            overall_stars = _bayesian_stars(raw_stars, stats['mentions'])
 
             aspect_scores = {}
             for aspect_name, scores in stats['aspect_scores'].items():
@@ -442,8 +459,8 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
                 confidence=confidence,
                 quotes=[],
             ))
-    
-    # Sort by overall score descending, then by mentions descending
+
+    # Sort by credibility-adjusted score descending, then by mentions descending
     ranking_items.sort(key=lambda x: (-x.overall_stars, -x.mentions))
     
     return ranking_items
@@ -468,22 +485,14 @@ def rank_entities_with_relaxation(annos: List[GPTCommentAnno], upvote_map: Dict[
     Returns:
         List of RankingItem objects sorted by overall score and mentions
     """
-    max_retries = 3
-    current_min_mentions = min_mentions
-    
-    for attempt in range(max_retries):
-        logger.info(f"Entity ranking attempt {attempt + 1}: min_mentions={current_min_mentions}")
-        
-        ranked = rank_entities(annos, upvote_map, entity_type, current_min_mentions, query=query)
-        
+    thresholds = sorted({min_mentions, max(1, min_mentions // 2), 1}, reverse=True)
+    ranked = []
+    for threshold in thresholds:
+        logger.info(f"Entity ranking attempt: min_mentions={threshold}")
+        ranked = rank_entities(annos, upvote_map, entity_type, threshold, query=query)
         if len(ranked) >= 3:
-            logger.info(f"Entity ranking: {len(ranked)} entities ranked with min_mentions={current_min_mentions}")
+            logger.info(f"Entity ranking: {len(ranked)} entities at min_mentions={threshold}")
             return ranked
-        
-        if attempt < max_retries - 1:
-            # Relax constraints for next attempt
-            current_min_mentions = max(1, current_min_mentions - 1)
-            logger.info(f"Auto-relaxing: reducing min_mentions to {current_min_mentions}")
-    
-    logger.info(f"Entity ranking: {len(ranked)} entities ranked after {max_retries} attempts")
+
+    logger.info(f"Entity ranking: {len(ranked)} entities after full relaxation")
     return ranked
