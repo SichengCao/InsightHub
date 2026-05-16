@@ -1114,7 +1114,7 @@ Return JSON:
                 batch_text = ""
                 for j, comment in enumerate(batch):
                     text = comment.get('text', '') if isinstance(comment, dict) else getattr(comment, 'text', '')
-                    truncated = text[:300] + "..." if len(text) > 300 else text
+                    truncated = text[:150] + "..." if len(text) > 150 else text
                     batch_text += f"Comment {j+1}: {truncated}\n\n"
 
                 prompt = f"""Analyze these Reddit comments and provide structured annotations.
@@ -1216,7 +1216,7 @@ Return a JSON array -- one object per comment, in input order:
                     system=system_msg,
                     user=prompt,
                     temperature=0.2,
-                    max_tokens=4000,
+                    max_tokens=2500,
                 )
 
                 batch_annotations = _safe_json_loads(response)
@@ -1263,8 +1263,8 @@ Return a JSON array -- one object per comment, in input order:
                 return batch_idx, fallbacks
 
         # Run all batches concurrently (diskcache is thread-safe).
-        # max_workers=5 keeps well within OpenAI rate limits for any tier.
-        max_workers = min(5, len(batches))
+        # max_workers=8 keeps well within OpenAI rate limits for any tier.
+        max_workers = min(8, len(batches))
         results_by_idx: dict = {}
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(_process_batch, idx, batch): idx

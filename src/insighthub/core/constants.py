@@ -23,7 +23,7 @@ class SearchConstants:
     MAX_TEXT_HASH_LENGTH = 50  # chars for text hashing
     
     # Batch Processing
-    LLM_BATCH_SIZE = 8  # comments per batch for GPT
+    LLM_BATCH_SIZE = 12  # comments per batch for GPT
     LLM_MAX_TOKENS = 800  # max tokens per GPT response
     LLM_TEMPERATURE = 0.2  # GPT temperature for consistency
     

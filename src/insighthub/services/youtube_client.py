@@ -17,19 +17,26 @@ class YouTubeService:
     """YouTube data collection service using YouTube Data API v3."""
     
     def __init__(self):
+        self._api_key = getattr(settings, 'youtube_api_key', '')
         self.youtube = None
         self._init_youtube()
-    
+
+    def _build_client(self):
+        """Build a fresh YouTube client (thread-safe: each call gets its own http connection)."""
+        if not self._api_key:
+            return None
+        try:
+            return build("youtube", "v3", developerKey=self._api_key, cache_discovery=False)
+        except Exception as e:
+            logger.error(f"Failed to build YouTube client: {e}")
+            return None
+
     def _init_youtube(self):
-        """Initialize YouTube client."""
-        youtube_key = getattr(settings, 'youtube_api_key', '')
-        if youtube_key:
-            try:
-                self.youtube = build("youtube", "v3", developerKey=youtube_key)
+        """Initialize the shared YouTube client used for non-parallel calls."""
+        if self._api_key:
+            self.youtube = self._build_client()
+            if self.youtube:
                 logger.info("YouTube client initialized successfully")
-            except Exception as e:
-                logger.error(f"Failed to initialize YouTube client: {e}")
-                self.youtube = None
         else:
             logger.warning("YouTube API key not provided, using mock data")
     
@@ -70,18 +77,20 @@ class YouTubeService:
             logger.error(f"YouTube search failed: {e}")
             return self._get_mock_videos(query, max_results)
     
-    def get_video_comments(self, video_id: str, max_comments: int = 100) -> List[Dict[str, Any]]:
+    def get_video_comments(self, video_id: str, max_comments: int = 100,
+                           _youtube_client=None) -> List[Dict[str, Any]]:
         """Get comments for a specific video."""
-        if not self.youtube:
+        yt = _youtube_client or self.youtube
+        if not yt:
             return self._get_mock_comments(video_id, max_comments)
-        
+
         try:
             comments = []
             next_page_token = None
-            
+
             while len(comments) < max_comments:
                 # Get comment threads
-                request = self.youtube.commentThreads().list(
+                request = yt.commentThreads().list(
                     part="snippet,replies",
                     videoId=video_id,
                     maxResults=min(100, max_comments - len(comments)),
@@ -157,7 +166,12 @@ class YouTubeService:
         per_video_limit = max(1, limit // max(1, len(target_videos)))
 
         def _fetch_video(video: dict) -> List[dict]:
-            comments = self.get_video_comments(video["video_id"], max_comments=per_video_limit)
+            # Build a fresh client per thread — httplib2 is not thread-safe.
+            local_yt = self._build_client()
+            if local_yt is None:
+                return self._get_mock_comments(video["video_id"], per_video_limit)
+            comments = self.get_video_comments(video["video_id"], max_comments=per_video_limit,
+                                               _youtube_client=local_yt)
             for c in comments:
                 c["video_title"] = video["title"]
                 c["video_id"] = video["video_id"]

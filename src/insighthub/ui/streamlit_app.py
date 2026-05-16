@@ -5,6 +5,7 @@ import logging
 import hashlib
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from collections import defaultdict
 
@@ -451,23 +452,50 @@ if run_analysis:
                 len(selected_platforms) == 1 and selected_platforms[0] != Platform.REDDIT
             )
 
-            if use_cross:
-                st.write(f"🌐 Fetching reviews from {', '.join(p.value for p in selected_platforms)}…")
-                start_time = time.time()
-                cross_platform_results = cross_platform_manager.search_cross_platform(
-                    query, intent, limit_per_platform=limit, enabled_platforms=selected_platforms
-                )
-                search_time = time.time() - start_time
+            def _normalize(review):
+                return {
+                    "id": review.get("id") if isinstance(review, dict) else review.id,
+                    "text": review.get("text") if isinstance(review, dict) else review.text,
+                    "upvotes": review.get("upvotes", 0) if isinstance(review, dict) else getattr(review, "upvotes", 0),
+                    "permalink": review.get("permalink", "") if isinstance(review, dict) else getattr(review, "permalink", ""),
+                }
 
-                all_reviews = []
-                for pname, prev in cross_platform_results["platform_results"].items():
-                    all_reviews.extend(prev)
-                reviews = all_reviews
-                aggregated = cross_platform_results["aggregated"]
-                total_reviews = sum(
-                    len(v) for v in cross_platform_results["platform_results"].values()
-                )
-                platform_breakdown = cross_platform_results["platform_results"]
+            if use_cross:
+                st.write(f"🌐 Fetching + annotating {', '.join(p.value for p in selected_platforms)} in parallel…")
+                start_time = time.time()
+
+                def _scrape_then_annotate(platform):
+                    """Scrape one platform then immediately annotate — overlaps with other platforms."""
+                    service = cross_platform_manager.platforms[platform]
+                    # Per-platform cache check
+                    cache_key = ("scrape_platform_v1", platform.value, query.lower().strip(), limit)
+                    raw = cross_platform_manager._scrape_cache.get(cache_key)
+                    if raw is None:
+                        raw = service.scrape(query, limit)
+                        cross_platform_manager._scrape_cache.set(cache_key, raw, expire=3600)
+                    platform_comments = [_normalize(r) for r in raw]
+                    platform_annos = llm_service.annotate_comments_with_gpt(
+                        platform_comments, intent_schema.aspects, intent_schema.entity_type, query
+                    )
+                    return platform.value, raw, platform_comments, platform_annos
+
+                platform_breakdown = {}
+                comments = []
+                annos = []
+                with ThreadPoolExecutor(max_workers=len(selected_platforms)) as executor:
+                    futures = {executor.submit(_scrape_then_annotate, p): p for p in selected_platforms}
+                    for future in as_completed(futures):
+                        pname, raw, p_comments, p_annos = future.result()
+                        platform_breakdown[pname] = raw
+                        comments.extend(p_comments)
+                        annos.extend(p_annos)
+
+                search_time = time.time() - start_time
+                reviews = [r for rlist in platform_breakdown.values() for r in rlist]
+                aggregated = cross_platform_manager.aggregate_results(
+                    platform_breakdown, query, intent
+                ).to_dict()
+                total_reviews = len(reviews)
             else:
                 st.write("🟠 Searching Reddit…")
                 start_time = time.time()
@@ -475,20 +503,13 @@ if run_analysis:
                 search_time = time.time() - start_time
                 platform_breakdown = {"reddit": reviews}
 
-            # Step 3 — GPT annotation
-            st.write(f"🤖 Annotating {len(reviews)} reviews with GPT…")
-            comments = []
-            for review in reviews:
-                comments.append({
-                    "id": review.get("id") if isinstance(review, dict) else review.id,
-                    "text": review.get("text") if isinstance(review, dict) else review.text,
-                    "upvotes": review.get("upvotes", 0) if isinstance(review, dict) else getattr(review, "upvotes", 0),
-                    "permalink": review.get("permalink", "") if isinstance(review, dict) else getattr(review, "permalink", ""),
-                })
+                # Step 3 — GPT annotation (Reddit-only path)
+                st.write(f"🤖 Annotating {len(reviews)} reviews with GPT…")
+                comments = [_normalize(r) for r in reviews]
+                annos = llm_service.annotate_comments_with_gpt(
+                    comments, intent_schema.aspects, intent_schema.entity_type, query
+                )
 
-            annos = llm_service.annotate_comments_with_gpt(
-                comments, intent_schema.aspects, intent_schema.entity_type, query
-            )
             upvote_map = {c["id"]: c["upvotes"] for c in comments}
 
             # Step 4 — scoring + summarisation

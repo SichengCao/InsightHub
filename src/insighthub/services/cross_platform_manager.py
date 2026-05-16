@@ -158,55 +158,44 @@ class CrossPlatformManager:
         if enabled_platforms is None:
             enabled_platforms = list(Platform)
 
-        # Cache key includes query, limit, and sorted platform list so any change busts it.
-        cache_key = (
-            "scrape_v1",
-            query.lower().strip(),
-            limit_per_platform,
-            tuple(sorted(p.value for p in enabled_platforms)),
-        )
-        cached = self._scrape_cache.get(cache_key)
-        if cached is not None:
-            total = sum(len(v) for v in cached.values())
-            logger.info(f"✅ Scrape cache hit for '{query}' → {total} reviews (skipping API calls)")
-            return cached
-
         results = {}
-        platform_limits = {}
+        uncached = []
 
-        # Set platform-specific limits based on API constraints
+        # Per-platform cache: each platform's results are cached independently.
+        # This lets the streamlit layer start annotating one platform while another
+        # is still scraping, and avoids re-fetching a platform whose cache is warm.
         for platform in enabled_platforms:
-            platform_limits[platform] = limit_per_platform
+            key = ("scrape_platform_v1", platform.value, query.lower().strip(), limit_per_platform)
+            hit = self._scrape_cache.get(key)
+            if hit is not None:
+                results[platform.value] = hit
+                logger.info(f"✅ Cache hit {platform.value}: {len(hit)} reviews")
+            else:
+                uncached.append(platform)
 
-        # Execute scraping in parallel
-        with ThreadPoolExecutor(max_workers=len(enabled_platforms)) as executor:
-            future_to_platform = {}
-            
-            for platform in enabled_platforms:
-                platform_service = self.platforms.get(platform)
-                if platform_service:
-                    future = executor.submit(
-                        platform_service.scrape, 
-                        query, 
-                        platform_limits[platform]
-                    )
-                    future_to_platform[future] = platform
-                else:
-                    logger.warning(f"No service available for platform: {platform}")
-            
-            # Collect results
+        if not uncached:
+            return results
+
+        # Scrape only the platforms that weren't cached.
+        with ThreadPoolExecutor(max_workers=len(uncached)) as executor:
+            future_to_platform = {
+                executor.submit(self.platforms[p].scrape, query, limit_per_platform): p
+                for p in uncached
+                if self.platforms.get(p)
+            }
+
             for future in as_completed(future_to_platform):
                 platform = future_to_platform[future]
                 try:
-                    reviews = future.result(timeout=300)  # 5-minute timeout per platform
+                    reviews = future.result(timeout=300)
                     results[platform.value] = reviews
-                    logger.info(f"✅ {platform.value}: collected {len(reviews)} reviews")
+                    key = ("scrape_platform_v1", platform.value, query.lower().strip(), limit_per_platform)
+                    self._scrape_cache.set(key, reviews, expire=3600)
+                    logger.info(f"✅ {platform.value}: {len(reviews)} reviews")
                 except Exception as e:
-                    logger.error(f"❌ {platform.value}: failed with error: {e}")
+                    logger.error(f"❌ {platform.value}: {e}")
                     results[platform.value] = []
 
-        # Cache for 1 hour so repeat queries skip all API calls.
-        self._scrape_cache.set(cache_key, results, expire=3600)
         return results
     
     def aggregate_results(self, platform_results: Dict[str, List[dict]], 
