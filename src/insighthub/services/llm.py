@@ -1062,10 +1062,107 @@ Return JSON:
                 entity_type=None
             )
 
+    def filter_relevant_comments(self, comments: List[Dict], query: str, threshold: float = 0.35) -> List[Dict]:
+        """Drop comments that are not topically relevant to the query using GPT batch evaluation."""
+        if not comments:
+            return comments
+
+        batch_size = 20
+        batches = [comments[i:i + batch_size] for i in range(0, len(comments), batch_size)]
+
+        system_msg = (
+            "You are a relevance evaluator. For each comment decide whether it contains direct, "
+            "firsthand discussion of the topic in the user's query — specific opinions, experiences, "
+            "or insights about the entities, venues, or products being asked about. "
+            "Return ONLY a JSON array of objects, one per comment, in input order."
+        )
+
+        def _evaluate_batch(batch_idx: int, batch: list) -> tuple:
+            batch_text = ""
+            for j, comment in enumerate(batch):
+                text = comment.get("text", "")
+                truncated = text[:200] + "..." if len(text) > 200 else text
+                batch_text += f"Comment {j + 1}: {truncated}\n\n"
+
+            prompt = (
+                f'User query: "{query}"\n\n'
+                f"{batch_text}"
+                f'For each comment return:\n'
+                f'- relevant: true if the comment directly addresses the query topic, false if off-topic or generic\n'
+                f'- relevance_score: 0.0 to 1.0\n'
+                f'- reason: one short phrase\n\n'
+                f'Return a JSON array [{{"relevant": bool, "relevance_score": float, "reason": str}}, ...] '
+                f'with exactly {len(batch)} elements in input order.'
+            )
+            try:
+                response = self.chat(system=system_msg, user=prompt, temperature=0.0, max_tokens=len(batch) * 35 + 20)
+                results = _safe_json_loads(response)
+                if isinstance(results, list) and len(results) == len(batch):
+                    return batch_idx, results
+            except Exception as e:
+                logger.warning(f"Relevance filter batch {batch_idx} failed: {e}")
+            # fail-open: keep all comments in this batch
+            return batch_idx, [{"relevant": True, "relevance_score": 1.0}] * len(batch)
+
+        results_by_idx: dict = {}
+        max_workers = min(8, len(batches))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_evaluate_batch, idx, batch): idx for idx, batch in enumerate(batches)}
+            for future in as_completed(futures):
+                batch_idx, batch_results = future.result()
+                results_by_idx[batch_idx] = batch_results
+
+        kept, dropped = [], 0
+        for idx, batch in enumerate(batches):
+            verdicts = results_by_idx.get(idx, [{"relevant": True}] * len(batch))
+            for comment, verdict in zip(batch, verdicts):
+                if not isinstance(verdict, dict):
+                    kept.append(comment)
+                    continue
+                score = verdict.get("relevance_score", 1.0)
+                is_relevant = verdict.get("relevant", True)
+                if is_relevant and score >= threshold:
+                    kept.append(comment)
+                else:
+                    dropped += 1
+                    logger.debug(f"Dropped irrelevant comment: {verdict.get('reason', '?')} | score={score:.2f}")
+
+        logger.info(f"Relevance filter: {len(kept)}/{len(comments)} kept (dropped {dropped})")
+        return kept
+
+    def validate_entity_locations(self, entities: list, query: str) -> list:
+        """Remove ranked entities whose geographic location does not match the query's location context."""
+        if not entities:
+            return entities
+        names = [e.name for e in entities]
+        try:
+            verdict = self.chat(
+                system="You are a geography fact-checker. Answer ONLY with a JSON array of booleans.",
+                user=(
+                    f'User query: "{query}"\n'
+                    f"For each entity/venue below, return true if it is located in the geographic area "
+                    f"specified by the query, and false if it is in a DIFFERENT location. "
+                    f"If the query has no specific location, return true for all.\n"
+                    f"Use your world knowledge, not just the name.\n"
+                    f"Entities: {names}\n"
+                    f"Return ONLY a JSON array like [true, false, true, ...]"
+                ),
+                temperature=0.0,
+                max_tokens=len(names) * 10 + 30,
+            )
+            import re as _re, json as _json
+            flags = _json.loads(_re.search(r'\[.*\]', verdict, _re.S).group(0))
+            kept = [e for e, ok in zip(entities, flags) if ok]
+            logger.info(f"Location filter: {len(kept)}/{len(entities)} entities kept for '{query}'")
+            return kept
+        except Exception as e:
+            logger.warning(f"Location validation failed ({e}), returning all entities")
+            return entities
+
     def annotate_comments_with_gpt(self, comments: List[Dict], aspects: List[str], entity_type: str = None, query: str = None) -> List[GPTCommentAnno]:
         """
         Annotate comments using GPT with caching and batch processing.
-        
+
         This method implements a sophisticated batch processing pipeline:
         1. Process comments in optimal batch sizes to avoid token limits
         2. Generate comprehensive prompts with context and examples
@@ -1328,6 +1425,14 @@ class FallbackLLMService:
     def filter_entities_by_type(self, names: list, entity_type: str) -> list:
         """Fallback: return all names unchanged."""
         return names
+
+    def filter_relevant_comments(self, comments: list, query: str, threshold: float = 0.35) -> list:
+        """Fallback: return all comments unchanged (no LLM available)."""
+        return comments
+
+    def validate_entity_locations(self, entities: list, query: str) -> list:
+        """Fallback: return all entities unchanged (no LLM available)."""
+        return entities
 
     def plan_reddit_search(self, query: str) -> dict:
         """Fallback search planning with intent awareness."""
