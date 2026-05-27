@@ -834,6 +834,75 @@ div[data-testid="stError"]   { background: rgba(248,113,113,0.08) !important; bo
 .stProgress > div > div > div { background: #6366f1 !important; border-radius: 2px !important; }
 .stCheckbox span { color: #64748b !important; font-size: 0.83rem !important; }
 hr { border-color: rgba(255,255,255,0.06) !important; }
+
+/* ── Mobile responsive (iPhone / narrow screens) ── */
+@media (max-width: 640px) {
+  /* Container: tighten horizontal padding */
+  .block-container { padding: 0 0.75rem 3rem !important; }
+
+  /* Search area */
+  .ih-search-area { padding: 1.75rem 0.25rem 1rem; }
+  .ih-search-heading { font-size: 1.45rem; letter-spacing: -0.03em; }
+  .ih-search-sub { font-size: 0.82rem; margin-bottom: 1.25rem; }
+
+  /* Stats strip: 2-column grid instead of 5-in-a-row */
+  .ih-stats-strip { flex-wrap: wrap; }
+  .ih-stat {
+    flex: 0 0 50%;
+    border-right: none !important;
+    margin-right: 0 !important;
+    padding: 0.5rem 0 !important;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+  }
+  .ih-stat:nth-child(odd)  { padding-right: 0.75rem !important; border-right: 1px solid rgba(255,255,255,0.05) !important; }
+  .ih-stat:nth-child(even) { padding-left: 0.75rem !important; }
+  .ih-stat:nth-last-child(-n+2) { border-bottom: none; }
+  .ih-stat-val { font-size: 1.15rem; }
+
+  /* Result header */
+  .ih-query-title { font-size: 1.2rem; }
+
+  /* AI summary */
+  .ih-summary-card { padding: 1rem 1rem 0.85rem; }
+  .ih-summary-text { font-size: 0.87rem; }
+
+  /* Ranking cards: stack score below name on very small screens */
+  .ih-rank-head { flex-wrap: wrap; gap: 0.5rem; }
+  .ih-rank-score-block { flex-direction: row; align-items: center; gap: 0.5rem; width: 100%; justify-content: flex-start; margin-top: 0.15rem; }
+  .ih-rank-big-score { font-size: 1.3rem; }
+  .ih-rank-mentions { text-align: left; }
+
+  /* Aspect bars: shrink label */
+  .ih-aspect-label { min-width: 72px; font-size: 0.68rem; }
+
+  /* Hero image card */
+  .ih-hero-card { height: 185px; }
+  .ih-hero-card-body { padding: 1rem 1.1rem; }
+  .ih-hero-card-title { font-size: 1.05rem; }
+  .ih-hero-card-insight { max-width: 100%; font-size: 0.75rem; display: none; }
+  .ih-hero-card-stats { gap: 0.85rem; }
+  .ih-hero-score { font-size: 1.2rem; }
+
+  /* Insight grid cards */
+  .ih-insight-card-img { height: 90px; }
+  .ih-insight-card-title { font-size: 0.8rem; }
+  .ih-insight-card-insight { display: none; }
+
+  /* Debates */
+  .ih-debate-title { font-size: 0.8rem; }
+  .ih-debate-sub { font-size: 0.62rem; }
+  .ih-debate-stat { font-size: 0.82rem; }
+
+  /* Evidence */
+  .ih-ev-text { font-size: 0.82rem; line-height: 1.62; }
+
+  /* Streamlit column grid: wrap 4-col grid to 2x2 on mobile */
+  [data-testid="stHorizontalBlock"] { flex-wrap: wrap !important; }
+  [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+    min-width: 48% !important;
+    flex: 0 0 48% !important;
+  }
+}
 </style>
 """, unsafe_allow_html=True)
 
