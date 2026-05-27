@@ -1087,9 +1087,10 @@ if not run_analysis:
     # ── Active internet debates ───────────────────────────────────────────────
     st.markdown('<div class="ih-home-lbl" style="margin-top:1.75rem">Active Internet Debates</div>', unsafe_allow_html=True)
 
-    debates_html = ""
-    for d in DEBATES:
-        debates_html += f"""
+    for idx, d in enumerate(DEBATES):
+        col_card, col_btn = st.columns([13, 1])
+        with col_card:
+            st.markdown(f"""
 <div class="ih-debate-item">
   <div class="ih-debate-left">
     <div class="ih-debate-icon" style="background:{d['icon_bg']};border:1px solid {d['icon_border']}">{d['icon']}</div>
@@ -1103,13 +1104,9 @@ if not run_analysis:
     <div class="ih-debate-stat" style="color:{d['stat_color']}">{d['stat']}</div>
     <div class="ih-debate-stat-lbl">{d['stat_lbl']}</div>
   </div>
-</div>"""
-    st.markdown(debates_html, unsafe_allow_html=True)
-
-    # Debate analyze buttons
-    dcols = st.columns(len(DEBATES))
-    for idx, d in enumerate(DEBATES):
-        with dcols[idx]:
+</div>""", unsafe_allow_html=True)
+        with col_btn:
+            st.markdown('<div style="padding-top:0.75rem"></div>', unsafe_allow_html=True)
             if st.button("→", key=f"deb_{idx}", use_container_width=True, type="secondary"):
                 st.session_state["pending_query"] = d["query"]
                 st.session_state["run_analysis"] = True
