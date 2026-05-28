@@ -837,11 +837,11 @@ hr { border-color: rgba(255,255,255,0.06) !important; }
 
 /* ── Mobile responsive (iPhone / narrow screens) ── */
 @media (max-width: 640px) {
-  /* Container: tighten horizontal padding */
-  .block-container { padding: 0 0.75rem 3rem !important; }
+  /* Container: tighten horizontal padding only (preserve top padding for Streamlit header) */
+  .block-container { padding-left: 0.75rem !important; padding-right: 0.75rem !important; padding-bottom: 3rem !important; }
 
   /* Search area */
-  .ih-search-area { padding: 1.75rem 0.25rem 1rem; }
+  .ih-search-area { padding: 2.75rem 0.25rem 1rem; }
   .ih-search-heading { font-size: 1.45rem; letter-spacing: -0.03em; }
   .ih-search-sub { font-size: 0.82rem; margin-bottom: 1.25rem; }
 
@@ -896,12 +896,6 @@ hr { border-color: rgba(255,255,255,0.06) !important; }
   /* Evidence */
   .ih-ev-text { font-size: 0.82rem; line-height: 1.62; }
 
-  /* Streamlit column grid: wrap 4-col grid to 2x2 on mobile */
-  [data-testid="stHorizontalBlock"] { flex-wrap: wrap !important; }
-  [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
-    min-width: 48% !important;
-    flex: 0 0 48% !important;
-  }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -1126,9 +1120,9 @@ if not run_analysis:
 
     # ── Insight grid ──────────────────────────────────────────────────────────
     st.markdown('<div class="ih-home-lbl" style="margin-top:1.5rem">Recent Analyses</div>', unsafe_allow_html=True)
-    gcols = st.columns(4)
+    grow = [st.columns(2), st.columns(2)]
     for idx, card in enumerate(GRID_CARDS):
-        with gcols[idx]:
+        with grow[idx // 2][idx % 2]:
             score_html = (
                 f'<div class="ih-insight-card-score {_score_cls(card["score"])}" style="color:{card["score_color"]}">{card["score"]}</div>'
                 if card["score"] else
