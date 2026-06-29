@@ -86,12 +86,14 @@ def _aspect_bar(label: str, score: float, max_score: float = 5.0) -> str:
     )
 
 def _source_tag(review: dict) -> str:
+    source = review.get("source", "") or ""
     url = review.get("url", "") or ""
     permalink = review.get("permalink", "") or ""
+    combined = (source + url + permalink).lower()
+    if "youtube" in combined or "youtu.be" in combined:
+        return '<span class="ih-src ih-src-youtube">YouTube</span>'
     if permalink:
         return '<span class="ih-src ih-src-reddit">Reddit</span>'
-    if "youtube" in url.lower() or "youtu.be" in url.lower():
-        return '<span class="ih-src ih-src-youtube">YouTube</span>'
     return ""
 
 def _entity_verdict(item: dict) -> str:
@@ -1519,10 +1521,11 @@ if run_analysis and query.strip():
                     src       = _source_tag(rev)
                     upcls     = "ih-upvotes-high" if upvotes >= 100 else ""
 
-                    if permalink:
+                    is_youtube = "youtube" in (url + permalink).lower() or "youtu.be" in (url + permalink).lower()
+                    if permalink and not is_youtube:
                         ahtml = f'<a href="https://reddit.com{permalink}" target="_blank">{author}</a>'
-                    elif url:
-                        ahtml = f'<a href="{url}" target="_blank">{author}</a>'
+                    elif url or permalink:
+                        ahtml = f'<a href="{url or permalink}" target="_blank">{author}</a>'
                     else:
                         ahtml = author
 
