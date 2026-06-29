@@ -315,12 +315,13 @@ class TestAggregateGeneric:
         overall, _ = aggregate_generic(["quality"], annos, upvotes)
         assert overall < 3.0, "High-upvote 1-star review should pull score below 3"
 
-    def test_aspect_missing_returns_3(self):
+    def test_aspect_missing_not_fabricated(self):
+        """Aspects with no signal should be absent, not filled with a 3.0 placeholder."""
         annos = [make_anno("c1", overall_score=4.0, aspect_scores={})]
         upvotes = {"c1": 1}
         _, aspects = aggregate_generic(["quality", "price"], annos, upvotes)
-        assert aspects.get("quality") == 3.0
-        assert aspects.get("price") == 3.0
+        assert aspects.get("quality") is None, "Missing aspect must not be fabricated as 3.0"
+        assert aspects.get("price") is None,   "Missing aspect must not be fabricated as 3.0"
 
     def test_aspect_weighted_correctly(self):
         annos = [

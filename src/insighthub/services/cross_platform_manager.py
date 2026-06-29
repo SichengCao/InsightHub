@@ -152,7 +152,8 @@ class CrossPlatformManager:
         return weights
     
     def scrape_all_platforms(self, query: str, limit_per_platform: int = 50,
-                           enabled_platforms: Optional[List[Platform]] = None) -> Dict[str, List[dict]]:
+                           enabled_platforms: Optional[List[Platform]] = None,
+                           query_category: str = None) -> Dict[str, List[dict]]:
         """Scrape all enabled platforms in parallel, with 1-hour result cache."""
 
         if enabled_platforms is None:
@@ -177,9 +178,16 @@ class CrossPlatformManager:
             return results
 
         # Scrape only the platforms that weren't cached.
+        # Pass query_category to YouTube so it can apply video-type filters.
+        def _scrape_platform(platform, q, limit):
+            svc = self.platforms[platform]
+            if platform == Platform.YOUTUBE and query_category:
+                return svc.scrape(q, limit, query_category=query_category)
+            return svc.scrape(q, limit)
+
         with ThreadPoolExecutor(max_workers=len(uncached)) as executor:
             future_to_platform = {
-                executor.submit(self.platforms[p].scrape, query, limit_per_platform): p
+                executor.submit(_scrape_platform, p, query, limit_per_platform): p
                 for p in uncached
                 if self.platforms.get(p)
             }

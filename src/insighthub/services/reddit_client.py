@@ -193,6 +193,27 @@ def passes_quality(comment, settings) -> bool:
     """Legacy wrapper for backward compatibility"""
     return _passes_quality(comment, "", settings)
 
+
+_SUPPORT_TITLE_PATTERNS = re.compile(
+    r"\b("
+    r"won'?t|doesn'?t|can'?t|isn'?t|aren'?t|not working|not turning|not charging|"
+    r"help(ing)?|issue|problem|broken|broke|fix(ing)?|repair|replace|warranty|"
+    r"how (do|to|can)|why (is|does|won'?t)|anyone else|please help|need help|"
+    r"stuck|dead|died|fail(ed|ing)?|error|crash(ing|ed)?|glitch|bug|"
+    r"won'?t turn on|screen (is )?(black|blank|frozen)|battery drain|"
+    r"data loss|factory reset|bricked|lost my|stole|stolen|lost"
+    r")\b",
+    re.IGNORECASE,
+)
+
+def _is_support_thread(title: str) -> bool:
+    """Return True if a post title signals a support/troubleshooting thread.
+
+    These threads contain users with broken devices — their comments skew
+    sentiment downward and pollute product review rankings.
+    """
+    return bool(_SUPPORT_TITLE_PATTERNS.search(title))
+
 logger = logging.getLogger(__name__)
 
 
@@ -201,6 +222,7 @@ class RedditService:
     
     def __init__(self):
         self.reddit = None
+        self._last_plan = None
         self._init_reddit()
     
     def _init_reddit(self):
@@ -320,6 +342,19 @@ class RedditService:
                 
                 # Sort by score and take top N per post
                 flat.sort(key=lambda x: x[1], reverse=True)
+                sub_title = getattr(sub, "title", "") or ""
+
+                # Skip entire thread if title signals support/troubleshooting context.
+                # These threads pull sentiment down and don't reflect product quality.
+                if _is_support_thread(sub_title):
+                    logger.debug(f"Skipping support thread: {sub_title[:80]}")
+                    continue
+
+                for c, _ in flat[:plan.per_post_top_n]:
+                    try:
+                        c.__dict__["_post_title"] = sub_title
+                    except Exception:
+                        pass
                 comments.extend([c for c, _ in flat[:plan.per_post_top_n]])
             
             return (comments, submissions_processed, search_id)
@@ -335,10 +370,12 @@ class RedditService:
             from .llm import LLMServiceFactory
             llm = LLMServiceFactory.create()
             plan = llm.plan_reddit_search(query, max_subreddits)
-            return SearchPlan(**plan)
+            self._last_plan = SearchPlan(**plan)
+            return self._last_plan
         except Exception as e:
             logger.warning(f"LLM planning failed, using fallback: {e}")
-            return self._fallback_plan(query)
+            self._last_plan = self._fallback_plan(query)
+            return self._last_plan
     
     @retry(
         stop=stop_after_attempt(settings.max_retries),
@@ -405,7 +442,7 @@ class RedditService:
             # A shared stop_event lets completed workers signal queued ones to skip.
             stop_event = threading.Event()
             target_raw = limit * 4  # stop collecting once we have 4× the target
-            max_workers = min(8, total_searches)
+            max_workers = min(8, max(1, total_searches))
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_to_task = {
                     executor.submit(self._execute_single_search, bucket, term, strategy, plan, seen_posts, stop_event): (bucket, term, strategy)
@@ -533,6 +570,7 @@ class RedditService:
                 "url": url,
                 "author": author_name,
                 "upvotes": score,
+                "post_title": c.__dict__.get("_post_title", "") or "",
             })
         
         # Log detailed timing breakdown

@@ -835,6 +835,60 @@ div[data-testid="stError"]   { background: rgba(248,113,113,0.08) !important; bo
 .stCheckbox span { color: #64748b !important; font-size: 0.83rem !important; }
 hr { border-color: rgba(255,255,255,0.06) !important; }
 
+/* ── Progress timeline ── */
+@keyframes ih-spinner { to { transform: rotate(360deg); } }
+.ih-progress {
+  padding: 0.85rem 1.1rem;
+  background: rgba(255,255,255,0.02);
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 10px;
+  margin-bottom: 1rem;
+}
+.ih-step {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.22rem 0;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+.ih-step-icon { font-size: 0.82rem; width: 16px; flex-shrink: 0; }
+.ih-step-done .ih-step-icon { color: #22d3a0; }
+.ih-step-done .ih-step-text { color: #475569; }
+.ih-step-active .ih-step-text { color: #cbd5e1; }
+.ih-step-spin {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid rgba(99,102,241,0.25);
+  border-top-color: #6366f1;
+  border-radius: 50%;
+  animation: ih-spinner 0.75s linear infinite;
+  flex-shrink: 0;
+}
+.ih-progress-done {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.82rem;
+  color: #22d3a0;
+  padding: 0.4rem 0;
+  margin-bottom: 0.5rem;
+}
+
+/* ── Confidence explanation / source disclosure ── */
+.ih-conf-explain {
+  font-size: 0.72rem;
+  color: #475569;
+  font-family: 'JetBrains Mono', monospace;
+}
+.ih-source-disclosure {
+  font-size: 0.72rem;
+  color: #475569;
+  font-family: 'JetBrains Mono', monospace;
+  padding: 0.25rem 0 0.85rem;
+  letter-spacing: 0.01em;
+}
+
 /* ── Mobile responsive (iPhone / narrow screens) ── */
 @media (max-width: 640px) {
   /* Container: tighten horizontal padding only (preserve top padding for Streamlit header) */
@@ -982,17 +1036,13 @@ run_analysis = st.session_state.pop("run_analysis", False) or analyze_clicked
 
 # ── Homepage editorial content (shown only before any analysis) ───────────────
 
-# Pre-curated editorial intelligence cards — realistic-looking prior analyses
+# Editorial sample cards — illustrate query types, not real analysis data
 FEATURED = [
     {
         "title": "Tesla Model Y",
         "cat": "RANKING · AUTOMOTIVE",
         "img": "https://images.unsplash.com/photo-1560958089-b8a1929cea89?w=1200&q=80",
         "insight": "Long-term owners love the tech and range — but quality control debates persist across r/TeslaMotors and YouTube owner reviews.",
-        "score": 4.2, "score_color": "#22d3a0",
-        "stars": "★★★★☆",
-        "pos": 61, "mix": 22, "neg": 17,
-        "sources": "143 Reddit + YouTube opinions",
         "query": "Tesla Model Y",
     },
 ]
@@ -1003,8 +1053,8 @@ GRID_CARDS = [
         "cat": "HEADPHONES",
         "img": "https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=600&q=80",
         "insight": "Near-universal praise. Community consensus: best ANC headphones available.",
-        "score": 4.6, "score_color": "#22d3a0",
-        "meta": "58% positive · 214 opinions",
+        "score": None, "score_color": "#6366f1",
+        "meta": "Example analysis",
         "query": "Sony WH-1000XM5 headphones",
     },
     {
@@ -1012,8 +1062,8 @@ GRID_CARDS = [
         "cat": "HOME · COFFEE",
         "img": "https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?w=600&q=80",
         "insight": "Breville Barista Express dominates. Gaggia Classic Pro is the budget favourite.",
-        "score": None, "score_color": "#f59e0b",
-        "meta": "Strong consensus · 178 opinions",
+        "score": None, "score_color": "#6366f1",
+        "meta": "Example analysis",
         "query": "best espresso machine under $500",
     },
     {
@@ -1022,17 +1072,16 @@ GRID_CARDS = [
         "img": "https://images.unsplash.com/photo-1535131749006-b7f58c99034b?w=600&q=80",
         "insight": "Locals debate Harding Park vs TPC Harding. Pasatiempo named hidden gem.",
         "score": None, "score_color": "#6366f1",
-        "meta": "Active debate · 92 opinions",
+        "meta": "Example analysis",
         "query": "best golf course in bay area",
     },
     {
         "title": "MacBook Air M3",
         "cat": "TECH · LAPTOPS",
-        "img": "https://images.unsplash.com/photo-1611186871525-9769_...",
         "img": "https://images.unsplash.com/photo-1517336714731-489689fd1ca8?w=600&q=80",
         "insight": "Reddit's most recommended laptop. M3 chip upgrade called a meaningful step.",
-        "score": 4.7, "score_color": "#22d3a0",
-        "meta": "73% positive · 301 opinions",
+        "score": None, "score_color": "#6366f1",
+        "meta": "Example analysis",
         "query": "MacBook Air M3",
     },
 ]
@@ -1042,40 +1091,40 @@ DEBATES = [
         "icon": "🎮", "icon_bg": "rgba(99,102,241,0.15)", "icon_border": "rgba(99,102,241,0.3)",
         "tag": "HOT", "tag_color": "#f87171", "tag_bg": "rgba(248,113,113,0.12)",
         "title": "Nintendo Switch 2 — Is the $449 price tag justified?",
-        "sub": "r/NintendoSwitch · r/gaming · YouTube reviews · 340+ opinions analyzed",
-        "stat": "51%", "stat_color": "#f87171", "stat_lbl": "think it's overpriced",
+        "sub": "r/NintendoSwitch · r/gaming · YouTube reviews",
+        "stat": "→", "stat_color": "#475569", "stat_lbl": "analyze",
         "query": "Nintendo Switch 2",
     },
     {
         "icon": "🎧", "icon_bg": "rgba(34,211,160,0.12)", "icon_border": "rgba(34,211,160,0.25)",
         "tag": "CONSENSUS", "tag_color": "#22d3a0", "tag_bg": "rgba(34,211,160,0.1)",
         "title": "Sony WH-1000XM5 vs Bose QC45 — ANC debate has a clear winner",
-        "sub": "r/headphones · r/audiophile · YouTube shootouts · 214 opinions",
-        "stat": "4.6", "stat_color": "#22d3a0", "stat_lbl": "Sony wins /5",
+        "sub": "r/headphones · r/audiophile · YouTube shootouts",
+        "stat": "→", "stat_color": "#475569", "stat_lbl": "analyze",
         "query": "Sony WH-1000XM5 headphones",
     },
     {
         "icon": "🚗", "icon_bg": "rgba(245,158,11,0.12)", "icon_border": "rgba(245,158,11,0.25)",
         "tag": "DEBATED", "tag_color": "#f59e0b", "tag_bg": "rgba(245,158,11,0.1)",
         "title": "Tesla Model Y long-term reliability — owners divided after 2 years",
-        "sub": "r/TeslaMotors · r/electricvehicles · YouTube vlogs · 143 opinions",
-        "stat": "61%", "stat_color": "#22d3a0", "stat_lbl": "still recommend",
+        "sub": "r/TeslaMotors · r/electricvehicles · YouTube vlogs",
+        "stat": "→", "stat_color": "#475569", "stat_lbl": "analyze",
         "query": "Tesla Model Y",
     },
     {
         "icon": "☕", "icon_bg": "rgba(99,102,241,0.1)", "icon_border": "rgba(99,102,241,0.2)",
         "tag": "TRENDING", "tag_color": "#818cf8", "tag_bg": "rgba(99,102,241,0.12)",
         "title": "Breville vs Gaggia espresso machines — which wins under $500?",
-        "sub": "r/espresso · r/Coffee · YouTube reviews · 178 opinions",
-        "stat": "#1", "stat_color": "#818cf8", "stat_lbl": "Breville ranked",
+        "sub": "r/espresso · r/Coffee · YouTube reviews",
+        "stat": "→", "stat_color": "#475569", "stat_lbl": "analyze",
         "query": "best espresso machine under $500",
     },
     {
         "icon": "🖥️", "icon_bg": "rgba(34,211,160,0.1)", "icon_border": "rgba(34,211,160,0.2)",
         "tag": "STRONG BUY", "tag_color": "#22d3a0", "tag_bg": "rgba(34,211,160,0.1)",
         "title": "MacBook Air M3 — Reddit's most recommended laptop three months running",
-        "sub": "r/apple · r/macbook · r/laptops · YouTube reviews · 301 opinions",
-        "stat": "4.7", "stat_color": "#22d3a0", "stat_lbl": "community score",
+        "sub": "r/apple · r/macbook · r/laptops · YouTube reviews",
+        "stat": "→", "stat_color": "#475569", "stat_lbl": "analyze",
         "query": "MacBook Air M3",
     },
 ]
@@ -1085,29 +1134,17 @@ if not run_analysis:
     st.markdown('<div class="ih-home-lbl">Featured Intelligence</div>', unsafe_allow_html=True)
 
     feat = FEATURED[0]
-    pos_w = feat["pos"]; mix_w = feat["mix"]; neg_w = feat["neg"]
     st.markdown(f"""
 <div class="ih-hero-card">
   <img class="ih-hero-card-img" src="{feat['img']}" alt="{feat['title']}"/>
   <div class="ih-hero-card-body">
     <div class="ih-hero-card-top">
       <span class="ih-hero-card-cat">{feat['cat']}</span>
-      <span class="ih-hero-card-sources">{feat['sources']}</span>
+      <span class="ih-hero-card-sources" style="color:#475569;font-size:0.7rem;font-style:italic">Example — run your own analysis below</span>
     </div>
     <div class="ih-hero-card-bottom">
       <div class="ih-hero-card-title">{feat['title']}</div>
       <div class="ih-hero-card-insight">{feat['insight']}</div>
-      <div class="ih-hero-card-stats">
-        <div>
-          <div class="ih-hero-score {_score_cls(feat['score'])}" style="color:{feat['score_color']}">{feat['score']}<span style="font-size:0.9rem;color:#475569;font-weight:400">/5</span></div>
-          <div class="ih-hero-stars">{feat['stars']}</div>
-        </div>
-        <div class="ih-sentiment-strip">
-          <div class="ih-sent-seg"><div class="ih-sent-bar" style="background:#22d3a0;width:{pos_w//3}px"></div><span style="color:#22d3a0">{feat['pos']}% positive</span></div>
-          <div class="ih-sent-seg"><div class="ih-sent-bar" style="background:#f59e0b;width:{mix_w//3}px"></div><span style="color:#f59e0b">{feat['mix']}% mixed</span></div>
-          <div class="ih-sent-seg"><div class="ih-sent-bar" style="background:#f87171;width:{neg_w//3}px"></div><span style="color:#f87171">{feat['neg']}% critical</span></div>
-        </div>
-      </div>
     </div>
   </div>
 </div>
@@ -1181,118 +1218,182 @@ query = st.session_state.get("query", "")
 
 if run_analysis and query.strip():
     try:
-        status = st.status("Analyzing…", expanded=True)
-        with status:
-            st.write("Detecting query intent…")
-            intent_schema = llm_service.detect_intent_and_schema(query)
-            intent = (
-                QueryIntent(intent_schema.intent)
-                if intent_schema.intent in ["RANKING", "SOLUTION", "GENERIC"]
-                else QueryIntent.GENERIC
-            )
+        # ── Progress timeline ─────────────────────────────────────────────
+        use_cross = len(selected_platforms) > 1 or (
+            len(selected_platforms) == 1 and selected_platforms[0] != Platform.REDDIT
+        )
 
-            use_cross = len(selected_platforms) > 1 or (
-                len(selected_platforms) == 1 and selected_platforms[0] != Platform.REDDIT
-            )
+        _prog = st.empty()
+        _done: list = []
 
-            def _normalize(review):
-                return {
-                    "id":       review.get("id")        if isinstance(review, dict) else review.id,
-                    "text":     review.get("text")       if isinstance(review, dict) else review.text,
-                    "upvotes":  review.get("upvotes", 0) if isinstance(review, dict) else getattr(review, "upvotes", 0),
-                    "permalink":review.get("permalink","")if isinstance(review, dict) else getattr(review, "permalink",""),
-                }
-
-            if use_cross:
-                ps = " + ".join(p.value.title() for p in selected_platforms)
-                st.write(f"Gathering community reviews from {ps}…")
-                start_time = time.time()
-
-                def _scrape_then_annotate(platform):
-                    service = cross_platform_manager.platforms[platform]
-                    ck = ("scrape_platform_v1", platform.value, query.lower().strip(), limit)
-                    raw = cross_platform_manager._scrape_cache.get(ck)
-                    if raw is None:
-                        raw = service.scrape(query, limit)
-                        cross_platform_manager._scrape_cache.set(ck, raw, expire=3600)
-                    pc = [_normalize(r) for r in raw]
-                    pc = llm_service.filter_relevant_comments(pc, query)
-                    pa = llm_service.annotate_comments_with_gpt(pc, intent_schema.aspects, intent_schema.entity_type, query)
-                    return platform.value, raw, pc, pa
-
-                platform_breakdown, comments, annos = {}, [], []
-                with ThreadPoolExecutor(max_workers=len(selected_platforms)) as ex:
-                    futs = {ex.submit(_scrape_then_annotate, p): p for p in selected_platforms}
-                    for f in as_completed(futs):
-                        pn, raw, pc, pa = f.result()
-                        platform_breakdown[pn] = raw
-                        comments.extend(pc); annos.extend(pa)
-
-                search_time = time.time() - start_time
-                reviews = [r for rlist in platform_breakdown.values() for r in rlist]
-                cross_platform_manager.aggregate_results(platform_breakdown, query, intent)
-
-            else:
-                st.write("Gathering community reviews from Reddit…")
-                start_time = time.time()
-                reviews = reddit_service.scrape(query, limit, subreddit_count)
-                search_time = time.time() - start_time
-                platform_breakdown = {"reddit": reviews}
-                comments = [_normalize(r) for r in reviews]
-                comments = llm_service.filter_relevant_comments(comments, query)
-                st.write(f"Reading and understanding {len(comments)} relevant reviews…")
-                annos = llm_service.annotate_comments_with_gpt(
-                    comments, intent_schema.aspects, intent_schema.entity_type, query
+        def _update(active: str = ""):
+            rows = [
+                f'<div class="ih-step ih-step-done">'
+                f'<span class="ih-step-icon">✓</span>'
+                f'<span class="ih-step-text">{t}</span></div>'
+                for t in _done
+            ]
+            if active:
+                rows.append(
+                    f'<div class="ih-step ih-step-active">'
+                    f'<span class="ih-step-spin"></span>'
+                    f'<span class="ih-step-text">{active}</span></div>'
                 )
+            _prog.markdown(
+                '<div class="ih-progress">' + "".join(rows) + '</div>',
+                unsafe_allow_html=True,
+            )
 
-            upvote_map = {c["id"]: c["upvotes"] for c in comments}
-            anno_map   = {a.comment_id: a for a in annos}
+        # Step 1 — intent detection
+        _update("Detecting query type…")
+        intent_schema = llm_service.detect_intent_and_schema(query)
+        intent = (
+            QueryIntent(intent_schema.intent)
+            if intent_schema.intent in ["RANKING", "SOLUTION", "GENERIC"]
+            else QueryIntent.GENERIC
+        )
+        _done.append(f"Query type: {intent_schema.intent} · {len(intent_schema.aspects)} dimensions")
 
-            st.write("Building consensus and summarizing…")
+        def _normalize(review):
+            return {
+                "id":         review.get("id")          if isinstance(review, dict) else review.id,
+                "text":       review.get("text")         if isinstance(review, dict) else review.text,
+                "upvotes":    review.get("upvotes", 0)   if isinstance(review, dict) else getattr(review, "upvotes", 0),
+                "permalink":  review.get("permalink","") if isinstance(review, dict) else getattr(review, "permalink",""),
+                "post_title": review.get("post_title","") if isinstance(review, dict) else getattr(review, "post_title",""),
+            }
 
-            if intent_schema.intent == "RANKING":
-                ranking = rank_entities_with_relaxation(annos, upvote_map, intent_schema.entity_type, query=query)
-                if intent_schema.entity_type and ranking:
-                    valid = set(llm_service.filter_entities_by_type([e.name for e in ranking], intent_schema.entity_type))
-                    ranking = [e for e in ranking if e.name in valid]
-                ranking = llm_service.validate_entity_locations(ranking, query)
-                for item in ranking:
-                    item.quotes = [c["text"][:240]+"…" for c in comments if item.name.lower() in c["text"].lower()][:3]
+        if use_cross:
+            ps = " + ".join(p.value.title() for p in selected_platforms)
+            _update(f"Scanning {ps} for discussions…")
+            start_time = time.time()
 
-                ranking_data = [{"name": e.name, "overall_stars": e.overall_stars, "mentions": e.mentions, "quotes": e.quotes} for e in ranking]
-                summary = llm_service.summarize_ranking_with_gpt(query, ranking_data)
-                payload = {
-                    "query": query, "intent": intent_schema.intent, "summary": summary,
-                    "metadata": {"timestamp": time.time()},
-                    "ranking": [{"name": e.name, "overall_stars": e.overall_stars, "aspect_scores": e.aspect_scores,
-                                 "mentions": e.mentions, "confidence": e.confidence, "quotes": e.quotes} for e in ranking],
-                }
+            def _scrape_then_annotate(platform):
+                service = cross_platform_manager.platforms[platform]
+                ck = ("scrape_platform_v1", platform.value, query.lower().strip(), limit)
+                raw = cross_platform_manager._scrape_cache.get(ck)
+                if raw is None:
+                    raw = service.scrape(query, limit)
+                    cross_platform_manager._scrape_cache.set(ck, raw, expire=3600)
+                pc = [_normalize(r) for r in raw]
+                pc = llm_service.filter_relevant_comments(pc, query)
+                pa = llm_service.annotate_comments_with_gpt(pc, intent_schema.aspects, intent_schema.entity_type, query)
+                return platform.value, raw, pc, pa
 
-            elif intent_schema.intent == "SOLUTION":
-                clusters = defaultdict(list)
-                for anno in annos:
-                    if anno.solution_key:
-                        clusters[anno.solution_key].append(anno)
-                sol_clusters = [{"title": ck, "steps": [], "caveats": [], "evidence_count": len(cv)}
-                                for ck, cv in clusters.items() if len(cv) >= 2]
-                summary = llm_service.summarize_solutions_with_gpt(query, sol_clusters)
-                payload = {"query": query, "intent": intent_schema.intent, "summary": summary,
-                           "metadata": {"timestamp": time.time()}, "solutions": sol_clusters}
+            platform_breakdown, comments, annos = {}, [], []
+            with ThreadPoolExecutor(max_workers=len(selected_platforms)) as ex:
+                futs = {ex.submit(_scrape_then_annotate, p): p for p in selected_platforms}
+                for f in as_completed(futs):
+                    pn, raw, pc, pa = f.result()
+                    platform_breakdown[pn] = raw
+                    comments.extend(pc)
+                    annos.extend(pa)
+                    _done.append(f"{pn.title()}: {len(pc)} relevant discussions")
+                    _update(f"Processing remaining sources…")
 
-            else:  # GENERIC
-                overall, aspect_averages = aggregate_generic(intent_schema.aspects, annos, upvote_map)
-                pos_annos = sorted([a for a in annos if a.overall_score >= 3.5], key=lambda a: a.overall_score, reverse=True)
-                quotes = []
-                for anno in pos_annos[:8]:
-                    c = next((x for x in comments if x["id"] == anno.comment_id), None)
-                    if c:
-                        quotes.append(c["text"][:240]+"…")
-                summary = llm_service.summarize_generic_with_gpt(query, aspect_averages, overall, quotes)
-                payload = {"query": query, "intent": intent_schema.intent, "summary": summary,
-                           "metadata": {"timestamp": time.time()},
-                           "overall": overall, "aspects": aspect_averages, "quotes": quotes}
+            search_time = time.time() - start_time
+            reviews = [r for rlist in platform_breakdown.values() for r in rlist]
+            cross_platform_manager.aggregate_results(platform_breakdown, query, intent)
 
-            status.update(label=f"Analysis complete  ·  {len(comments)} relevant / {len(reviews)} scraped  ·  {search_time:.1f}s", state="complete")
+        else:
+            # Step 2 — scrape
+            _update("Scanning Reddit for discussions…")
+            start_time = time.time()
+            reviews = reddit_service.scrape(query, limit, subreddit_count)
+            search_time = time.time() - start_time
+            platform_breakdown = {"reddit": reviews}
+            try:
+                _plan = reddit_service._last_plan
+                if _plan and _plan.subreddits:
+                    _sub_preview = ", ".join(f"r/{s}" for s in _plan.subreddits[:3])
+                    if len(_plan.subreddits) > 3:
+                        _sub_preview += f" +{len(_plan.subreddits) - 3} more"
+                    _done.append(f"Search strategy: {_sub_preview}")
+            except Exception:
+                pass
+            _done.append(f"Found {len(reviews)} discussions")
+            # Step 3 — filter
+            _update("Filtering for relevance…")
+            comments = [_normalize(r) for r in reviews]
+            comments = llm_service.filter_relevant_comments(comments, query)
+            _done.append(f"{len(comments)} relevant discussions")
+            # Step 4 — annotate
+            _update(f"Extracting opinions and scoring sentiment…")
+            annos = llm_service.annotate_comments_with_gpt(
+                comments, intent_schema.aspects, intent_schema.entity_type, query
+            )
+
+        # Capture subreddits for source disclosure row
+        try:
+            _subreddits_used = reddit_service._last_plan.subreddits if getattr(reddit_service, "_last_plan", None) else []
+        except Exception:
+            _subreddits_used = []
+
+        upvote_map = {c["id"]: c["upvotes"] for c in comments}
+        source_map = {c["id"]: c.get("source", "reddit") for c in comments}
+        anno_map   = {a.comment_id: a for a in annos}
+
+        # Capture relevance stats for the report / debug panel
+        from insighthub.core.relevance import pre_filter_comments, extract_query_terms
+        _relevance_stats = {
+            "query_terms":   extract_query_terms(query),
+            "total_scraped": len(reviews),
+            "after_filter":  len(comments),
+            "filter_rate":   round(1 - len(comments) / max(1, len(reviews)), 3),
+        }
+
+        # Step 5 — consensus + summary
+        _update("Building consensus and generating summary…")
+
+        if intent_schema.intent == "RANKING":
+            from insighthub.services.llm import classify_query as _classify_query
+            _qcat = _classify_query(query)
+            ranking = rank_entities_with_relaxation(annos, upvote_map, intent_schema.entity_type, query=query, comments=comments, source_map=source_map, query_category=_qcat)
+            if intent_schema.entity_type and ranking:
+                valid = set(llm_service.filter_entities_by_type([e.name for e in ranking], intent_schema.entity_type))
+                ranking = [e for e in ranking if e.name in valid]
+            ranking = llm_service.validate_entity_locations(ranking, query)
+
+            ranking_data = [{"name": e.name, "overall_stars": e.overall_stars, "mentions": e.mentions, "quotes": e.quotes} for e in ranking]
+            summary = llm_service.summarize_ranking_with_gpt(query, ranking_data)
+            payload = {
+                "query": query, "intent": intent_schema.intent, "summary": summary,
+                "metadata": {"timestamp": time.time()},
+                "ranking": [{"name": e.name, "overall_stars": e.overall_stars, "aspect_scores": e.aspect_scores,
+                             "mentions": e.mentions, "confidence": e.confidence, "quotes": e.quotes} for e in ranking],
+            }
+
+        elif intent_schema.intent == "SOLUTION":
+            clusters = defaultdict(list)
+            for anno in annos:
+                if anno.solution_key:
+                    clusters[anno.solution_key].append(anno)
+            sol_clusters = [{"title": ck, "steps": [], "caveats": [], "evidence_count": len(cv)}
+                            for ck, cv in clusters.items() if len(cv) >= 2]
+            summary = llm_service.summarize_solutions_with_gpt(query, sol_clusters)
+            payload = {"query": query, "intent": intent_schema.intent, "summary": summary,
+                       "metadata": {"timestamp": time.time()}, "solutions": sol_clusters}
+
+        else:  # GENERIC
+            overall, aspect_averages = aggregate_generic(intent_schema.aspects, annos, upvote_map, source_map)
+            pos_annos = sorted([a for a in annos if a.overall_score >= 3.5], key=lambda a: a.overall_score, reverse=True)
+            quotes = []
+            for anno in pos_annos[:8]:
+                c = next((x for x in comments if x["id"] == anno.comment_id), None)
+                if c:
+                    quotes.append(c["text"][:240]+"…")
+            summary = llm_service.summarize_generic_with_gpt(query, aspect_averages, overall, quotes)
+            payload = {"query": query, "intent": intent_schema.intent, "summary": summary,
+                       "metadata": {"timestamp": time.time()},
+                       "overall": overall, "aspects": aspect_averages, "quotes": quotes}
+
+        # Collapse progress to single completion line
+        _prog.markdown(
+            f'<div class="ih-progress-done">'
+            f'✓ &nbsp; Analysis complete — {len(comments)} discussions processed'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
         # ── RESULTS ──────────────────────────────────────────────────────────
 
@@ -1325,6 +1426,23 @@ if run_analysis and query.strip():
                 unsafe_allow_html=True,
             )
 
+            # ── Source disclosure ─────────────────────────────────────────────
+            from datetime import datetime as _dt
+            _ts = _dt.fromtimestamp(payload["metadata"]["timestamp"]).strftime("%b %d, %Y at %H:%M")
+            _plat_str = " + ".join(p.title() for p in platform_breakdown.keys())
+            _sub_str = ""
+            if _subreddits_used:
+                _sub_parts = [f"r/{s}" for s in _subreddits_used[:4]]
+                if len(_subreddits_used) > 4:
+                    _sub_parts.append(f"+{len(_subreddits_used) - 4} more")
+                _sub_str = " · " + ", ".join(_sub_parts)
+            st.markdown(
+                f'<div class="ih-source-disclosure">'
+                f'Analyzed {_ts} &nbsp;·&nbsp; {_plat_str}{_sub_str}'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
             # ── Stats strip ───────────────────────────────────────────────────
             plat_label = " + ".join(p.title() for p in platform_breakdown.keys())
             if intent_schema.intent == "RANKING":
@@ -1345,7 +1463,100 @@ if run_analysis and query.strip():
                 unsafe_allow_html=True,
             )
 
-            # ── AI Summary card ───────────────────────────────────────────────
+            # ── Download Report button ────────────────────────────────────────
+            try:
+                from insighthub.core.report_generator import generate_pdf
+                _report_payload = dict(payload)
+                _report_payload["source_counts"] = {
+                    p: len(reviews_list)
+                    for p, reviews_list in platform_breakdown.items()
+                }
+                _pdf_bytes = generate_pdf(_report_payload)
+                _safe_query = "".join(c if c.isalnum() else "_" for c in query[:40])
+                st.download_button(
+                    label="⬇ Download PDF Report",
+                    data=_pdf_bytes,
+                    file_name=f"insighthub_{_safe_query}.pdf",
+                    mime="application/pdf",
+                    use_container_width=False,
+                )
+            except Exception as _pdf_err:
+                logger.warning(f"PDF generation failed: {_pdf_err}")
+
+            # ── Evidence data setup (used by preview and remaining sections) ──
+            detailed = [r for r in relevant_reviews if len((r.get("text") or "")) >= 100]
+
+            def _enrich(r):
+                rid = r.get("id") if isinstance(r, dict) else r.id
+                anno = anno_map.get(rid)
+                sc = anno.overall_score if anno and hasattr(anno, "overall_score") else None
+                base = dict(r) if isinstance(r, dict) else {
+                    "id": rid, "text": getattr(r, "text", ""),
+                    "upvotes": getattr(r, "upvotes", 0),
+                    "permalink": getattr(r, "permalink", ""),
+                    "url": getattr(r, "url", ""),
+                    "author": getattr(r, "author", "anonymous"),
+                }
+                base["_score"] = sc
+                return base
+
+            enriched = [r for r in [_enrich(r) for r in detailed]
+                        if r.get("_score") is None or r.get("_score") >= 2.0]
+            positive = sorted([r for r in enriched if r["_score"] is not None and r["_score"] >= 3.8], key=lambda r: -(r.get("upvotes",0) or 0))
+            critical = sorted([r for r in enriched if r["_score"] is not None and r["_score"] < 2.8],  key=lambda r: -(r.get("upvotes",0) or 0))
+            mixed    = sorted([r for r in enriched if r["_score"] is None or 2.8 <= r["_score"] < 3.8], key=lambda r: -(r.get("upvotes",0) or 0))
+
+            def _render_ev(review_list, cap=6):
+                if not review_list:
+                    return ""
+                html = ""
+                for rev in review_list[:cap]:
+                    permalink = rev.get("permalink","") or ""
+                    url       = rev.get("url","") or ""
+                    author    = rev.get("author") or "anonymous"
+                    upvotes   = rev.get("upvotes", 0) or 0
+                    sc        = rev.get("_score")
+                    src       = _source_tag(rev)
+                    upcls     = "ih-upvotes-high" if upvotes >= 100 else ""
+
+                    if permalink:
+                        ahtml = f'<a href="https://reddit.com{permalink}" target="_blank">{author}</a>'
+                    elif url:
+                        ahtml = f'<a href="{url}" target="_blank">{author}</a>'
+                    else:
+                        ahtml = author
+
+                    sent_html = ""
+                    if sc is not None:
+                        sl, sc_color, sc_bg = _sentiment_label(sc)
+                        sent_html = f'<span class="ih-sent" style="color:{sc_color};background:{sc_bg};border:1px solid {sc_color}22">{sl}</span>'
+
+                    html += (
+                        f'<div class="ih-evidence-item">'
+                        f'<div class="ih-ev-meta">{src}{sent_html}'
+                        f'<span class="ih-ev-author">{ahtml}</span>'
+                        f'<span class="ih-upvotes {upcls}">▲ {upvotes:,}</span>'
+                        f'</div>'
+                        f'<div class="ih-ev-text">{_excerpt(rev.get("text",""))}</div>'
+                        f'</div>'
+                    )
+                return html
+
+            # ═════════════════════════════════════════════════════════════════
+            # SECTION 1 — Community Evidence Preview (3 positive + 3 critical)
+            # ═════════════════════════════════════════════════════════════════
+            if positive or critical:
+                st.markdown('<div class="ih-section-hdr">Community Evidence Preview</div>', unsafe_allow_html=True)
+                if positive:
+                    st.markdown(f'<div class="ih-evidence-group-hdr" style="color:#22d3a0">Positive voices</div>', unsafe_allow_html=True)
+                    st.markdown(_render_ev(positive, 3), unsafe_allow_html=True)
+                if critical:
+                    st.markdown(f'<div class="ih-evidence-group-hdr" style="color:#f87171">Critical voices</div>', unsafe_allow_html=True)
+                    st.markdown(_render_ev(critical, 3), unsafe_allow_html=True)
+
+            # ═════════════════════════════════════════════════════════════════
+            # SECTION 2 — Community Consensus (AI Summary)
+            # ═════════════════════════════════════════════════════════════════
             avg_conf = (
                 sum(i.get("confidence", 0.5) for i in payload.get("ranking", [{"confidence": 0.5}]))
                 / max(len(payload.get("ranking", [1])), 1)
@@ -1354,270 +1565,162 @@ if run_analysis and query.strip():
 
             st.markdown(
                 f'<div class="ih-summary-card">'
-                f'<div class="ih-summary-eyebrow">◈ AI Analysis</div>'
+                f'<div class="ih-summary-eyebrow">◈ Community Consensus</div>'
                 f'<div class="ih-summary-text">{payload["summary"]}</div>'
                 f'<div class="ih-summary-foot">'
                 f'<div class="ih-conf-dot" style="background:{conf_color}"></div>'
                 f'<span style="color:{conf_color}">{conf_lbl}</span>'
-                f'<span>·</span>'
-                f'<span>{len(meaningful)} substantive reviews</span>'
-                f'<span class="ih-foot-right">{len(intent_schema.aspects)} dimensions · {len(platform_breakdown)} source{"s" if len(platform_breakdown)>1 else ""}</span>'
+                f'<span class="ih-conf-explain">'
+                f'— based on {len(meaningful)} reviews across {len(intent_schema.aspects)} dimensions'
+                f'</span>'
+                f'<span class="ih-foot-right">{len(platform_breakdown)} source{"s" if len(platform_breakdown)>1 else ""}</span>'
                 f'</div></div>',
                 unsafe_allow_html=True,
             )
 
-            # ── Tabs ──────────────────────────────────────────────────────────
-            tab_lbl_2 = {"RANKING": "Rankings", "SOLUTION": "Solutions", "GENERIC": "Insights"}.get(intent_schema.intent, "Insights")
-            tab_ov, tab_res, tab_ev = st.tabs(["Overview", tab_lbl_2, "Evidence"])
-
             # ═════════════════════════════════════════════════════════════════
-            # OVERVIEW TAB
+            # SECTION 3 — Full Rankings / Solutions / Insights
             # ═════════════════════════════════════════════════════════════════
-            with tab_ov:
-
-                if intent_schema.intent == "GENERIC":
-                    ov = payload.get("overall", 3.0)
-                    v_cls = "verdict-high" if ov >= 4.0 else "verdict-mid" if ov >= 3.0 else "verdict-low"
-                    v_txt = "Highly recommended" if ov >= 4.0 else "Generally positive" if ov >= 3.0 else "Mixed reviews"
-                    c_score, c_asp = st.columns([1, 2])
-                    with c_score:
-                        st.markdown(
-                            f'<div class="ih-score-hero">'
-                            f'<div class="ih-score-num {_score_cls(ov)}">{ov:.1f}'
-                            f'<span class="ih-score-denom">/5</span></div>'
-                            f'<div class="ih-score-stars">{_stars(ov)}</div>'
-                            f'<div class="ih-score-verdict {v_cls}">{v_txt}</div>'
-                            f'</div>', unsafe_allow_html=True)
-                    with c_asp:
-                        st.markdown('<div class="ih-section-hdr">Dimension breakdown</div>', unsafe_allow_html=True)
-                        bars = "".join(_aspect_bar(k, v) for k, v in payload.get("aspects", {}).items())
-                        st.markdown(bars or '<p style="color:#475569;font-size:.82rem">No aspect data</p>', unsafe_allow_html=True)
-
-                if intent_schema.intent == "RANKING" and payload.get("ranking"):
-                    st.markdown('<div class="ih-section-hdr">Top consensus picks</div>', unsafe_allow_html=True)
-                    rows = ""
-                    for i, item in enumerate(payload["ranking"][:3], 1):
-                        pc = ["rank-gold", "rank-silver", "rank-bronze"][i - 1]
-                        sc = _score_cls(item["overall_stars"])
-                        rows += (
-                            f'<div class="ih-ov-rank-row">'
-                            f'<div class="ih-ov-pos {pc}">#{i}</div>'
-                            f'<div class="ih-ov-name">{item["name"]}</div>'
-                            f'<div class="ih-ov-stars">{_stars(item["overall_stars"])}</div>'
-                            f'<div class="ih-ov-score {sc}">{item["overall_stars"]:.1f}</div>'
-                            f'</div>'
+            if intent_schema.intent == "RANKING":
+                if payload["ranking"]:
+                    st.markdown('<div class="ih-section-hdr">Full Rankings</div>', unsafe_allow_html=True)
+                    for i, item in enumerate(payload["ranking"][: SearchConstants.MAX_ENTITIES_TO_DISPLAY], 1):
+                        pc = ("rank-gold" if i == 1 else "rank-silver" if i == 2 else "rank-bronze" if i == 3 else "")
+                        card_cls = ("ih-rank-card-top3 " if i <= 3 else "") + (
+                            "ih-rank-card-gold" if i == 1 else "ih-rank-card-silver" if i == 2 else "ih-rank-card-bronze" if i == 3 else ""
                         )
-                    st.markdown(rows, unsafe_allow_html=True)
+                        sc = _score_cls(item["overall_stars"])
+                        conf_lbl2, conf_color2 = _confidence_label(item.get("confidence", 0.5))
+                        verdict = _entity_verdict(item)
 
-                if intent_schema.intent == "SOLUTION" and payload.get("solutions"):
-                    st.markdown('<div class="ih-section-hdr">Top solutions</div>', unsafe_allow_html=True)
+                        aspect_bars = ""
+                        if item.get("aspect_scores"):
+                            sorted_asp = sorted(item["aspect_scores"].items(), key=lambda x: x[1], reverse=True)[:5]
+                            aspect_bars = '<div class="ih-aspects">' + "".join(_aspect_bar(k, v) for k, v in sorted_asp) + '</div>'
+
+                        conf_pill = (
+                            f'<span class="ih-conf-pill" '
+                            f'style="color:{conf_color2};background:{conf_color2}1a;border:1px solid {conf_color2}33">'
+                            f'{conf_lbl2}</span>'
+                        )
+
+                        st.markdown(
+                            f'<div class="ih-rank-card {card_cls}">'
+                            f'<div class="ih-rank-head">'
+                            f'<div class="ih-rank-num {pc}">#{i}</div>'
+                            f'<div class="ih-rank-info">'
+                            f'<div class="ih-rank-name">{item["name"]}</div>'
+                            f'<div class="ih-rank-stars">{_stars(item["overall_stars"])}</div>'
+                            f'<div class="ih-rank-verdict">{verdict}</div>'
+                            f'</div>'
+                            f'<div class="ih-rank-score-block">'
+                            f'<div class="ih-rank-big-score {sc}">{item["overall_stars"]:.1f}</div>'
+                            f'<div class="ih-rank-mentions">{item["mentions"]} mentions</div>'
+                            f'</div>'
+                            f'</div>'
+                            f'{aspect_bars}'
+                            f'<div class="ih-rank-foot">'
+                            f'{conf_pill}'
+                            f'<span class="ih-conf-explain">'
+                            f'{item.get("confidence", 0.5):.0%} confidence'
+                            f' · {item["mentions"]} mentions · upvote-weighted'
+                            f'</span>'
+                            f'</div>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+                else:
+                    st.info("No ranked entities found. Try a more specific query or increase depth in settings.")
+
+            elif intent_schema.intent == "SOLUTION":
+                if payload["solutions"]:
+                    st.markdown('<div class="ih-section-hdr">Solutions</div>', unsafe_allow_html=True)
                     rows = "".join(
                         f'<div class="ih-solution-item">'
                         f'<div class="ih-sol-idx">{i}</div>'
                         f'<div><div class="ih-sol-name">{c["title"]}</div>'
                         f'<div class="ih-sol-count">{c["evidence_count"]} supporting comments</div></div>'
                         f'</div>'
-                        for i, c in enumerate(payload["solutions"][:4], 1)
+                        for i, c in enumerate(payload["solutions"], 1)
                     )
                     st.markdown(rows, unsafe_allow_html=True)
-
-                if use_cross:
-                    st.markdown('<div class="ih-section-hdr">Source breakdown</div>', unsafe_allow_html=True)
-                    plat_html = '<div class="ih-plat-strip">' + "".join(
-                        f'<div class="ih-plat-item"><span class="ih-plat-count">{len(v)}</span>{k.title()} reviews</div>'
-                        for k, v in platform_breakdown.items()
-                    ) + '</div>'
-                    st.markdown(plat_html, unsafe_allow_html=True)
-
-                if show_debug:
-                    with st.expander("Raw data — first 3 reviews"):
-                        import pandas as pd
-                        st.dataframe(pd.DataFrame(reviews[:3])[["id","author","upvotes","permalink","text"]])
-                    if not use_cross:
-                        with st.expander("Reddit search plan"):
-                            try:
-                                plan = reddit_service._plan_search(query)
-                                st.json({"terms":plan.terms,"subreddits":plan.subreddits,"time_filter":plan.time_filter,
-                                         "strategies":plan.strategies,"min_comment_score":plan.min_comment_score})
-                            except Exception as e:
-                                st.caption(f"Plan unavailable: {e}")
-
-            # ═════════════════════════════════════════════════════════════════
-            # RANKINGS / SOLUTIONS / INSIGHTS TAB
-            # ═════════════════════════════════════════════════════════════════
-            with tab_res:
-
-                if intent_schema.intent == "RANKING":
-                    if payload["ranking"]:
-                        st.markdown('<div class="ih-section-hdr">Full ranking</div>', unsafe_allow_html=True)
-                        for i, item in enumerate(payload["ranking"][: SearchConstants.MAX_ENTITIES_TO_DISPLAY], 1):
-                            pc = ("rank-gold" if i == 1 else "rank-silver" if i == 2 else "rank-bronze" if i == 3 else "")
-                            card_cls = ("ih-rank-card-top3 " if i <= 3 else "") + (
-                                "ih-rank-card-gold" if i == 1 else "ih-rank-card-silver" if i == 2 else "ih-rank-card-bronze" if i == 3 else ""
-                            )
-                            sc = _score_cls(item["overall_stars"])
-                            conf_lbl2, conf_color2 = _confidence_label(item.get("confidence", 0.5))
-                            verdict = _entity_verdict(item)
-
-                            # Aspect bars (top 5, sorted high→low)
-                            aspect_bars = ""
-                            if item.get("aspect_scores"):
-                                sorted_asp = sorted(item["aspect_scores"].items(), key=lambda x: x[1], reverse=True)[:5]
-                                aspect_bars = '<div class="ih-aspects">' + "".join(_aspect_bar(k, v) for k, v in sorted_asp) + '</div>'
-
-                            conf_bg = conf_color2.replace("#","")
-                            conf_pill = (
-                                f'<span class="ih-conf-pill" '
-                                f'style="color:{conf_color2};background:{conf_color2}1a;border:1px solid {conf_color2}33">'
-                                f'{conf_lbl2}</span>'
-                            )
-
-                            st.markdown(
-                                f'<div class="ih-rank-card {card_cls}">'
-                                f'<div class="ih-rank-head">'
-                                f'<div class="ih-rank-num {pc}">#{i}</div>'
-                                f'<div class="ih-rank-info">'
-                                f'<div class="ih-rank-name">{item["name"]}</div>'
-                                f'<div class="ih-rank-stars">{_stars(item["overall_stars"])}</div>'
-                                f'<div class="ih-rank-verdict">{verdict}</div>'
-                                f'</div>'
-                                f'<div class="ih-rank-score-block">'
-                                f'<div class="ih-rank-big-score {sc}">{item["overall_stars"]:.1f}</div>'
-                                f'<div class="ih-rank-mentions">{item["mentions"]} mentions</div>'
-                                f'</div>'
-                                f'</div>'
-                                f'{aspect_bars}'
-                                f'<div class="ih-rank-foot">'
-                                f'{conf_pill}'
-                                f'<span>·</span>'
-                                f'<span>{item.get("confidence", 0.5):.0%} confidence score</span>'
-                                f'</div>'
-                                f'</div>',
-                                unsafe_allow_html=True,
-                            )
-
-                            if item.get("quotes"):
-                                with st.expander(f"Community quotes about {item['name']}"):
-                                    for q_text in item["quotes"][:3]:
-                                        st.markdown(f'<div class="ih-quote">{q_text}</div>', unsafe_allow_html=True)
-                    else:
-                        st.info("No ranked entities found. Try a more specific query or increase depth in settings.")
-
-                elif intent_schema.intent == "SOLUTION":
-                    if payload["solutions"]:
-                        rows = "".join(
-                            f'<div class="ih-solution-item">'
-                            f'<div class="ih-sol-idx">{i}</div>'
-                            f'<div><div class="ih-sol-name">{c["title"]}</div>'
-                            f'<div class="ih-sol-count">{c["evidence_count"]} supporting comments</div></div>'
-                            f'</div>'
-                            for i, c in enumerate(payload["solutions"], 1)
-                        )
-                        st.markdown(rows, unsafe_allow_html=True)
-                    else:
-                        st.info("No solution clusters found. Try a more specific query or increase depth in settings.")
-
-                else:  # GENERIC
-                    if payload.get("quotes"):
-                        st.markdown('<div class="ih-section-hdr">Key community voices</div>', unsafe_allow_html=True)
-                        for q_text in payload["quotes"][:6]:
-                            st.markdown(f'<div class="ih-quote">{q_text}</div>', unsafe_allow_html=True)
-                    else:
-                        st.info("No notable quotes found.")
-
-                    st.markdown('<div class="ih-section-hdr">All dimensions</div>', unsafe_allow_html=True)
-                    bars = "".join(_aspect_bar(k, v) for k, v in payload.get("aspects", {}).items())
-                    st.markdown(bars or '<p style="color:#475569;font-size:.82rem">No aspect data</p>', unsafe_allow_html=True)
-
-            # ═════════════════════════════════════════════════════════════════
-            # EVIDENCE TAB
-            # ═════════════════════════════════════════════════════════════════
-            with tab_ev:
-                detailed = [r for r in relevant_reviews if len((r.get("text") or "")) >= 100]
-
-                if not detailed:
-                    st.info("No detailed reviews found for this query.")
                 else:
-                    def _enrich(r):
-                        rid = r.get("id") if isinstance(r, dict) else r.id
-                        anno = anno_map.get(rid)
-                        sc = anno.overall_score if anno and hasattr(anno, "overall_score") else None
-                        base = dict(r) if isinstance(r, dict) else {
-                            "id": rid, "text": getattr(r, "text", ""),
-                            "upvotes": getattr(r, "upvotes", 0),
-                            "permalink": getattr(r, "permalink", ""),
-                            "url": getattr(r, "url", ""),
-                            "author": getattr(r, "author", "anonymous"),
-                        }
-                        base["_score"] = sc
-                        return base
+                    st.info("No solution clusters found. Try a more specific query or increase depth in settings.")
 
-                    enriched = [_enrich(r) for r in detailed]
-                    positive = sorted([r for r in enriched if r["_score"] is not None and r["_score"] >= 3.8], key=lambda r: -(r.get("upvotes",0) or 0))
-                    critical = sorted([r for r in enriched if r["_score"] is not None and r["_score"] < 2.8],  key=lambda r: -(r.get("upvotes",0) or 0))
-                    mixed    = sorted([r for r in enriched if r["_score"] is None or 2.8 <= r["_score"] < 3.8], key=lambda r: -(r.get("upvotes",0) or 0))
+            else:  # GENERIC
+                if payload.get("quotes"):
+                    st.markdown('<div class="ih-section-hdr">Key community voices</div>', unsafe_allow_html=True)
+                    for q_text in payload["quotes"][:6]:
+                        st.markdown(f'<div class="ih-quote">{q_text}</div>', unsafe_allow_html=True)
 
-                    def _render_ev(review_list, cap=6):
-                        if not review_list:
-                            return ""
-                        html = ""
-                        for rev in review_list[:cap]:
-                            permalink = rev.get("permalink","") or ""
-                            url       = rev.get("url","") or ""
-                            author    = rev.get("author") or "anonymous"
-                            upvotes   = rev.get("upvotes", 0) or 0
-                            sc        = rev.get("_score")
-                            src       = _source_tag(rev)
-                            upcls     = "ih-upvotes-high" if upvotes >= 100 else ""
+            # ═════════════════════════════════════════════════════════════════
+            # SECTION 4 — Aspect Breakdown (GENERIC only)
+            # ═════════════════════════════════════════════════════════════════
+            if intent_schema.intent == "GENERIC" and payload.get("aspects"):
+                st.markdown('<div class="ih-section-hdr">Aspect Breakdown</div>', unsafe_allow_html=True)
+                bars = "".join(_aspect_bar(k, v) for k, v in payload["aspects"].items())
+                st.markdown(bars or '<p style="color:#475569;font-size:.82rem">No aspect data</p>', unsafe_allow_html=True)
 
-                            if permalink:
-                                ahtml = f'<a href="https://reddit.com{permalink}" target="_blank">{author}</a>'
-                            elif url:
-                                ahtml = f'<a href="{url}" target="_blank">{author}</a>'
-                            else:
-                                ahtml = author
+            # ═════════════════════════════════════════════════════════════════
+            # SECTION 5 — Remaining Evidence
+            # ═════════════════════════════════════════════════════════════════
+            has_remaining = (
+                len(positive) > 3 or len(critical) > 3 or len(mixed) > 0
+            )
+            if detailed and has_remaining:
+                st.markdown(
+                    f'<div class="ih-section-hdr">{len(enriched)} substantive reviews · grouped by sentiment</div>',
+                    unsafe_allow_html=True,
+                )
 
-                            sent_html = ""
-                            if sc is not None:
-                                sl, sc_color, sc_bg = _sentiment_label(sc)
-                                sent_html = f'<span class="ih-sent" style="color:{sc_color};background:{sc_bg};border:1px solid {sc_color}22">{sl}</span>'
+                if len(positive) > 3:
+                    st.markdown(f'<div class="ih-evidence-group-hdr" style="color:#22d3a0">Positive voices ({len(positive)})</div>', unsafe_allow_html=True)
+                    st.markdown(_render_ev(positive[3:], 5), unsafe_allow_html=True)
+                    if len(positive) > 8:
+                        with st.expander(f"{len(positive)-8} more positive reviews"):
+                            st.markdown(_render_ev(positive[8:], 50), unsafe_allow_html=True)
 
-                            html += (
-                                f'<div class="ih-evidence-item">'
-                                f'<div class="ih-ev-meta">{src}{sent_html}'
-                                f'<span class="ih-ev-author">{ahtml}</span>'
-                                f'<span class="ih-upvotes {upcls}">▲ {upvotes:,}</span>'
-                                f'</div>'
-                                f'<div class="ih-ev-text">{_excerpt(rev.get("text",""))}</div>'
-                                f'</div>'
-                            )
-                        return html
+                if len(critical) > 3:
+                    st.markdown(f'<div class="ih-evidence-group-hdr" style="color:#f87171">Critical voices ({len(critical)})</div>', unsafe_allow_html=True)
+                    st.markdown(_render_ev(critical[3:], 5), unsafe_allow_html=True)
+                    if len(critical) > 8:
+                        with st.expander(f"{len(critical)-8} more critical reviews"):
+                            st.markdown(_render_ev(critical[8:], 50), unsafe_allow_html=True)
 
-                    st.markdown(
-                        f'<div class="ih-section-hdr">{len(enriched)} substantive reviews · grouped by sentiment</div>',
-                        unsafe_allow_html=True,
-                    )
+                if mixed:
+                    st.markdown(f'<div class="ih-evidence-group-hdr" style="color:#64748b">Mixed &amp; neutral ({len(mixed)})</div>', unsafe_allow_html=True)
+                    st.markdown(_render_ev(mixed, 5), unsafe_allow_html=True)
+                    if len(mixed) > 5:
+                        with st.expander(f"{len(mixed)-5} more mixed reviews"):
+                            st.markdown(_render_ev(mixed[5:], 50), unsafe_allow_html=True)
 
-                    if positive:
-                        st.markdown(f'<div class="ih-evidence-group-hdr" style="color:#22d3a0">Positive voices ({len(positive)})</div>', unsafe_allow_html=True)
-                        st.markdown(_render_ev(positive, 5), unsafe_allow_html=True)
-                        if len(positive) > 5:
-                            with st.expander(f"{len(positive)-5} more positive reviews"):
-                                st.markdown(_render_ev(positive[5:], 50), unsafe_allow_html=True)
+            elif detailed and not has_remaining and not positive and not critical:
+                st.info("No detailed reviews found for this query.")
 
-                    if critical:
-                        st.markdown(f'<div class="ih-evidence-group-hdr" style="color:#f87171">Critical voices ({len(critical)})</div>', unsafe_allow_html=True)
-                        st.markdown(_render_ev(critical, 5), unsafe_allow_html=True)
-                        if len(critical) > 5:
-                            with st.expander(f"{len(critical)-5} more critical reviews"):
-                                st.markdown(_render_ev(critical[5:], 50), unsafe_allow_html=True)
+            # ═════════════════════════════════════════════════════════════════
+            # SECTION 6 — Developer Debug
+            # ═════════════════════════════════════════════════════════════════
+            if use_cross:
+                st.markdown('<div class="ih-section-hdr">Source breakdown</div>', unsafe_allow_html=True)
+                plat_html = '<div class="ih-plat-strip">' + "".join(
+                    f'<div class="ih-plat-item"><span class="ih-plat-count">{len(v)}</span>{k.title()} reviews</div>'
+                    for k, v in platform_breakdown.items()
+                ) + '</div>'
+                st.markdown(plat_html, unsafe_allow_html=True)
 
-                    if mixed:
-                        st.markdown(f'<div class="ih-evidence-group-hdr" style="color:#64748b">Mixed &amp; neutral ({len(mixed)})</div>', unsafe_allow_html=True)
-                        st.markdown(_render_ev(mixed, 4), unsafe_allow_html=True)
-                        if len(mixed) > 4:
-                            with st.expander(f"{len(mixed)-4} more mixed reviews"):
-                                st.markdown(_render_ev(mixed[4:], 50), unsafe_allow_html=True)
+            if show_debug:
+                st.markdown('<div class="ih-section-hdr">Developer Debug</div>', unsafe_allow_html=True)
+                with st.expander("Raw data — first 3 reviews"):
+                    import pandas as pd
+                    st.dataframe(pd.DataFrame(reviews[:3])[["id","author","upvotes","permalink","text"]])
+                if not use_cross:
+                    with st.expander("Reddit search plan"):
+                        try:
+                            plan = reddit_service._plan_search(query)
+                            st.json({"terms":plan.terms,"subreddits":plan.subreddits,"time_filter":plan.time_filter,
+                                     "strategies":plan.strategies,"min_comment_score":plan.min_comment_score})
+                        except Exception as e:
+                            st.caption(f"Plan unavailable: {e}")
 
     except Exception as e:
         logger.error(f"Analysis failed: {e}")

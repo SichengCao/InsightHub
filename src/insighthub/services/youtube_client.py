@@ -1,6 +1,7 @@
 """YouTube data collection service for InsightHub."""
 
 import logging
+import re as _re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
@@ -8,10 +9,18 @@ import requests
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-# Review import removed - using dict format
 from ..core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _strip_html(text: str) -> str:
+    """Remove HTML tags from YouTube comment text and normalise whitespace."""
+    if not text:
+        return ""
+    cleaned = _re.sub(r"<[^>]+>", " ", text)
+    cleaned = _re.sub(r"\s{2,}", " ", cleaned)
+    return cleaned.strip()
 
 class YouTubeService:
     """YouTube data collection service using YouTube Data API v3."""
@@ -106,7 +115,7 @@ class YouTubeService:
                     comments.append({
                         "comment_id": item["id"],
                         "author": top_comment["authorDisplayName"],
-                        "text": top_comment["textDisplay"],
+                        "text": _strip_html(top_comment["textDisplay"]),
                         "likes": top_comment["likeCount"],
                         "published_at": top_comment["publishedAt"],
                         "updated_at": top_comment["updatedAt"],
@@ -120,7 +129,7 @@ class YouTubeService:
                             comments.append({
                                 "comment_id": reply["id"],
                                 "author": reply_snippet["authorDisplayName"],
-                                "text": reply_snippet["textDisplay"],
+                                "text": _strip_html(reply_snippet["textDisplay"]),
                                 "likes": reply_snippet["likeCount"],
                                 "published_at": reply_snippet["publishedAt"],
                                 "updated_at": reply_snippet["updatedAt"],
@@ -151,17 +160,43 @@ class YouTubeService:
         
         return title_match or desc_match
 
-    def scrape(self, query: str, limit: int = 50) -> List[dict]:
+    def _score_video(self, video: dict, query_category: str = None) -> int:
+        """
+        Score a video by title quality for a given category.
+        Uses YouTubeVideoFilters constants — no hardcoded strings here.
+        Returns an integer score; higher is better.
+        """
+        from ..core.constants import YouTubeVideoFilters
+        title = video.get("title", "").lower()
+        score = 0
+        prefer = list(YouTubeVideoFilters.PREFER_ALWAYS)
+        avoid  = list(YouTubeVideoFilters.AVOID_ALWAYS)
+        if query_category:
+            prefer += YouTubeVideoFilters.CATEGORY_PREFER.get(query_category, [])
+            avoid  += YouTubeVideoFilters.CATEGORY_AVOID.get(query_category, [])
+        for kw in prefer:
+            if kw in title:
+                score += 1
+        for kw in avoid:
+            if kw in title:
+                score -= 2
+        return score
+
+    def scrape(self, query: str, limit: int = 50, query_category: str = None) -> List[dict]:
         """Scrape YouTube for reviews related to the query."""
         logger.info(f"Scraping YouTube for '{query}' with limit {limit}...")
-        
+
         # Search for relevant videos
         videos = self.search_videos(query, max_results=20)
-        
-        # Filter for relevant videos only
+
+        # Filter for relevance then rank by content-quality score.
+        from ..core.constants import YouTubeVideoFilters
         relevant_videos = [v for v in videos if self._is_relevant_video(v, query)]
-        logger.info(f"Found {len(relevant_videos)} relevant videos out of {len(videos)} total")
-        
+        relevant_videos.sort(key=lambda v: self._score_video(v, query_category), reverse=True)
+        relevant_videos = [v for v in relevant_videos
+                           if self._score_video(v, query_category) >= YouTubeVideoFilters.MIN_VIDEO_SCORE]
+        logger.info(f"Found {len(relevant_videos)} quality-scored videos out of {len(videos)} total")
+
         target_videos = relevant_videos[:10]
         per_video_limit = max(1, limit // max(1, len(target_videos)))
 

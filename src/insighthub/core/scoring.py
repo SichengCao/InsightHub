@@ -5,7 +5,7 @@ import math, time
 from typing import List, Dict, Any
 from collections import defaultdict
 from .models import Review, AspectScore, AnalysisSummary, GPTCommentAnno, RankingItem
-from .constants import SearchConstants, DomainConstants
+from .constants import SearchConstants, DomainConstants, SourceQualityMultipliers, ConfidenceConfig
 
 logger = logging.getLogger(__name__)
 
@@ -148,15 +148,32 @@ def create_analysis_summary(
         aspect_averages=aspect_scores
     )
 
-# --- Trust weight for each review/comment ---
+# --- Platform-normalised engagement weight ---
+def _platform_weight(upvotes: int, source: str = "reddit") -> float:
+    """
+    Map raw upvote/like counts to a 1–10 scale anchored to each platform's
+    own typical engagement range, so Reddit and YouTube comments are
+    comparable when mixed in a combined-source ranking.
+
+    Formula: 1 + 9 * clamp(upvotes / platform_cap, 0, 1)
+      Reddit  cap=50: upvotes 0→1.0, 5→1.9, 25→5.5, 50+→10.0
+      YouTube cap=15: likes   0→1.0, 3→2.8, 8→5.8,  15+→10.0
+    """
+    caps = SearchConstants.PLATFORM_ENGAGEMENT_CAPS
+    cap = caps.get(source.lower(), caps["default"])
+    return 1.0 + 9.0 * min(1.0, max(0.0, upvotes / cap))
+
+
+# --- Trust weight for each review/comment (legacy: operates on Review objects) ---
 def _comment_weight(review, now_ts=None) -> float:
     """
-    Weight = sqrt(upvotes+1) * recency_decay
+    Weight = platform_normalised(upvotes) * recency_decay
     Recency halves every ~365 days: exp(-age_days/365)
     Clamped to [0.5, 10] to avoid whale domination.
     """
     up = max(0, int(getattr(review, "upvotes", getattr(review, "score", 0)) or 0))
-    w_votes = math.sqrt(up + 1)
+    source = getattr(review, "source", "reddit") or "reddit"
+    w_votes = _platform_weight(up, source)
     created_utc = getattr(review, "created_utc", None)
     if now_ts is None:
         now_ts = time.time()
@@ -251,18 +268,21 @@ def crowd_trust_stars(reviews):
     return round(1 + 4*p_lb, 1)
 
 
-def aggregate_generic(aspect_schema: List[str], annos: List[GPTCommentAnno], upvote_map: Dict[str, int]) -> tuple[float, Dict[str, float]]:
+def aggregate_generic(aspect_schema: List[str], annos: List[GPTCommentAnno], upvote_map: Dict[str, int], source_map: Dict[str, str] = None) -> tuple[float, Dict[str, float]]:
     """Aggregate generic analysis results."""
     if not annos:
         return 3.0, {}
-    
+
+    _source_map = source_map or {}
+
     # Calculate overall rating
     overall_scores = []
     aspect_scores = defaultdict(list)
-    
+
     for anno in annos:
-        # Weight by upvotes
-        weight = _winsor_weight(upvote_map.get(anno.comment_id, 1))
+        upvotes = upvote_map.get(anno.comment_id, 1)
+        source  = _source_map.get(anno.comment_id, "reddit")
+        weight  = _platform_weight(upvotes, source)
         
         # Overall score
         overall_scores.append((anno.overall_score, weight))
@@ -279,8 +299,6 @@ def aggregate_generic(aspect_schema: List[str], annos: List[GPTCommentAnno], upv
     for aspect_name in aspect_schema:
         if aspect_scores[aspect_name]:
             aspect_averages[aspect_name] = _weighted_mean(aspect_scores[aspect_name])
-        else:
-            aspect_averages[aspect_name] = 3.0
     
     return overall, aspect_averages
 
@@ -333,9 +351,109 @@ def _extract_query_location(query: str) -> str:
 
 
 
-def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entity_type: str, min_mentions: int = 3, query: str = "") -> List[RankingItem]:
+def _four_factor_confidence(
+    n_mentions: int,
+    sentiment_scores: list,
+    sources_contributing: set,
+    total_platforms_queried: int,
+    sqm_values: list,
+) -> float:
+    """
+    Composite confidence score = Volume × Diversity × Consistency × SourceFit.
+    All factors are in [0, 1]; result is in [0, 1].
+
+    Args:
+        n_mentions:             how many comments mentioned this entity
+        sentiment_scores:       list of raw sentiment floats for variance calc
+        sources_contributing:   set of platform names (e.g. {"reddit", "youtube"})
+        total_platforms_queried: how many platforms were actually searched
+        sqm_values:             list of SQM values for contributing comments
+    """
+    cfg = ConfidenceConfig
+
+    # Factor 1: Volume — asymptotes toward 1 as mentions grow
+    volume = n_mentions / (n_mentions + cfg.VOLUME_PRIOR)
+
+    # Factor 2: Diversity — fraction of queried platforms that contributed
+    denom = max(1, total_platforms_queried)
+    diversity = 0.5 + 0.5 * (len(sources_contributing) / denom)
+
+    # Factor 3: Consistency — penalise high sentiment variance
+    if len(sentiment_scores) >= 2:
+        mean = sum(sentiment_scores) / len(sentiment_scores)
+        variance = sum((s - mean) ** 2 for s in sentiment_scores) / len(sentiment_scores)
+        std_dev = variance ** 0.5
+        consistency = max(0.0, 1.0 - std_dev / cfg.CONSISTENCY_SCALE)
+    else:
+        consistency = 0.7  # single data point — modest default
+
+    # Factor 4: Source fit — average SQM of contributing comments
+    source_fit = sum(sqm_values) / len(sqm_values) if sqm_values else 0.5
+
+    return round(volume * diversity * consistency * source_fit, 4)
+
+
+def _confidence_tier(score: float) -> str:
+    """Map a composite confidence score to a display tier label."""
+    cfg = ConfidenceConfig
+    if score >= cfg.TIER_ESTABLISHED:
+        return cfg.TIER_LABELS["established"]
+    if score >= cfg.TIER_EMERGING:
+        return cfg.TIER_LABELS["emerging"]
+    if score >= cfg.TIER_MENTIONED:
+        return cfg.TIER_LABELS["mentioned"]
+    return cfg.TIER_LABELS["insufficient"]
+
+
+def _extract_quote(text: str, entity_name: str, max_len: int = 200) -> str:
+    """Extract the most relevant sentence mentioning the entity from a comment."""
+    import re as _re
+    # Build name variants: strip possessives, try partial (last word only for multi-word names)
+    name_lower = entity_name.lower().replace("'s", "").replace("'s", "")
+    variants = {name_lower}
+    words = name_lower.split()
+    if len(words) >= 2:
+        variants.add(words[-1])          # last word  (e.g. "Nakamura" from "Ivan Nakamura")
+        variants.add(words[0])           # first word (e.g. "Deskhaus" from "Deskhaus Apex Pro")
+    pattern = _re.compile(
+        r'|'.join(_re.escape(v) for v in sorted(variants, key=len, reverse=True)),
+        _re.IGNORECASE
+    )
+    # Split into sentences and pick the best match
+    sentences = _re.split(r'(?<=[.!?])\s+', text.strip())
+    best = None
+    for sent in sentences:
+        if pattern.search(sent):
+            # Prefer longer sentences (more context) up to max_len
+            if best is None or (len(sent) > len(best) and len(sent) <= max_len * 1.5):
+                best = sent
+    if best:
+        return (best[:max_len] + "…") if len(best) > max_len else best
+    # Fallback: return the first max_len chars if entity found anywhere in text
+    if pattern.search(text):
+        return (text[:max_len] + "…") if len(text) > max_len else text
+    return ""
+
+
+def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entity_type: str, min_mentions: int = 3, query: str = "", comments: List[Dict] = None, source_map: Dict[str, str] = None, query_category: str = None, suppress_insufficient: bool = True) -> List[RankingItem]:
     """Rank entities based on mentions and scores."""
+    from insighthub.core.constants import SourceQualityMultipliers
+    from insighthub.services.llm import classify_query as _classify_query
+    _category   = query_category or (_classify_query(query) if query else "product_ranking")
+    _source_map = source_map or {}
     query_location = _extract_query_location(query)
+    # How many distinct platforms were searched (for diversity factor)
+    _total_platforms = len(set(_source_map.values())) if _source_map else 1
+
+    # Build comment text lookup for quote extraction
+    comment_text_map: Dict[str, str] = {}
+    if comments:
+        for c in comments:
+            cid = c.get("id", "") if isinstance(c, dict) else getattr(c, "id", "")
+            text = c.get("text", "") if isinstance(c, dict) else getattr(c, "text", "")
+            if cid and text:
+                comment_text_map[cid] = text
+
     entity_stats = defaultdict(lambda: {
         'mentions': 0,
         'primary_mentions': 0,
@@ -344,11 +462,18 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
         'aspect_scores': defaultdict(list),
         'comment_ids': [],
         'original_names': set(),
+        'candidate_quotes': [],  # (upvotes, quote_text)
+        'sources': set(),        # which platforms contributed mentions
+        'raw_sentiments': [],    # raw sentiment floats for consistency calc
+        'sqm_values': [],        # SQM per contributing comment for source-fit calc
     })
-    
+
     # Aggregate entity data
     for anno in annos:
-        base_weight = _winsor_weight(upvote_map.get(anno.comment_id, 1))
+        upvotes    = upvote_map.get(anno.comment_id, 1)
+        src        = _source_map.get(anno.comment_id, "reddit")
+        sqm        = SourceQualityMultipliers.get(_category, src)
+        base_weight = _platform_weight(upvotes, src) * sqm
 
         for entity in anno.entities:
             # Drop low-confidence extractions
@@ -387,6 +512,16 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
             entity_stats[normalized_name]['overall_scores'].append((entity_sentiment, effective_weight))
             entity_stats[normalized_name]['comment_ids'].append(anno.comment_id)
             entity_stats[normalized_name]['original_names'].add(entity.name)
+            entity_stats[normalized_name]['sources'].add(src)
+            entity_stats[normalized_name]['raw_sentiments'].append(entity_sentiment)
+            entity_stats[normalized_name]['sqm_values'].append(sqm)
+            # Collect quote candidate from the source comment
+            if comment_text_map and anno.comment_id in comment_text_map:
+                raw_text = comment_text_map[anno.comment_id]
+                quote = _extract_quote(raw_text, entity.name)
+                if quote:
+                    upvotes = upvote_map.get(anno.comment_id, 0)
+                    entity_stats[normalized_name]['candidate_quotes'].append((upvotes, quote))
             if is_primary:
                 entity_stats[normalized_name]['primary_mentions'] += 1
 
@@ -397,21 +532,36 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
             for aspect_name, score in aspect_src.items():
                 entity_stats[normalized_name]['aspect_scores'][aspect_name].append((score, effective_weight))
     
-    # Merge entities where one name's words are a strict subset of another's
-    # (e.g. "half moon" collapses into "half moon bay"). Requires ≥2 matching words
-    # so single-word overlaps like "park" don't cause spurious merges.
+    # Merge entities where one name is a prefix/subset of a longer, more specific name.
+    # Two passes:
+    #   Pass A — multi-word subset (e.g. "half moon" ⊂ "half moon bay golf course")
+    #   Pass B — single-word brand prefix (e.g. "deskhaus" ⊂ "deskhaus apex pro")
+    #            only merges when the brand word appears at the START of the longer name
+    #            and the longer name has ≥ 2 words, to avoid spurious collapses.
     _names = sorted(entity_stats.keys(), key=lambda n: len(set(n.split())))
-    _absorbed = {}
+    _absorbed: dict = {}
+
     for _short in _names:
         _sw = set(_short.split())
-        if len(_sw) < 2:
-            continue
+        _sw_list = _short.split()
         for _long in _names:
-            if _long == _short or _long in _absorbed:
+            if _long == _short or _long in _absorbed or _short in _absorbed:
                 continue
-            if _sw < set(_long.split()):
+            _lw = set(_long.split())
+            _lw_list = _long.split()
+            # Pass A: strict multi-word subset (original logic, ≥2 matching words)
+            if len(_sw) >= 2 and _sw < _lw:
                 _absorbed[_short] = _long
                 break
+            # Pass B: single-word brand prefix match
+            # "deskhaus" → absorbed into "deskhaus apex pro" (starts with "deskhaus")
+            # but NOT "park" → "park slope ramen" (too generic)
+            if (len(_sw) == 1 and len(_lw_list) >= 2
+                    and _lw_list[0] == _sw_list[0]
+                    and len(_sw_list[0]) >= 5):       # brand word must be ≥5 chars to avoid false matches
+                _absorbed[_short] = _long
+                break
+
     for _short, _long in _absorbed.items():
         if _short in entity_stats and _long in entity_stats:
             s, t = entity_stats[_short], entity_stats[_long]
@@ -421,6 +571,7 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
             t['overall_scores'].extend(s['overall_scores'])
             t['comment_ids'].extend(s['comment_ids'])
             t['original_names'].update(s['original_names'])
+            t['candidate_quotes'].extend(s['candidate_quotes'])
             for _asp, _scores in s['aspect_scores'].items():
                 t['aspect_scores'][_asp].extend(_scores)
             del entity_stats[_short]
@@ -451,13 +602,55 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
             original_names = list(stats['original_names'])
             display_name = max(original_names, key=len) if original_names else normalized_name
 
+            # Pick top-upvoted unique quotes (deduplicate by first 60 chars)
+            seen_q: set = set()
+            top_quotes: list = []
+            for _, q in sorted(stats['candidate_quotes'], key=lambda x: -x[0]):
+                key = q[:60]
+                if key not in seen_q:
+                    seen_q.add(key)
+                    top_quotes.append(q)
+                if len(top_quotes) >= 3:
+                    break
+
+            # Volume-based label (legacy, kept for backward compat)
+            n = stats['mentions']
+            if n >= 10:
+                data_confidence = "high"
+            elif n >= 4:
+                data_confidence = "medium"
+            elif n >= 2:
+                data_confidence = "low"
+            else:
+                data_confidence = "very_low"
+
+            # Four-factor composite confidence score
+            conf_score = _four_factor_confidence(
+                n_mentions=stats['mentions'],
+                sentiment_scores=stats['raw_sentiments'],
+                sources_contributing=stats['sources'],
+                total_platforms_queried=_total_platforms,
+                sqm_values=stats['sqm_values'],
+            )
+            tier = _confidence_tier(conf_score)
+
+            # Suppress entities that don't clear the minimum confidence threshold.
+            # Suppression can be disabled for the relaxation fallback so the
+            # pipeline always returns something when data exists.
+            if suppress_insufficient and tier == ConfidenceConfig.TIER_LABELS["insufficient"]:
+                logger.debug(f"Suppressed '{display_name}' — confidence {conf_score:.3f} below threshold")
+                continue
+
             ranking_items.append(RankingItem(
                 name=display_name,
                 overall_stars=round(overall_stars, 2),
                 aspect_scores=aspect_scores,
                 mentions=stats['mentions'],
                 confidence=confidence,
-                quotes=[],
+                quotes=top_quotes,
+                data_confidence=data_confidence,
+                confidence_score=conf_score,
+                confidence_tier=tier,
             ))
 
     # Sort by credibility-adjusted score descending, then by mentions descending
@@ -465,7 +658,7 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
     
     return ranking_items
 
-def rank_entities_with_relaxation(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entity_type: str, min_mentions: int = SearchConstants.DEFAULT_MIN_MENTIONS, query: str = "") -> List[RankingItem]:
+def rank_entities_with_relaxation(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entity_type: str, min_mentions: int = SearchConstants.DEFAULT_MIN_MENTIONS, query: str = "", comments: List[Dict] = None, source_map: Dict[str, str] = None, query_category: str = None) -> List[RankingItem]:
     """
     Rank entities with automatic relaxation if too few results.
     
@@ -489,10 +682,22 @@ def rank_entities_with_relaxation(annos: List[GPTCommentAnno], upvote_map: Dict[
     ranked = []
     for threshold in thresholds:
         logger.info(f"Entity ranking attempt: min_mentions={threshold}")
-        ranked = rank_entities(annos, upvote_map, entity_type, threshold, query=query)
+        ranked = rank_entities(annos, upvote_map, entity_type, threshold, query=query, comments=comments, source_map=source_map, query_category=query_category)
         if len(ranked) >= 3:
             logger.info(f"Entity ranking: {len(ranked)} entities at min_mentions={threshold}")
             return ranked
+
+    # If all thresholds with confidence suppression returned nothing, do a final
+    # pass with suppression disabled so the pipeline always surfaces something
+    # when data exists.  Entities from this fallback carry tier="insufficient"
+    # so the UI can display them with an appropriate low-confidence treatment.
+    if not ranked:
+        ranked = rank_entities(annos, upvote_map, entity_type, 1, query=query,
+                               comments=comments, source_map=source_map,
+                               query_category=query_category,
+                               suppress_insufficient=False)
+        if ranked:
+            logger.info(f"Entity ranking: {len(ranked)} entities (fallback, confidence suppression off)")
 
     logger.info(f"Entity ranking: {len(ranked)} entities after full relaxation")
     return ranked

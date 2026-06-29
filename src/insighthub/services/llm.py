@@ -16,8 +16,85 @@ from ..core.aspect import get_domain_aspects, aspect_hint_for_query
 from ..core.models import IntentSchema, GPTCommentAnno, EntityRef
 
 # ---- Search planner constants ----
-from ..core.constants import PromptConstants, SearchConstants, CacheConstants, ErrorConstants, FileConstants
+from ..core.constants import PromptConstants, SearchConstants, CacheConstants, ErrorConstants, FileConstants, QueryCategory, SourceQualityMultipliers
 PLANNER_PROMPT_VERSION = PromptConstants.PLANNER_PROMPT_VERSION
+
+
+def classify_query(query: str) -> str:
+    """
+    Classify a query into one of the QueryCategory routing categories.
+    Uses keyword rules derived from QueryCategory constants — no hardcoded strings
+    in the logic itself.
+
+    Returns a category key matching QueryCategory.ROUTING_TABLE.
+    """
+    q = query.lower().strip()
+    words = set(q.split())
+
+    # Unsupported: news/rumor queries
+    if any(sig in q for sig in QueryCategory.NEWS_SIGNALS):
+        return "unsupported"
+
+    # Troubleshooting: solution-seeking language
+    if any(sig in q for sig in QueryCategory.SOLUTION_SIGNALS):
+        return "troubleshooting"
+
+    # Local discovery: location preposition present
+    if any(f" {prep} " in f" {q} " for prep in QueryCategory.LOCATION_PREPOSITIONS):
+        # Only local discovery if there's also a venue/food/place noun — heuristic:
+        # query contains no "vs" signal and no electronics brand
+        if not (words & QueryCategory.TOOL_VS_SIGNALS):
+            return "local_discovery"
+
+    # Tool comparison: "X vs Y" pattern
+    if words & QueryCategory.TOOL_VS_SIGNALS:
+        return "tool_comparison"
+
+    # Consumer electronics: named device brand
+    if any(brand in q for brand in QueryCategory.ELECTRONICS_BRANDS):
+        return "consumer_electronics"
+
+    # Product ranking: "best [something]" without location
+    if q.startswith("best ") or q.startswith("top ") or q.startswith("which "):
+        return "product_ranking"
+
+    # Default: product ranking (covers most remaining review queries)
+    return "product_ranking"
+
+# Subreddits that consistently produce low-quality signal for product ranking queries.
+# Scores from empirical analysis across 40+ queries. Subreddits below 50 are excluded
+# from ranking queries; 50–69 are allowed only when no better option is available.
+SUBREDDIT_QUALITY = {
+    # ── Wrong context entirely (score 0–29) ───────────────────────────────────
+    "Windsurfing": 20, "Kitesurfing": 20, "Surfing": 20,
+    "FoodNYC": 20, "AskNYC": 30, "NewYorkCity": 30,
+    "pcmasterrace": 30, "programming": 30, "runners": 30,
+    "running": 30, "shoes": 30, "software": 30,
+    "projectmanagement": 30, "Sleep": 30, "Supplements": 30,
+    "Protein": 30, "Fitness": 30,
+    # ── High noise / brand fan forums (score 30–49) ───────────────────────────
+    "Apple": 40, "iPhone": 40, "Sony": 40, "nvidia": 40,
+    "Windows": 40, "Productivity": 40, "hardware": 50,
+    "vscode": 50, "neovim": 50, "audiophile": 60,
+    # ── Good signal subreddits (score 70+) ───────────────────────────────────
+    "HeadphoneAdvice": 90, "buildapc": 90,
+    "MechanicalKeyboards": 90, "GamingKeyboards": 85,
+    "headphones": 85, "Airpods": 85, "Mattress": 85,
+    "StandingDesk": 80, "Dyson": 80, "vacuumcleaners": 80,
+    "Keyboards": 80, "Laptop": 75, "Laptops": 75,
+    "CoffeeSnobs": 75, "espresso": 70,
+    # ── AI / developer tools (score 85+) ─────────────────────────────────────
+    "cursor": 90, "windsurf": 90, "CursorAI": 90,
+    "ChatGPTCoding": 85, "AIAssistants": 85, "GithubCopilot": 85,
+    "LocalLLaMA": 80, "ClaudeAI": 80, "ChatGPT": 75,
+    "SoftwareEngineering": 75, "ExperiencedDevs": 80,
+}
+# Only hard-exclude subreddits that are completely wrong context (sport/hobby forums
+# for software queries, etc.). High-noise brand forums (iPhone, Apple) are noisy but
+# are the right community — let the relevance filter handle their noise.
+_SUBREDDIT_HARD_EXCLUDE = frozenset(
+    s for s, score in SUBREDDIT_QUALITY.items() if score < 25
+)
 
 SEARCH_PLANNER_PROMPT = dedent("""
 You are a search planner for finding the best Reddit comments for ANY user query.
@@ -31,13 +108,23 @@ Rules:
 - SUBREDDIT SELECTION STRATEGY:
   * For location queries: prioritize LOCAL subreddits (city/region names) over general topic subreddits
     Example: "NYC restaurants" -> ['AskNYC', 'NewYorkCity', 'FoodNYC'] NOT ['food', 'restaurants']
-  * For product queries: prioritize BRAND-SPECIFIC subreddits over general category subreddits  
-    Example: "iPhone 15" -> ['iPhone', 'Apple'] NOT ['smartphones', 'technology']
+  * For product queries: prioritize REVIEW and ADVICE subreddits over brand fan forums.
+    Brand fan subreddits (r/iPhone, r/Apple, r/Samsung, r/Sony) are dominated by news,
+    fan posts, and support requests — they produce biased, low-quality review signal.
+    Prefer: r/hardware, r/gadgets, r/technology, r/Android, r/apple (lowercase), product
+    category subreddits (r/headphones, r/StandingDesk), or advice subreddits.
+    Example: "iPhone 16 review" -> ['gadgets', 'technology', 'hardware'] NOT ['iPhone', 'Apple']
+    Example: "AirPods Pro"      -> ['headphones', 'HeadphoneAdvice', 'gadgets']
+    Example: "Cursor vs Windsurf" -> ['cursor', 'SoftwareEngineering', 'ChatGPTCoding', 'ExperiencedDevs']
+    Example: "VS Code vs Neovim"  -> ['vscode', 'neovim', 'SoftwareEngineering']
+    For AI coding tool queries (Cursor, Copilot, Windsurf, Codeium, Tabnine, Continue):
+    always include ['cursor', 'ChatGPTCoding', 'SoftwareEngineering', 'ExperiencedDevs']
   * For services: prioritize SERVICE-SPECIFIC subreddits
   * NEVER include "all" subreddit - it returns too much irrelevant content
   * Prefer active, relevant subreddits with 10K+ members
   * Choose the MOST relevant subreddits - prioritize quality over quantity
-  * For NYC queries: start with ['AskNYC', 'NewYorkCity', 'FoodNYC'] and add more relevant subreddits as needed
+  * For NYC food queries: use ['AskNYC', 'NewYorkCity', 'FoodNYC', 'nycfood'] — local community
+    recommendation threads have the highest signal for restaurant discovery
 - All arrays MUST be case-insensitively deduped and length-bounded per spec.
 - Never include "r/" prefixes in subreddit names.
 - For comment_must_patterns: Always return an empty list []. GPT sentiment analysis will handle comment quality filtering.
@@ -52,6 +139,10 @@ Produce JSON with exactly these keys:
   * Make terms SPECIFIC and TARGETED to avoid irrelevant results
   * For location queries: include specific place names, avoid generic terms like "best food"
   * For product queries: include specific model names, avoid generic category terms
+  * For GENERIC product queries (reviews, should I buy, worth it): include terms that
+    surface REVIEW threads, not support threads. Add variants like "[product] review",
+    "[product] worth it", "[product] thoughts", "[product] impressed", "[product] upgrade".
+    AVOID terms that attract support posts like "[product] help", "[product] problem", "[product] fix".
   * PRIORITIZE specificity over recall - better to get fewer, more relevant results
 - "subreddits": 2-4 names (no "r/" prefix). AVOID "all" unless absolutely necessary. PRIORITIZE the most relevant and active subreddits.
 - "time_filter": one of ["day","week","month","year","all"].
@@ -378,7 +469,33 @@ class OpenAIService:
 
             subs = [s.replace("r/","").strip() for s in plan.get("subreddits", []) if isinstance(s, str)]
             subs = [s for s in subs if s.lower() != "all"]
-            plan["subreddits"] = subs[:max_subreddits]
+
+            # Apply category-aware subreddit policy from the routing table.
+            category = classify_query(query)
+            policy   = QueryCategory.ROUTING_TABLE.get(category, {}).get("reddit_subreddit_policy", "any")
+
+            if policy == "review_only":
+                # Strip brand fan forums; keep review/tech communities.
+                subs = [s for s in subs if s not in QueryCategory.REVIEW_BLOCKED_SUBREDDITS]
+                if not subs:
+                    subs = QueryCategory.REVIEW_PREFERRED_SUBREDDITS[:max_subreddits]
+
+            # Filter out subreddits known to produce wrong-context or high-noise results.
+            filtered = [s for s in subs if s not in _SUBREDDIT_HARD_EXCLUDE]
+            if not filtered and subs:
+                # All suggestions were wrong-context — re-ask GPT with explicit guidance.
+                rescue_resp = self.chat(
+                    sys,
+                    f"Query: {query}\n\n{SEARCH_PLANNER_PROMPT}\n\n"
+                    f"IMPORTANT: The subreddits {subs} are NOT appropriate for this query. "
+                    f"Think carefully about what community would discuss this topic as a "
+                    f"product, software tool, or service — not as a hobby or sport.",
+                    temperature=0.2, max_tokens=400
+                )
+                rescue_plan = _safe_json_loads(rescue_resp)
+                rescue_subs = [s.replace("r/","").strip() for s in rescue_plan.get("subreddits", []) if isinstance(s, str)]
+                filtered = [s for s in rescue_subs if s not in _SUBREDDIT_HARD_EXCLUDE] or rescue_subs
+            plan["subreddits"] = (filtered if filtered else subs)[:max_subreddits]
 
             # Intent-aware defaults
             plan["time_filter"] = plan.get("time_filter") or "month"
@@ -971,7 +1088,7 @@ Generate relevant ASPECTS for this query (3-8 aspects):
 
 For RANKING queries, set entity_type to the SPECIFIC venue/product type being compared.
 NEVER use "locations", "location", "places", "area", "food", or bare cuisine names.
-entity_type is the VENUE/SHOP TYPE, not the item served:
+entity_type is the VENUE/SHOP TYPE or PRODUCT CATEGORY, not the item served:
   * "best ramen in Tokyo"             -> entity_type: "ramen_restaurant"
   * "best Korean restaurant in NYC"   -> entity_type: "Korean_restaurant"
   * "best pizza in NYC"               -> entity_type: "pizza_restaurant"
@@ -979,6 +1096,21 @@ entity_type is the VENUE/SHOP TYPE, not the item served:
   * "best golf course in bay area"    -> entity_type: "golf_course"
   * "best hotel in Paris"             -> entity_type: "hotel"
   * "best iPhone model"               -> entity_type: "phone"
+  * "Cursor vs Windsurf"              -> entity_type: "ai_coding_tool"
+  * "VS Code vs Neovim"               -> entity_type: "code_editor"
+  * "Slack vs Teams"                  -> entity_type: "team_messaging_app"
+  * "Notion vs Obsidian"              -> entity_type: "note_taking_app"
+  * "best standing desk"              -> entity_type: "standing_desk"
+  * "best noise cancelling headphones"-> entity_type: "headphones"
+
+IMPORTANT — product names often look like common words:
+"Cursor" is an AI coding tool (not a mouse pointer).
+"Windsurf" is an AI coding tool by Codeium (not a water sport).
+"Slack" is a messaging app (not loose/lazy).
+"Notion" is a productivity app (not an idea).
+"Linear" is a project management tool (not a shape).
+When a query uses "vs", "versus", "compare", or "or" between two capitalized terms,
+treat them as COMPETING PRODUCTS in the same category — do not interpret names literally.
 
 Return JSON:
 {{
@@ -1039,14 +1171,37 @@ Return JSON:
                 except:
                     aspects = ["quality", "value", "performance"]
 
+            # Aspect Intelligence v2: override with the full 13-aspect taxonomy
+            # for consumer electronics queries, replacing the 6-aspect GPT default.
+            from ..core.constants import AspectTaxonomy
+            _qcat = classify_query(query) if query else "product_ranking"
+            if _qcat in AspectTaxonomy.APPLIES_TO_CATEGORIES:
+                aspects = list(AspectTaxonomy.PHONE_ASPECTS.keys())
+
             entity_type = result.get("entity_type")
 
-            # Null out values the prompt explicitly forbids — enforcement of prompt contract,
-            # not domain logic. GPT was told: "NEVER use 'locations', 'location', 'places',
-            # 'area', 'food', or bare cuisine names."
+            # Null out values the prompt explicitly forbids — enforcement of prompt contract.
             _FORBIDDEN = frozenset({"locations", "location", "places", "place", "area", "areas", "food", "services"})
             if entity_type and entity_type.lower() in _FORBIDDEN:
                 entity_type = None
+
+            # Sanity-check entity_type against the query terms.
+            # If entity_type contains physical-activity or sport words but the query
+            # doesn't, GPT has misread a product name as a common word — null it out
+            # so the pipeline doesn't search the wrong communities.
+            _ACTIVITY_TERMS = {"sport", "water", "surf", "kite", "swim", "sail", "ski",
+                               "board", "outdoor", "fitness", "exercise", "game", "hunt",
+                               "fish", "climb", "hike", "bike", "cycle", "equip"}
+            if entity_type:
+                et_words = set(entity_type.lower().replace("_", " ").split())
+                query_words = set(query.lower().split())
+                if et_words & _ACTIVITY_TERMS and not (query_words & _ACTIVITY_TERMS):
+                    logger.warning(
+                        f"entity_type '{entity_type}' looks like a physical activity but query "
+                        f"'{query}' has no activity terms — nulling entity_type and re-detecting."
+                    )
+                    entity_type = None
+                    intent = "RANKING"
 
             return IntentSchema(
                 intent=intent,
@@ -1062,8 +1217,55 @@ Return JSON:
                 entity_type=None
             )
 
-    def filter_relevant_comments(self, comments: List[Dict], query: str, threshold: float = 0.35) -> List[Dict]:
+    # Regex for sponsored/gifted content disclosure language.
+    # Compiled once at class body level so it's cheap to call per-comment.
+    _SPONSORED_RE = re.compile(
+        r"\b("
+        r"gifted\s+by|provided\s+by|sent\s+by|sponsored\s+by|in\s+partnership\s+with|"
+        r"paid\s+(partnership|promotion|ad)|#ad\b|#sponsored\b|#gifted\b|"
+        r"c/?o\s+\w|complimentary\s+(from|by|unit)|in\s+exchange\s+for|"
+        r"received\s+(this|a|the)\s+\w+\s+(for\s+)?(free|review|testing)|"
+        r"brand\s+ambassador|affiliate\s+link|discount\s+code|promo\s+code"
+        r")\b",
+        re.IGNORECASE,
+    )
+
+    def filter_relevant_comments(self, comments: List[Dict], query: str, threshold: float = 0.65) -> List[Dict]:
         """Drop comments that are not topically relevant to the query using GPT batch evaluation."""
+        if not comments:
+            return comments
+
+        # Tag and exclude sponsored/gifted reviews before relevance scoring.
+        # This prevents undisclosed-bias content from influencing rankings.
+        clean, sponsored_count = [], 0
+        for c in comments:
+            text = c.get("text", "")
+            if self._SPONSORED_RE.search(text):
+                c = dict(c, sponsored=True)
+                sponsored_count += 1
+                logger.info(f"Sponsored review detected and excluded: {text[:80]}")
+            else:
+                clean.append(c)
+        if sponsored_count:
+            logger.warning(f"Excluded {sponsored_count} sponsored/gifted comments from ranking")
+        comments = clean
+
+        # ── Stage 1: fast token-overlap pre-filter ────────────────────────
+        # Eliminates comments that share a keyword with the query but discuss
+        # an unrelated topic (e.g. arm-injury thread mentioning iPhone).
+        # Runs before the GPT call to save cost and latency.
+        from ..core.relevance import pre_filter_comments
+        comments, pre_filter_stats = pre_filter_comments(comments, query)
+        if pre_filter_stats.get("pre_filter_applied"):
+            logger.info(
+                f"Pre-filter: {pre_filter_stats['kept']}/{pre_filter_stats['total_input']} "
+                f"kept  drop_rate={pre_filter_stats['drop_rate']:.1%}  "
+                f"terms={pre_filter_stats['query_terms']}"
+            )
+
+        # The pre-filter (or sponsored exclusion above) may have emptied the
+        # list. Bail out before building batches — an empty `batches` would make
+        # max_workers=0 and crash the ThreadPoolExecutor.
         if not comments:
             return comments
 
@@ -1071,9 +1273,14 @@ Return JSON:
         batches = [comments[i:i + batch_size] for i in range(0, len(comments), batch_size)]
 
         system_msg = (
-            "You are a relevance evaluator. For each comment decide whether it contains direct, "
-            "firsthand discussion of the topic in the user's query — specific opinions, experiences, "
-            "or insights about the entities, venues, or products being asked about. "
+            "You are a strict relevance filter for a consumer intelligence tool. "
+            "Mark a comment RELEVANT only when it contains concrete firsthand opinions or "
+            "experiences about the specific entities, venues, or products the user is asking about. "
+            "Mark NOT RELEVANT when the comment: discusses unrelated topics (politics, economy, "
+            "weather, news, other businesses, other cities/countries); mentions the query subject "
+            "only in passing or as a comparison; discusses the same category in a different location; "
+            "or provides generic city commentary with no direct connection to the query. "
+            "Be strict — a comment that could belong in a hundred different threads is NOT relevant. "
             "Return ONLY a JSON array of objects, one per comment, in input order."
         )
 
@@ -1081,31 +1288,35 @@ Return JSON:
             batch_text = ""
             for j, comment in enumerate(batch):
                 text = comment.get("text", "")
-                truncated = text[:200] + "..." if len(text) > 200 else text
-                batch_text += f"Comment {j + 1}: {truncated}\n\n"
+                truncated = text[:400] + "..." if len(text) > 400 else text
+                post_title = comment.get("post_title", "") or ""
+                title_ctx = f'[Thread: "{post_title[:120]}"] ' if post_title else ""
+                batch_text += f"Comment {j + 1}: {title_ctx}{truncated}\n\n"
 
             prompt = (
                 f'User query: "{query}"\n\n'
                 f"{batch_text}"
                 f'For each comment return:\n'
-                f'- relevant: true if the comment directly addresses the query topic, false if off-topic or generic\n'
+                f'- relevant: true ONLY if the comment contains specific opinions or recommendations '
+                f'directly about "{query}" — NOT for general city news, politics, other cuisines, '
+                f'steakhouses, bagels, or content only tangentially related\n'
                 f'- relevance_score: 0.0 to 1.0\n'
                 f'- reason: one short phrase\n\n'
                 f'Return a JSON array [{{"relevant": bool, "relevance_score": float, "reason": str}}, ...] '
                 f'with exactly {len(batch)} elements in input order.'
             )
             try:
-                response = self.chat(system=system_msg, user=prompt, temperature=0.0, max_tokens=len(batch) * 35 + 20)
+                response = self.chat(system=system_msg, user=prompt, temperature=0.0, max_tokens=len(batch) * 40 + 20)
                 results = _safe_json_loads(response)
-                if isinstance(results, list) and len(results) == len(batch):
-                    return batch_idx, results
+                if isinstance(results, list) and len(results) >= len(batch):
+                    return batch_idx, results[:len(batch)]
             except Exception as e:
                 logger.warning(f"Relevance filter batch {batch_idx} failed: {e}")
-            # fail-open: keep all comments in this batch
-            return batch_idx, [{"relevant": True, "relevance_score": 1.0}] * len(batch)
+            # fail-closed: drop all comments in this batch rather than passing noise
+            return batch_idx, [{"relevant": False, "relevance_score": 0.0}] * len(batch)
 
         results_by_idx: dict = {}
-        max_workers = min(8, len(batches))
+        max_workers = min(8, max(1, len(batches)))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(_evaluate_batch, idx, batch): idx for idx, batch in enumerate(batches)}
             for future in as_completed(futures):
@@ -1113,19 +1324,38 @@ Return JSON:
                 results_by_idx[batch_idx] = batch_results
 
         kept, dropped = [], 0
+        all_scored = []  # (comment, score, is_relevant) — kept for adaptive fallback
+        _DROP = [{"relevant": False, "relevance_score": 0.0}]
         for idx, batch in enumerate(batches):
-            verdicts = results_by_idx.get(idx, [{"relevant": True}] * len(batch))
+            verdicts = results_by_idx.get(idx, _DROP * len(batch))
             for comment, verdict in zip(batch, verdicts):
                 if not isinstance(verdict, dict):
-                    kept.append(comment)
+                    dropped += 1
                     continue
-                score = verdict.get("relevance_score", 1.0)
-                is_relevant = verdict.get("relevant", True)
+                score = verdict.get("relevance_score", 0.0)
+                is_relevant = verdict.get("relevant", False)
+                all_scored.append((comment, score, is_relevant))
                 if is_relevant and score >= threshold:
                     kept.append(comment)
                 else:
                     dropped += 1
-                    logger.debug(f"Dropped irrelevant comment: {verdict.get('reason', '?')} | score={score:.2f}")
+                    logger.debug(f"Dropped: {verdict.get('reason', '?')} | score={score:.2f}")
+
+        # Adaptive threshold: if fewer than 15 comments survived at the strict threshold,
+        # relax progressively (0.50 → 0.35) to recover borderline-relevant comments.
+        # This prevents thin-corpus queries from returning near-empty results.
+        MIN_TARGET = 15
+        if len(kept) < MIN_TARGET:
+            for relaxed in (0.50, 0.35):
+                candidates = [c for c, s, rel in all_scored if rel and s >= relaxed and c not in kept]
+                if kept + candidates:
+                    logger.info(
+                        f"Relevance filter relaxed to {relaxed} — "
+                        f"recovered {len(candidates)} comments (total {len(kept)+len(candidates)})"
+                    )
+                    kept = kept + candidates
+                if len(kept) >= MIN_TARGET:
+                    break
 
         logger.info(f"Relevance filter: {len(kept)}/{len(comments)} kept (dropped {dropped})")
         return kept
@@ -1182,17 +1412,59 @@ Return JSON:
             - aspect_scores: Dict of aspect -> score mappings
             - entities: List of extracted entities with confidence
         """
+        if not comments:
+            return []
         batch_size = SearchConstants.LLM_BATCH_SIZE
         batches = [comments[i:i + batch_size] for i in range(0, len(comments), batch_size)]
 
         # Build the static parts of the prompt once (shared across all batches).
+
+        # Detect X-vs-Y comparison queries and pre-seed the known entities.
+        # Without this, GPT may not extract both sides when comments only discuss
+        # one product or use shorthand (e.g. "switched to Cursor" without mentioning Windsurf).
+        import re as _re
+        _vs_match = _re.search(
+            r'^(.+?)\s+(?:vs\.?|versus|or|compared?\s+to)\s+(.+)$',
+            (query or '').strip(), _re.IGNORECASE
+        )
+        _comparison_hint = ""
+        if _vs_match:
+            _a, _b = _vs_match.group(1).strip(), _vs_match.group(2).strip()
+            _comparison_hint = (
+                f"\nCOMPARISON QUERY: This is a direct comparison between '{_a}' and '{_b}'. "
+                f"Always extract BOTH '{_a}' AND '{_b}' as entities whenever a comment discusses "
+                f"either one, even if only one is mentioned. If a comment praises one without "
+                f"mentioning the other, still extract the mentioned one with its sentiment."
+            )
+
         entity_type_line = (
             f"\nEXTRACT ONLY: {entity_type} entities -- skip people, organizations, "
-            f"and anything that is not a {entity_type}."
-        ) if entity_type else ""
-        aspects_str = ', '.join(aspects) if aspects else 'quality, value, experience'
+            f"and anything that is not a {entity_type}.{_comparison_hint}"
+        ) if entity_type else _comparison_hint
         query_str = query or 'General analysis'
         entity_or_venue = entity_type or 'venue/product'
+
+        # Aspect Intelligence v2: inject precise aspect definitions for known categories.
+        # This replaces keyword matching with semantic definitions, reducing cross-contamination.
+        from ..core.constants import AspectTaxonomy
+        from ..services.llm import classify_query as _cq
+        _qcat = classify_query(query) if query else "product_ranking"
+        _aspect_definitions_block = ""
+        if _qcat in AspectTaxonomy.APPLIES_TO_CATEGORIES and aspects:
+            _aspect_defs = []
+            for asp in aspects:
+                defn = AspectTaxonomy.PHONE_ASPECTS.get(asp)
+                if defn:
+                    _aspect_defs.append(f"  {asp}: {defn['description']}")
+            if _aspect_defs:
+                _aspect_definitions_block = (
+                    "\n\nASPECT DEFINITIONS — score ONLY the aspects that are explicitly discussed:\n"
+                    + "\n".join(_aspect_defs)
+                    + "\n\nDo NOT assign a score to an aspect if the comment does not discuss it."
+                    + "\nDo NOT let a discussion of one aspect bleed into another (e.g. camera speed ≠ performance)."
+                )
+
+        aspects_str = ', '.join(aspects) if aspects else 'quality, value, experience'
 
         system_msg = (
             "You are an expert at analyzing Reddit comments for sentiment, aspects, and entities. "
@@ -1203,6 +1475,7 @@ Return JSON:
             "Chinese, Japanese, Arabic, or any other non-Latin script characters in the 'name' field. "
             "Romanize if necessary. "
             "(4) Return ONLY valid JSON array, no markdown code blocks."
+            f"{_aspect_definitions_block}"
         )
 
         def _process_batch(batch_idx: int, batch: list) -> tuple:
@@ -1259,6 +1532,19 @@ SENTIMENT GROUNDING RULES:
   that does not describe hands-on experience with the entity.
 - If a comment only names an entity without reviewing it (e.g. lists it, mentions its logo,
   or references it geographically only), set confidence=0.4.
+
+ASPECT SCORING RULES — CRITICAL:
+- Only include an aspect in aspect_scores if the comment EXPLICITLY discusses or CLEARLY implies it.
+  OMIT aspects entirely when they are not mentioned — do NOT default to 3.0 for unmentioned aspects.
+  A comment about food quality should NOT get atmosphere: 3 just because atmosphere was in the aspect list.
+- For short enthusiastic comments (contain words like "favorite", "amazing", "fantastic", "love",
+  "best", "incredible", "hands down", "highly recommend", "so good", "underrated", "consistently amazing"):
+  * Set overall_score to 4 or 5, not 3.
+  * Include at least quality: 4 in aspect_scores even if no explicit quality discussion.
+  * These are real positive signals — treat them as meaningful, not as neutral uncertainty.
+- Never output 3.0 for an aspect unless the comment gives genuinely mixed or neutral feedback
+  on THAT SPECIFIC aspect. 3.0 means "average / mixed" — it is not a placeholder for "unsure".
+- aspect_scores may be an empty object {{}} if the comment gives no aspect-specific signal.
 
 LOCATION / TIME FILTERING:
 - For location-specific queries (e.g. "Bay Area golf courses"):
@@ -1334,6 +1620,13 @@ Return a JSON array -- one object per comment, in input order:
                             is_primary=bool(ed.get("is_primary", True)),
                             mention_context=str(ed.get("mention_context", ""))[:100],
                         ))
+                    # Proportional distribution: when no single primary entity exists
+                    # (recommendation lists, "my top 5" comments), treat every extracted
+                    # entity as co-primary so each receives full credit in rankings.
+                    primary_entity_val = annotation_data.get("primary_entity") or None
+                    if not primary_entity_val and entities and not any(e.is_primary for e in entities):
+                        for e in entities:
+                            e.is_primary = True
                     batch_results.append(GPTCommentAnno(
                         comment_id=comment_id,
                         overall_score=annotation_data.get("overall_score", 3),
@@ -1361,7 +1654,7 @@ Return a JSON array -- one object per comment, in input order:
 
         # Run all batches concurrently (diskcache is thread-safe).
         # max_workers=8 keeps well within OpenAI rate limits for any tier.
-        max_workers = min(8, len(batches))
+        max_workers = min(8, max(1, len(batches)))
         results_by_idx: dict = {}
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(_process_batch, idx, batch): idx

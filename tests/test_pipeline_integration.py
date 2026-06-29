@@ -264,7 +264,10 @@ class TestRankingFromAnnotations:
             make_anno("c1", entities=[make_entity("Excellent Venue", sentiment_score=5.0)]),
             make_anno("c2", entities=[make_entity("Bad Venue", sentiment_score=1.0)]),
         ]
-        result = rank_entities(annos, {"c1": 1, "c2": 50}, "restaurant", min_mentions=1)
+        # suppress_insufficient=False so single-mention entities are not filtered out,
+        # allowing the test to verify the upvote-weighting logic directly.
+        result = rank_entities(annos, {"c1": 1, "c2": 50}, "restaurant",
+                               min_mentions=1, suppress_insufficient=False)
         bad = next(e for e in result if "Bad" in e.name)
         good = next(e for e in result if "Excellent" in e.name)
         assert bad.overall_stars < good.overall_stars
