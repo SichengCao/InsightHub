@@ -482,7 +482,9 @@ class OpenAIService:
         try:
             sys = "You output strict JSON to plan Reddit searches."
             user = f"Query: {query}\n\n{SEARCH_PLANNER_PROMPT}"
-            resp = self.chat(sys, user, temperature=0.2, max_tokens=400)
+            # temperature=0 so the planned terms/subreddits are deterministic across
+            # runs — a key source of run-to-run candidate-set drift.
+            resp = self.chat(sys, user, temperature=0.0, max_tokens=400)
             plan = _safe_json_loads(resp)
 
             # Defensive clamps with intent-aware defaults
@@ -496,11 +498,13 @@ class OpenAIService:
             # made in the planner prompt, not via hardcoded block/prefer/exclude lists.
             plan["subreddits"] = list(dict.fromkeys(subs))[:max_subreddits]
 
-            # Intent-aware defaults
-            plan["time_filter"] = plan.get("time_filter") or "month"
-            plan["strategies"] = [s for s in plan.get("strategies", ["relevance","top"]) if s in ("relevance","top","new")] or ["relevance","top"]  # Comprehensive search: 2 strategies
+            # Retrieval knobs are pinned (mechanical, not domain decisions) for a
+            # STABLE, repeatable candidate pool: top posts over a 1-year window
+            # don't shift like "relevance"/"new" or a rolling month do.
+            plan["time_filter"] = "year"
+            plan["strategies"] = ["top"]
             plan["min_comment_score"] = max(0, int(plan.get("min_comment_score", 1)))  # Default configuration: score 1
-            plan["per_post_top_n"] = min(12, max(3, int(plan.get("per_post_top_n", 8))))  # Default configuration: 8 comments per post
+            plan["per_post_top_n"] = min(15, max(3, int(plan.get("per_post_top_n", 12))))  # denser per-thread pull → higher mention counts
 
             # Always use empty patterns - GPT sentiment analysis handles quality filtering
             plan["comment_must_patterns"] = []
@@ -511,10 +515,10 @@ class OpenAIService:
             return {
                 "terms": [query],
                 "subreddits": ["AskReddit"],  # More focused than "all"
-                "time_filter": "month",  # More balanced default
-                "strategies": ["relevance", "top"],
+                "time_filter": "year",       # stable, repeatable window
+                "strategies": ["top"],       # deterministic sort
                 "min_comment_score": 3,  # Higher quality default
-                "per_post_top_n": 6,  # Balanced default
+                "per_post_top_n": 12,  # denser per-thread pull
                 "comment_must_patterns": []  # GPT sentiment analysis handles quality
             }
     

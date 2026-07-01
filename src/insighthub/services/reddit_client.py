@@ -353,8 +353,10 @@ class RedditService:
                     if score >= plan.min_comment_score and len(body) > SearchConstants.MIN_COMMENT_LENGTH:
                         flat.append((c, score))
                 
-                # Sort by score and take top N per post
-                flat.sort(key=lambda x: x[1], reverse=True)
+                # Sort by score, breaking ties by comment id so the top-N per post
+                # is deterministic (score ties would otherwise depend on Reddit's
+                # iteration order and shuffle run-to-run).
+                flat.sort(key=lambda x: (-x[1], str(x[0].__dict__.get("id", ""))))
                 sub_title = getattr(sub, "title", "") or ""
 
                 # Skip entire thread if title signals support/troubleshooting context.
@@ -476,10 +478,13 @@ class RedditService:
             start_time = time.time()
             logger.info(f"🚀 Starting {total_searches} parallel Reddit API searches...")
             
-            # Execute searches in parallel using ThreadPoolExecutor.
-            # A shared stop_event lets completed workers signal queued ones to skip.
-            stop_event = threading.Event()
-            target_raw = limit * 4  # stop collecting once we have 4× the target
+            # Execute ALL searches to completion (no race-based early cancel). The
+            # previous early-stop cancelled whichever searches happened to still be
+            # running when a raw-count target was hit, so the contributing set — and
+            # thus the candidate pool — changed every run. Running the full fixed set
+            # makes the union of retrieved threads deterministic; we bound cost by
+            # deterministically selecting the top threads afterwards.
+            stop_event = threading.Event()  # retained for signature; never set
             max_workers = min(8, max(1, total_searches))
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_to_task = {
@@ -491,19 +496,10 @@ class RedditService:
                     bucket, term, strategy = future_to_task[future]
                     search_count += 1
                     elapsed = time.time() - start_time
-
                     try:
                         comments, submissions_processed, search_id = future.result()
                         raw_comments.extend(comments)
                         logger.info(f"🔍 [{search_count}/{total_searches}] {search_id} | Posts: {submissions_processed} | Comments: {len(raw_comments)} | {elapsed:.1f}s")
-
-                        # True early termination: signal remaining queued tasks to skip.
-                        if len(raw_comments) >= target_raw and not stop_event.is_set():
-                            stop_event.set()
-                            for f in future_to_task:
-                                f.cancel()
-                            logger.info(f"⚡ Early stop: {len(raw_comments)} raw comments ≥ target {target_raw}")
-
                     except Exception as e:
                         logger.debug(f"Search task failed for r/{bucket} '{term}' ({strategy}): {e}")
                         continue
@@ -513,6 +509,18 @@ class RedditService:
         except Exception as e:
             logger.error(f"Reddit scraping failed: {e}")
             return self._scrape_mock(query, limit)
+
+        # Deterministic ordering BEFORE selection: the parallel searches finish in
+        # network-timing order, so sort the pooled units by a stable key (score
+        # desc, then id) so the same threads/comments are always chosen for a given
+        # corpus — independent of which search returned first.
+        def _sort_key(c):
+            try:
+                score = int(c.__dict__.get("score", 0) or c.__dict__.get("upvotes", 0) or 0)
+            except Exception:
+                score = 0
+            return (-score, str(c.__dict__.get("id", "")))
+        raw_comments.sort(key=_sort_key)
 
         # Step 5: OPTIMIZED multi-stage filtering pipeline with early termination
         filter_start = time.time()
