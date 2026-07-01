@@ -214,6 +214,19 @@ def _is_support_thread(title: str) -> bool:
     """
     return bool(_SUPPORT_TITLE_PATTERNS.search(title))
 
+
+class _SyntheticUnit:
+    """A lightweight stand-in for a PRAW comment so a Reddit *post* (title +
+    selftext) can flow through the same filtering/mapping pipeline as comments.
+
+    Only ``__dict__`` access is used downstream (the pipeline reads everything
+    via ``c.__dict__.get(...)``), so this carries the same keys a comment would.
+    """
+
+    def __init__(self, **attrs):
+        self.__dict__.update(attrs)
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -350,12 +363,37 @@ class RedditService:
                     logger.debug(f"Skipping support thread: {sub_title[:80]}")
                     continue
 
+                # Stamp each comment with the thread it came from so the scorer can
+                # detect when a post and its comments corroborate the same entity.
                 for c, _ in flat[:plan.per_post_top_n]:
                     try:
                         c.__dict__["_post_title"] = sub_title
+                        c.__dict__["_post_id"] = sid
                     except Exception:
                         pass
                 comments.extend([c for c, _ in flat[:plan.per_post_top_n]])
+
+                # Emit the post itself (title + body) as an analyzable unit so
+                # recommendations made in the OP — not just the comments — count.
+                selftext = getattr(sub, "selftext", "") or ""
+                post_body = (sub_title + "\n\n" + selftext).strip()
+                if len(post_body) > SearchConstants.MIN_COMMENT_LENGTH:
+                    try:
+                        post_score = int(getattr(sub, "score", 0) or 0)
+                    except Exception:
+                        post_score = 0
+                    comments.append(_SyntheticUnit(
+                        id=f"post_{sid}",
+                        body=post_body,
+                        score=post_score,
+                        upvotes=post_score,
+                        permalink=getattr(sub, "permalink", "") or "",
+                        created_utc=getattr(sub, "created_utc", None),
+                        author=str(getattr(sub, "author", "") or "u/[deleted]"),
+                        _post_title=sub_title,
+                        _post_id=sid,
+                        _unit_type="post",
+                    ))
             
             return (comments, submissions_processed, search_id)
             
@@ -509,17 +547,22 @@ class RedditService:
                 if not body:
                     quality_filtered += 1
                     continue
-                
+
+                # Post-units (the OP itself) are first-class content from the thread
+                # author — they skip the comment-oriented quality/pattern gates but
+                # still go through dedup below.
+                _is_post = c.__dict__.get("_unit_type") == "post"
+
                 # Stage 1: Quality filtering (OPTIMIZED - fast checks first)
-                if not _passes_quality(c, query, settings, body): 
+                if not _is_post and not _passes_quality(c, query, settings, body):
                     quality_filtered += 1
                     continue
-                
+
                 # Stage 2: Pattern filtering (cached patterns, optimized search)
-                if not ok(body) and not any(p.search(body) for p in query_patterns):
+                if not _is_post and not ok(body) and not any(p.search(body) for p in query_patterns):
                     pattern_filtered += 1
                     continue
-                
+
                 # Stage 3: Deduplication (exact hash matching - fast)
                 h = _text_hash(body)
                 if h in seen: 
@@ -571,6 +614,8 @@ class RedditService:
                 "author": author_name,
                 "upvotes": score,
                 "post_title": c.__dict__.get("_post_title", "") or "",
+                "unit_type": c.__dict__.get("_unit_type", "comment"),
+                "thread_id": str(c.__dict__.get("_post_id", "") or ""),
             })
         
         # Log detailed timing breakdown

@@ -89,26 +89,25 @@ class CrossPlatformManager:
         }
     
     def detect_domain(self, query: str) -> str:
-        """Detect the domain/category of the query."""
-        query_lower = query.lower()
-        
-        # Local business indicators
-        business_keywords = ["restaurant", "hotel", "cafe", "bar", "shop", "store", "service"]
-        if any(keyword in query_lower for keyword in business_keywords):
+        """Detect the query's domain for platform weighting, via GPT routing.
+
+        The query→category decision is made by GPT (classify_query); there are no
+        hardcoded keyword lists here. The category is mapped to the platform-weight
+        domain bucket below (a small structural map, not a domain-keyword rule).
+        """
+        try:
+            from .llm import classify_query
+            category = classify_query(query)
+        except Exception as e:
+            logger.warning(f"detect_domain GPT routing failed ({e}); using default")
+            category = "product_ranking"
+
+        if category in ("local_discovery", "service_review"):
             return "local_business"
-        
-        # Consumer electronics indicators  
-        tech_keywords = ["phone", "phone", "laptop", "tablet", "camera", "headphone", "speaker"]
-        if any(keyword in query_lower for keyword in tech_keywords):
+        if category == "consumer_electronics":
             return "consumer_electronics"
-        
-        # Beauty/fashion indicators
-        beauty_keywords = ["makeup", "skincare", "fashion", "clothing", "beauty"]
-        if any(keyword in query_lower for keyword in beauty_keywords):
-            return "beauty_fashion"
-        
-        # Default to consumer electronics for tech products
-        return "consumer_electronics"
+        # Everything else uses neutral/equal platform priors.
+        return "default"
     
     def calculate_platform_weights(self, query: str, intent: QueryIntent, domain: str, 
                                  platform_counts: Dict[str, int]) -> Dict[str, float]:

@@ -160,27 +160,40 @@ class YouTubeService:
         
         return title_match or desc_match
 
-    def _score_video(self, video: dict, query_category: str = None) -> int:
+    def _select_videos_with_gpt(self, query: str, videos: List[dict], top_n: int = 10) -> List[dict]:
+        """Pick the most review-relevant videos for the query using GPT.
+
+        There are no hardcoded title keywords: the model judges which titles are
+        genuine, useful reviews (hands-on, long-term, comparisons) versus
+        unboxings / leaks / reaction-clickbait. Falls back to the native search
+        order (already relevance-ranked by YouTube) if GPT is unavailable.
         """
-        Score a video by title quality for a given category.
-        Uses YouTubeVideoFilters constants — no hardcoded strings here.
-        Returns an integer score; higher is better.
-        """
-        from ..core.constants import YouTubeVideoFilters
-        title = video.get("title", "").lower()
-        score = 0
-        prefer = list(YouTubeVideoFilters.PREFER_ALWAYS)
-        avoid  = list(YouTubeVideoFilters.AVOID_ALWAYS)
-        if query_category:
-            prefer += YouTubeVideoFilters.CATEGORY_PREFER.get(query_category, [])
-            avoid  += YouTubeVideoFilters.CATEGORY_AVOID.get(query_category, [])
-        for kw in prefer:
-            if kw in title:
-                score += 1
-        for kw in avoid:
-            if kw in title:
-                score -= 2
-        return score
+        if len(videos) <= top_n:
+            return videos
+        try:
+            from .llm import LLMServiceFactory, _safe_json_loads
+            svc = LLMServiceFactory.create()
+            listing = "\n".join(f'{i}: {v.get("title", "")}' for i, v in enumerate(videos))
+            system = (
+                "You select the YouTube videos that work best as genuine, useful "
+                "reviews for a user's query. Prefer hands-on reviews, long-term "
+                "experience, and head-to-head comparisons; avoid unboxings, leaks, "
+                "specs-only news, and reaction/clickbait. Reply with JSON only."
+            )
+            user = (
+                f'Query: "{query}"\n\nVideos (index: title):\n{listing}\n\n'
+                f'Return the indices of the up to {top_n} most useful videos, best '
+                f'first, as JSON: {{"indices": [int, ...]}}'
+            )
+            resp = svc.chat(system, user, temperature=0.0, max_tokens=150)
+            data = _safe_json_loads(resp) if resp else {}
+            idxs = data.get("indices", []) if isinstance(data, dict) else []
+            picked = [videos[i] for i in idxs if isinstance(i, int) and 0 <= i < len(videos)]
+            if picked:
+                return picked[:top_n]
+        except Exception as e:
+            logger.warning(f"GPT video selection failed ({e}); using native order")
+        return videos[:top_n]
 
     def scrape(self, query: str, limit: int = 50, query_category: str = None) -> List[dict]:
         """Scrape YouTube for reviews related to the query."""
@@ -189,15 +202,13 @@ class YouTubeService:
         # Search for relevant videos
         videos = self.search_videos(query, max_results=20)
 
-        # Filter for relevance then rank by content-quality score.
-        from ..core.constants import YouTubeVideoFilters
+        # Keep videos whose title/description overlap the query (neutral text match),
+        # then let GPT pick the most review-relevant ones — no hardcoded title keywords.
         relevant_videos = [v for v in videos if self._is_relevant_video(v, query)]
-        relevant_videos.sort(key=lambda v: self._score_video(v, query_category), reverse=True)
-        relevant_videos = [v for v in relevant_videos
-                           if self._score_video(v, query_category) >= YouTubeVideoFilters.MIN_VIDEO_SCORE]
-        logger.info(f"Found {len(relevant_videos)} quality-scored videos out of {len(videos)} total")
-
-        target_videos = relevant_videos[:10]
+        if not relevant_videos:
+            relevant_videos = videos
+        target_videos = self._select_videos_with_gpt(query, relevant_videos, top_n=10)
+        logger.info(f"Selected {len(target_videos)} videos out of {len(videos)} total")
         per_video_limit = max(1, limit // max(1, len(target_videos)))
 
         def _fetch_video(video: dict) -> List[dict]:
@@ -249,6 +260,9 @@ class YouTubeService:
                     "url": f"https://youtube.com/watch?v={comment['video_id']}",
                     "author": comment["author"],
                     "upvotes": comment["likes"],
+                    "unit_type": "comment",
+                    "thread_id": comment["video_id"],
+                    "post_title": comment.get("video_title", ""),
                     "meta": {
                         "video_title": comment.get("video_title", ""),
                         "channel_title": comment.get("channel_title", ""),
@@ -261,8 +275,80 @@ class YouTubeService:
                 logger.warning(f"Failed to create review dict from YouTube comment: {e}")
                 continue
         
+        # Add the video itself as analyzable content: its title+description (the
+        # "post") and, when available, its transcript. These let recommendations
+        # made by the creator — not just commenters — feed the ranking, and give
+        # the scorer post↔comment corroboration signal.
+        for v in target_videos:
+            vid = v.get("video_id", "")
+            if not vid:
+                continue
+            title = v.get("title", "") or ""
+            desc = v.get("description", "") or ""
+            post_body = (title + "\n\n" + desc).strip()
+            if len(post_body) > 40:
+                reviews.append({
+                    "id": f"ytpost_{vid}",
+                    "source": "youtube",
+                    "text": post_body,
+                    "created_utc": None,
+                    "permalink": f"https://youtube.com/watch?v={vid}",
+                    "url": f"https://youtube.com/watch?v={vid}",
+                    "author": v.get("channel_title", "") or "",
+                    "upvotes": 0,
+                    "unit_type": "post",
+                    "thread_id": vid,
+                    "post_title": title,
+                    "meta": {"video_title": title, "channel_title": v.get("channel_title", "")},
+                })
+            transcript = self._fetch_transcript(vid)
+            if transcript:
+                reviews.append({
+                    "id": f"yttrans_{vid}",
+                    "source": "youtube",
+                    "text": transcript,
+                    "created_utc": None,
+                    "permalink": f"https://youtube.com/watch?v={vid}",
+                    "url": f"https://youtube.com/watch?v={vid}",
+                    "author": v.get("channel_title", "") or "",
+                    "upvotes": 0,
+                    "unit_type": "transcript",
+                    "thread_id": vid,
+                    "post_title": title,
+                    "meta": {"video_title": title, "channel_title": v.get("channel_title", "")},
+                })
+
         logger.info(f"Scraped {len(reviews)} YouTube reviews for '{query}'")
         return reviews
+
+    def _fetch_transcript(self, video_id: str, max_chars: int = 4000) -> str:
+        """Fetch a video's transcript as plain text, truncated to max_chars.
+
+        Returns "" when transcripts are unavailable, disabled, or the optional
+        youtube-transcript-api dependency is not installed — never raises.
+        """
+        if not video_id or str(video_id).startswith("mock"):
+            return ""
+        try:
+            from youtube_transcript_api import YouTubeTranscriptApi
+        except Exception:
+            logger.debug("youtube-transcript-api not installed; skipping transcripts")
+            return ""
+        try:
+            # Support both the v1.x instance API (.fetch) and the legacy
+            # classmethod (.get_transcript), which return objects/dicts respectively.
+            if hasattr(YouTubeTranscriptApi, "fetch"):
+                fetched = YouTubeTranscriptApi().fetch(video_id)
+                parts = [getattr(s, "text", "") for s in fetched]
+            else:  # legacy <1.0
+                segments = YouTubeTranscriptApi.get_transcript(video_id)
+                parts = [seg.get("text", "") for seg in segments]
+            text = " ".join(p for p in parts if p)
+            text = " ".join(text.split())  # collapse whitespace/newlines
+            return text[:max_chars]
+        except Exception as e:
+            logger.debug(f"No transcript for {video_id}: {e}")
+            return ""
     
     def _get_mock_videos(self, query: str, max_results: int) -> List[Dict[str, Any]]:
         """Generate mock video data for testing."""

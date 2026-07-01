@@ -20,81 +20,42 @@ from ..core.constants import PromptConstants, SearchConstants, CacheConstants, E
 PLANNER_PROMPT_VERSION = PromptConstants.PLANNER_PROMPT_VERSION
 
 
+# Process-level cache so the GPT routing call runs at most once per unique
+# query per run (the underlying chat() is also disk-cached across runs).
+_CATEGORY_CACHE: dict = {}
+_DEFAULT_CATEGORY = "product_ranking"
+
+
 def classify_query(query: str) -> str:
     """
     Classify a query into one of the QueryCategory routing categories.
-    Uses keyword rules derived from QueryCategory constants — no hardcoded strings
-    in the logic itself.
+
+    The domain decision is made by GPT — there is no keyword matching here.
+    The numeric routing/affinity priors keyed by the returned category are
+    neutral config (QueryCategory.ROUTING_TABLE / SourceQualityMultipliers).
+    Falls back to a neutral default only if the model is unavailable.
 
     Returns a category key matching QueryCategory.ROUTING_TABLE.
     """
-    q = query.lower().strip()
-    words = set(q.split())
+    if not query or not query.strip():
+        return _DEFAULT_CATEGORY
 
-    # Unsupported: news/rumor queries
-    if any(sig in q for sig in QueryCategory.NEWS_SIGNALS):
-        return "unsupported"
+    key = query.strip().lower()
+    if key in _CATEGORY_CACHE:
+        return _CATEGORY_CACHE[key]
 
-    # Troubleshooting: solution-seeking language
-    if any(sig in q for sig in QueryCategory.SOLUTION_SIGNALS):
-        return "troubleshooting"
+    valid = set(QueryCategory.ROUTING_TABLE.keys())
+    category = _DEFAULT_CATEGORY
+    try:
+        svc = LLMServiceFactory.create()
+        guess = svc.classify_query_category(query, sorted(valid))
+        if guess in valid:
+            category = guess
+    except Exception as e:
+        logger.warning(f"GPT query classification failed ({e}); using '{_DEFAULT_CATEGORY}'")
 
-    # Local discovery: location preposition present
-    if any(f" {prep} " in f" {q} " for prep in QueryCategory.LOCATION_PREPOSITIONS):
-        # Only local discovery if there's also a venue/food/place noun — heuristic:
-        # query contains no "vs" signal and no electronics brand
-        if not (words & QueryCategory.TOOL_VS_SIGNALS):
-            return "local_discovery"
-
-    # Tool comparison: "X vs Y" pattern
-    if words & QueryCategory.TOOL_VS_SIGNALS:
-        return "tool_comparison"
-
-    # Consumer electronics: named device brand
-    if any(brand in q for brand in QueryCategory.ELECTRONICS_BRANDS):
-        return "consumer_electronics"
-
-    # Product ranking: "best [something]" without location
-    if q.startswith("best ") or q.startswith("top ") or q.startswith("which "):
-        return "product_ranking"
-
-    # Default: product ranking (covers most remaining review queries)
-    return "product_ranking"
-
-# Subreddits that consistently produce low-quality signal for product ranking queries.
-# Scores from empirical analysis across 40+ queries. Subreddits below 50 are excluded
-# from ranking queries; 50–69 are allowed only when no better option is available.
-SUBREDDIT_QUALITY = {
-    # ── Wrong context entirely (score 0–29) ───────────────────────────────────
-    "Windsurfing": 20, "Kitesurfing": 20, "Surfing": 20,
-    "FoodNYC": 20, "AskNYC": 30, "NewYorkCity": 30,
-    "pcmasterrace": 30, "programming": 30, "runners": 30,
-    "running": 30, "shoes": 30, "software": 30,
-    "projectmanagement": 30, "Sleep": 30, "Supplements": 30,
-    "Protein": 30, "Fitness": 30,
-    # ── High noise / brand fan forums (score 30–49) ───────────────────────────
-    "Apple": 40, "iPhone": 40, "Sony": 40, "nvidia": 40,
-    "Windows": 40, "Productivity": 40, "hardware": 50,
-    "vscode": 50, "neovim": 50, "audiophile": 60,
-    # ── Good signal subreddits (score 70+) ───────────────────────────────────
-    "HeadphoneAdvice": 90, "buildapc": 90,
-    "MechanicalKeyboards": 90, "GamingKeyboards": 85,
-    "headphones": 85, "Airpods": 85, "Mattress": 85,
-    "StandingDesk": 80, "Dyson": 80, "vacuumcleaners": 80,
-    "Keyboards": 80, "Laptop": 75, "Laptops": 75,
-    "CoffeeSnobs": 75, "espresso": 70,
-    # ── AI / developer tools (score 85+) ─────────────────────────────────────
-    "cursor": 90, "windsurf": 90, "CursorAI": 90,
-    "ChatGPTCoding": 85, "AIAssistants": 85, "GithubCopilot": 85,
-    "LocalLLaMA": 80, "ClaudeAI": 80, "ChatGPT": 75,
-    "SoftwareEngineering": 75, "ExperiencedDevs": 80,
-}
-# Only hard-exclude subreddits that are completely wrong context (sport/hobby forums
-# for software queries, etc.). High-noise brand forums (iPhone, Apple) are noisy but
-# are the right community — let the relevance filter handle their noise.
-_SUBREDDIT_HARD_EXCLUDE = frozenset(
-    s for s, score in SUBREDDIT_QUALITY.items() if score < 25
-)
+    _CATEGORY_CACHE[key] = category
+    return category
 
 SEARCH_PLANNER_PROMPT = dedent("""
 You are a search planner for finding the best Reddit comments for ANY user query.
@@ -455,6 +416,50 @@ class OpenAIService:
             logger.warning(f"Entity type filter failed ({e}), returning all names")
             return names
 
+    def classify_query_category(self, query: str, categories: list) -> str:
+        """Pick the single best routing category for a query, using GPT.
+
+        Returns one of ``categories`` (lowercased key) or "" if the model
+        could not produce a valid category.
+        """
+        cats = ", ".join(categories)
+        system = (
+            "You classify a user's review/discovery query into exactly one "
+            "routing category. Reply with ONLY the category key, nothing else."
+        )
+        user = dedent(f"""
+            Query: "{query}"
+
+            Choose the single best category:
+            - local_discovery: finding local places/venues/services in a geographic
+              area (e.g. "best ramen in NYC", "golf courses near Austin").
+            - consumer_electronics: reviews/opinions about a consumer electronics
+              product (phones, laptops, headphones, GPUs, TVs, cameras).
+            - product_ranking: comparing or ranking non-local physical or digital
+              products in general, not tied to a city.
+            - tool_comparison: comparing software tools / apps / services
+              (e.g. "Cursor vs Windsurf", "best note-taking app").
+            - troubleshooting: seeking a fix or solution to a problem
+              (e.g. "how to fix X", "X not working").
+            - service_review: opinions about a non-location-bound service or business.
+            - unsupported: pure news / rumor / leak / speculation with no review substance.
+
+            Valid keys: {cats}
+            Respond with ONLY the category key.
+        """).strip()
+        try:
+            resp = (self.chat(system, user, temperature=0.0, max_tokens=20) or "").strip().lower()
+        except Exception as e:
+            logger.error(f"classify_query_category failed: {e}")
+            return ""
+        # Exact match first, then substring (model may add punctuation/quotes).
+        if resp in categories:
+            return resp
+        for c in categories:
+            if c in resp:
+                return c
+        return ""
+
     def plan_reddit_search(self, query: str, max_subreddits: int = 4) -> dict:
         """Plan Reddit search strategy using LLM."""
         try:
@@ -470,32 +475,9 @@ class OpenAIService:
             subs = [s.replace("r/","").strip() for s in plan.get("subreddits", []) if isinstance(s, str)]
             subs = [s for s in subs if s.lower() != "all"]
 
-            # Apply category-aware subreddit policy from the routing table.
-            category = classify_query(query)
-            policy   = QueryCategory.ROUTING_TABLE.get(category, {}).get("reddit_subreddit_policy", "any")
-
-            if policy == "review_only":
-                # Strip brand fan forums; keep review/tech communities.
-                subs = [s for s in subs if s not in QueryCategory.REVIEW_BLOCKED_SUBREDDITS]
-                if not subs:
-                    subs = QueryCategory.REVIEW_PREFERRED_SUBREDDITS[:max_subreddits]
-
-            # Filter out subreddits known to produce wrong-context or high-noise results.
-            filtered = [s for s in subs if s not in _SUBREDDIT_HARD_EXCLUDE]
-            if not filtered and subs:
-                # All suggestions were wrong-context — re-ask GPT with explicit guidance.
-                rescue_resp = self.chat(
-                    sys,
-                    f"Query: {query}\n\n{SEARCH_PLANNER_PROMPT}\n\n"
-                    f"IMPORTANT: The subreddits {subs} are NOT appropriate for this query. "
-                    f"Think carefully about what community would discuss this topic as a "
-                    f"product, software tool, or service — not as a hobby or sport.",
-                    temperature=0.2, max_tokens=400
-                )
-                rescue_plan = _safe_json_loads(rescue_resp)
-                rescue_subs = [s.replace("r/","").strip() for s in rescue_plan.get("subreddits", []) if isinstance(s, str)]
-                filtered = [s for s in rescue_subs if s not in _SUBREDDIT_HARD_EXCLUDE] or rescue_subs
-            plan["subreddits"] = (filtered if filtered else subs)[:max_subreddits]
+            # Trust GPT's subreddit selection — community choice is a domain decision
+            # made in the planner prompt, not via hardcoded block/prefer/exclude lists.
+            plan["subreddits"] = list(dict.fromkeys(subs))[:max_subreddits]
 
             # Intent-aware defaults
             plan["time_filter"] = plan.get("time_filter") or "month"
@@ -633,52 +615,22 @@ class OpenAIService:
             
         except Exception as e:
             logger.error(f"OpenAI pros/cons generation failed: {e}")
-            # Analyze actual review content for fallback
-            positive_aspects = []
-            negative_aspects = []
-            
-            for review in reviews[:10]:  # Analyze first 10 reviews
-                text_lower = review.text.lower()
-                if "battery" in text_lower or "charge" in text_lower:
-                    if "good" in text_lower or "great" in text_lower:
-                        positive_aspects.append("Battery life and charging performance")
-                    elif "poor" in text_lower or "bad" in text_lower:
-                        negative_aspects.append("Battery life and charging issues")
-                
-                if "camera" in text_lower or "photo" in text_lower:
-                    if "excellent" in text_lower or "amazing" in text_lower:
-                        positive_aspects.append("Camera quality and photo capabilities")
-                    elif "mediocre" in text_lower or "disappointing" in text_lower:
-                        negative_aspects.append("Camera quality concerns")
-                
-                if "price" in text_lower or "expensive" in text_lower:
-                    negative_aspects.append("Pricing and value concerns")
-                
-                if "design" in text_lower or "build" in text_lower:
-                    if "premium" in text_lower or "quality" in text_lower:
-                        positive_aspects.append("Design and build quality")
-            
-            # Remove duplicates and limit to 5 each
-            positive_aspects = list(set(positive_aspects))[:5]
-            negative_aspects = list(set(negative_aspects))[:5]
-            
-            # Generate specific summary
-            pos_count = sum(1 for r in reviews if r.sentiment_label == 'POSITIVE')
-            neg_count = sum(1 for r in reviews if r.sentiment_label == 'NEGATIVE')
-            avg_rating = sum(r.stars for r in reviews) / len(reviews) if reviews else 3.0
-            
-            summary = f"Analysis of {len(reviews)} reviews reveals {pos_count} positive, {neg_count} negative experiences with an average rating of {avg_rating:.1f}/5 stars. "
-            if positive_aspects:
-                summary += f"Users specifically praised: {', '.join(positive_aspects[:3])}. "
-            if negative_aspects:
-                summary += f"Main concerns include: {', '.join(negative_aspects[:3])}. "
-            summary += f"The {query} shows {'generally positive' if avg_rating > 3.5 else 'mixed' if avg_rating > 2.5 else 'negative'} sentiment overall."
-            
-            return {
-                "pros": positive_aspects if positive_aspects else ["Quality features", "User experience", "Performance", "Design", "Value"],
-                "cons": negative_aspects if negative_aspects else ["Pricing concerns", "Service issues", "Reliability questions", "Limited features", "Support problems"],
-                "summary": summary
-            }
+            # Neutral fallback only — no hardcoded aspect/keyword matching. We report
+            # what we can compute from sentiment metadata and leave aspect extraction
+            # to the GPT path (this branch runs only when that call fails).
+            pos_count = sum(1 for r in reviews if getattr(r, "sentiment_label", "") == 'POSITIVE')
+            neg_count = sum(1 for r in reviews if getattr(r, "sentiment_label", "") == 'NEGATIVE')
+            stars = [getattr(r, "stars", None) for r in reviews]
+            stars = [s for s in stars if isinstance(s, (int, float))]
+            avg_rating = (sum(stars) / len(stars)) if stars else 3.0
+            sentiment = 'generally positive' if avg_rating > 3.5 else 'mixed' if avg_rating > 2.5 else 'negative'
+
+            summary = (
+                f"Analysis of {len(reviews)} reviews shows {pos_count} positive and "
+                f"{neg_count} negative experiences (average {avg_rating:.1f}/5). "
+                f"Sentiment for {query} is {sentiment} overall."
+            )
+            return {"pros": [], "cons": [], "summary": summary}
     
     def _map_phase(self, comments, query=""):
         """Map phase: extract evidence from comment chunks."""
@@ -940,28 +892,30 @@ class OpenAIService:
             
             prompt = f"""
             Generate a ranking summary for "{query}" based on the analysis results.
-            
-            Raw Entity Data (may contain duplicates and generic descriptions to filter):
+
+            RANKED ENTITIES (this is the complete, authoritative list — these are the ONLY
+            entities you may name or rank in your summary):
             {entities_text}
-            
-            Key User Insights:
+
+            Supporting quotes (context ONLY — these may mention other names in passing;
+            do NOT promote any name that is not in the RANKED ENTITIES list above):
             {quotes_text}
-            
-            CRITICAL FILTERING RULES:
-            1. **ONLY include specific named entities** - exclude generic descriptions that are not proper nouns, brand names, or specific identifiers that users could search for or purchase
-            
-            2. **Merge duplicate entities** - combine similar names and handle variations in spelling/formatting
-            
-            3. **Include ONLY concrete named entities** - focus on specific names that represent actual searchable/purchasable entities rather than descriptive phrases
-            
-            Provide a summary that includes:
-            1. Brief overview of the ranking results (only specific named entities)
-            2. Highlight the top 3-5 DISTINCT named entities with specific details
-            3. Mention key insights from user reviews for top entities
-            4. Provide a concise recommendation
-            
-            If no proper named entities are found, explain that the search needs more specific results.
-            Write in a natural, engaging style. Only rank actual named entities.
+
+            CRITICAL RULES:
+            1. **Only discuss entities from the RANKED ENTITIES list.** Never introduce a
+               restaurant/product/place that appears only in a quote — if it is not in the
+               ranked list, it was not ranked and must not appear in the summary.
+            2. **Merge obvious duplicates** (spelling/formatting variants of the same name).
+            3. Reflect the given star scores and mention counts faithfully; do not invent ratings.
+
+            Provide:
+            1. A brief overview of the ranking (using only the ranked entities).
+            2. The top ranked entities with specific details drawn from their quotes.
+            3. A concise recommendation among the ranked entities.
+
+            If the ranked list is empty or has a single entity, say so plainly rather than
+            padding the summary with names from the quotes.
+            Write in a natural, engaging style.
             """
             
             response = self.chat(
@@ -1171,13 +1125,7 @@ Return JSON:
                 except:
                     aspects = ["quality", "value", "performance"]
 
-            # Aspect Intelligence v2: override with the full 13-aspect taxonomy
-            # for consumer electronics queries, replacing the 6-aspect GPT default.
-            from ..core.constants import AspectTaxonomy
-            _qcat = classify_query(query) if query else "product_ranking"
-            if _qcat in AspectTaxonomy.APPLIES_TO_CATEGORIES:
-                aspects = list(AspectTaxonomy.PHONE_ASPECTS.keys())
-
+            # Aspects come straight from GPT — no hardcoded taxonomy override.
             entity_type = result.get("entity_type")
 
             # Null out values the prompt explicitly forbids — enforcement of prompt contract.
@@ -1250,6 +1198,15 @@ Return JSON:
             logger.warning(f"Excluded {sponsored_count} sponsored/gifted comments from ranking")
         comments = clean
 
+        # Only *transcripts* bypass the relevance filter: they are long-form
+        # content from videos already GPT-selected as relevant, and the filter's
+        # 400-char window would judge them on intro banter alone. POSTS still go
+        # through relevance — Reddit posts come from keyword search and are often
+        # off-topic (e.g. a coffee thread in a restaurant query), so they must be
+        # filtered like comments. Sponsored units were already excluded above.
+        enriched_units = [c for c in comments if c.get("unit_type", "comment") == "transcript"]
+        comments = [c for c in comments if c.get("unit_type", "comment") != "transcript"]
+
         # ── Stage 1: fast token-overlap pre-filter ────────────────────────
         # Eliminates comments that share a keyword with the query but discuss
         # an unrelated topic (e.g. arm-injury thread mentioning iPhone).
@@ -1267,7 +1224,7 @@ Return JSON:
         # list. Bail out before building batches — an empty `batches` would make
         # max_workers=0 and crash the ThreadPoolExecutor.
         if not comments:
-            return comments
+            return enriched_units
 
         batch_size = 20
         batches = [comments[i:i + batch_size] for i in range(0, len(comments), batch_size)]
@@ -1357,8 +1314,11 @@ Return JSON:
                 if len(kept) >= MIN_TARGET:
                     break
 
-        logger.info(f"Relevance filter: {len(kept)}/{len(comments)} kept (dropped {dropped})")
-        return kept
+        logger.info(
+            f"Relevance filter: {len(kept)}/{len(comments)} comments+posts kept (dropped {dropped}); "
+            f"+{len(enriched_units)} transcript units passed through"
+        )
+        return kept + enriched_units
 
     def validate_entity_locations(self, entities: list, query: str) -> list:
         """Remove ranked entities whose geographic location does not match the query's location context."""
@@ -1444,25 +1404,15 @@ Return JSON:
         query_str = query or 'General analysis'
         entity_or_venue = entity_type or 'venue/product'
 
-        # Aspect Intelligence v2: inject precise aspect definitions for known categories.
-        # This replaces keyword matching with semantic definitions, reducing cross-contamination.
-        from ..core.constants import AspectTaxonomy
-        from ..services.llm import classify_query as _cq
-        _qcat = classify_query(query) if query else "product_ranking"
-        _aspect_definitions_block = ""
-        if _qcat in AspectTaxonomy.APPLIES_TO_CATEGORIES and aspects:
-            _aspect_defs = []
-            for asp in aspects:
-                defn = AspectTaxonomy.PHONE_ASPECTS.get(asp)
-                if defn:
-                    _aspect_defs.append(f"  {asp}: {defn['description']}")
-            if _aspect_defs:
-                _aspect_definitions_block = (
-                    "\n\nASPECT DEFINITIONS — score ONLY the aspects that are explicitly discussed:\n"
-                    + "\n".join(_aspect_defs)
-                    + "\n\nDo NOT assign a score to an aspect if the comment does not discuss it."
-                    + "\nDo NOT let a discussion of one aspect bleed into another (e.g. camera speed ≠ performance)."
-                )
+        # Aspect cross-contamination is controlled by a domain-agnostic instruction,
+        # not a hardcoded per-category taxonomy. GPT scores only the aspects the
+        # comment actually discusses.
+        _aspect_definitions_block = (
+            "\n\nScore ONLY the aspects that are explicitly discussed in the comment."
+            "\nDo NOT assign a score to an aspect the comment does not discuss."
+            "\nDo NOT let a discussion of one aspect bleed into another "
+            "(e.g. camera speed is not general performance)."
+        ) if aspects else ""
 
         aspects_str = ', '.join(aspects) if aspects else 'quality, value, experience'
 
@@ -1484,8 +1434,14 @@ Return JSON:
                 batch_text = ""
                 for j, comment in enumerate(batch):
                     text = comment.get('text', '') if isinstance(comment, dict) else getattr(comment, 'text', '')
-                    truncated = text[:150] + "..." if len(text) > 150 else text
-                    batch_text += f"Comment {j+1}: {truncated}\n\n"
+                    ut = comment.get('unit_type', 'comment') if isinstance(comment, dict) else getattr(comment, 'unit_type', 'comment')
+                    # Posts/transcripts carry far more recommendations than a single
+                    # comment, so give them a larger window; bump comments too — the
+                    # old 150-char cap was dropping entities listed later in a comment.
+                    _lim = 1200 if ut in ("post", "transcript") else 300
+                    truncated = text[:_lim] + "..." if len(text) > _lim else text
+                    label = {"post": "Post", "transcript": "Transcript"}.get(ut, "Comment")
+                    batch_text += f"{label} {j+1}: {truncated}\n\n"
 
                 prompt = f"""Analyze these Reddit comments and provide structured annotations.
 
@@ -1532,6 +1488,19 @@ SENTIMENT GROUNDING RULES:
   that does not describe hands-on experience with the entity.
 - If a comment only names an entity without reviewing it (e.g. lists it, mentions its logo,
   or references it geographically only), set confidence=0.4.
+- AUTHORITATIVE ENDORSEMENT IS POSITIVE: if an entity is listed in a CREDIBLE external ranking,
+  award, or expert/critic best-of list (e.g. a published "best restaurants" list, a Michelin
+  star, "World's 50 Best", a major newspaper's top-100), treat that inclusion as a STRONG
+  positive endorsement: sentiment_score >= 4.5 — even when the author adds no personal praise.
+  Being ranked highly by a trusted source IS the opinion. Use your own judgment about whether a
+  cited source is genuinely authoritative; do not invent rankings that are not in the text.
+
+EVIDENCE STRENGTH (per entity) — set "evidence_strength" in [0,1] for EACH entity:
+- 0.85-1.0: a detailed firsthand review, OR inclusion in a credible ranking/award/expert list.
+- 0.5-0.7:  a clear personal recommendation with some specifics ("Mapo's banchan is amazing").
+- 0.2-0.4:  a casual one-liner, a bare name-drop, or an item in an undifferentiated list.
+  This measures how much WEIGHT the evidence deserves, independent of sentiment — a glowing
+  one-word "amazing!" is positive but weak (0.3); a critic's top-10 placement is strong (0.9).
 
 ASPECT SCORING RULES — CRITICAL:
 - Only include an aspect in aspect_scores if the comment EXPLICITLY discusses or CLEARLY implies it.
@@ -1579,7 +1548,8 @@ Return a JSON array -- one object per comment, in input order:
                 "sentiment_score": 4.5,
                 "aspect_scores": {{"quality": 5, "value": 3}},
                 "is_primary": true,
-                "mention_context": "iPhone 15 Pro camera is outstanding"
+                "mention_context": "iPhone 15 Pro camera is outstanding",
+                "evidence_strength": 0.9
             }},
             {{
                 "name": "Samsung Galaxy S24",
@@ -1588,7 +1558,8 @@ Return a JSON array -- one object per comment, in input order:
                 "sentiment_score": 2.0,
                 "aspect_scores": {{"quality": 3, "value": 2}},
                 "is_primary": false,
-                "mention_context": "compared to my old Samsung which felt cheap"
+                "mention_context": "compared to my old Samsung which felt cheap",
+                "evidence_strength": 0.4
             }}
         ],
         "solution_key": null
@@ -1611,6 +1582,11 @@ Return a JSON array -- one object per comment, in input order:
                     annotation_data = anno_by_pos.get(j, {})
                     entities = []
                     for ed in annotation_data.get("entities", []):
+                        try:
+                            _ev = float(ed.get("evidence_strength", 0.5))
+                        except (TypeError, ValueError):
+                            _ev = 0.5
+                        _ev = max(0.0, min(1.0, _ev))
                         entities.append(EntityRef(
                             name=ed.get("name", ""),
                             entity_type=ed.get("type", entity_type or "unknown"),
@@ -1619,6 +1595,7 @@ Return a JSON array -- one object per comment, in input order:
                             aspect_scores={k: float(v) for k, v in (ed.get("aspect_scores") or {}).items()},
                             is_primary=bool(ed.get("is_primary", True)),
                             mention_context=str(ed.get("mention_context", ""))[:100],
+                            evidence_strength=_ev,
                         ))
                     # Proportional distribution: when no single primary entity exists
                     # (recommendation lists, "my top 5" comments), treat every extracted
@@ -1719,6 +1696,10 @@ class FallbackLLMService:
         """Fallback: return all names unchanged."""
         return names
 
+    def classify_query_category(self, query: str, categories: list) -> str:
+        """Fallback: no LLM available — let caller use its neutral default."""
+        return ""
+
     def filter_relevant_comments(self, comments: list, query: str, threshold: float = 0.35) -> list:
         """Fallback: return all comments unchanged (no LLM available)."""
         return comments
@@ -1813,21 +1794,15 @@ class FallbackLLMService:
             comment_id = getattr(comment, "id", str(i))
             coverage_ids.append(comment_id)
             
-            # Simple keyword extraction
+            # Domain-neutral sentiment bucketing only (this stub runs when NO model
+            # is configured — there is no GPT to delegate domain decisions to, and we
+            # deliberately do not guess domain-specific aspects from keywords).
             text_lower = text.lower()
             if any(word in text_lower for word in ["good", "great", "excellent", "amazing", "love"]):
                 pros.append({"text": f"Positive feedback: {text[:100]}...", "ids": [comment_id]})
             elif any(word in text_lower for word in ["bad", "terrible", "awful", "hate", "worst"]):
                 cons.append({"text": f"Negative feedback: {text[:100]}...", "ids": [comment_id]})
-            
-            # Simple aspect detection
-            if "battery" in text_lower:
-                aspects.append({"name": "Battery", "score": 3.5, "count": 1})
-            if "camera" in text_lower:
-                aspects.append({"name": "Camera", "score": 3.5, "count": 1})
-            if "price" in text_lower:
-                aspects.append({"name": "Price", "score": 3.0, "count": 1})
-            
+
             # Add quote
             quotes.append({
                 "id": comment_id,

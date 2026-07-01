@@ -3,7 +3,7 @@
 import logging
 import math, time
 from typing import List, Dict, Any
-from collections import defaultdict
+from collections import defaultdict, Counter
 from .models import Review, AspectScore, AnalysisSummary, GPTCommentAnno, RankingItem
 from .constants import SearchConstants, DomainConstants, SourceQualityMultipliers, ConfidenceConfig
 
@@ -351,23 +351,43 @@ def _extract_query_location(query: str) -> str:
 
 
 
+def _corroboration_strength(distinct_threads: int, cross_unit: bool) -> float:
+    """How strongly independent sources back an entity, in [0, 1].
+
+    Two signals, each worth 0.6 (capped at 1.0):
+      • multi-thread  — the entity surfaced in ≥2 separate discussions
+      • cross-unit    — within one thread it appears in BOTH the post/transcript
+                        (the OP/creator) AND at least one comment (the crowd),
+                        i.e. the post's claim is echoed by responders.
+    """
+    corro = 0.0
+    if distinct_threads >= 2:
+        corro += 0.6
+    if cross_unit:
+        corro += 0.6
+    return min(1.0, corro)
+
+
 def _four_factor_confidence(
     n_mentions: int,
     sentiment_scores: list,
     sources_contributing: set,
     total_platforms_queried: int,
     sqm_values: list,
+    corroboration: float = 0.0,
 ) -> float:
     """
-    Composite confidence score = Volume × Diversity × Consistency × SourceFit.
+    Composite confidence score = Volume × Diversity × Consistency × SourceFit,
+    then lifted toward 1.0 by cross-source corroboration.
     All factors are in [0, 1]; result is in [0, 1].
 
     Args:
-        n_mentions:             how many comments mentioned this entity
+        n_mentions:             how many units mentioned this entity
         sentiment_scores:       list of raw sentiment floats for variance calc
         sources_contributing:   set of platform names (e.g. {"reddit", "youtube"})
         total_platforms_queried: how many platforms were actually searched
-        sqm_values:             list of SQM values for contributing comments
+        sqm_values:             list of SQM values for contributing units
+        corroboration:          [0,1] strength of post/comment & multi-thread agreement
     """
     cfg = ConfidenceConfig
 
@@ -390,7 +410,14 @@ def _four_factor_confidence(
     # Factor 4: Source fit — average SQM of contributing comments
     source_fit = sum(sqm_values) / len(sqm_values) if sqm_values else 0.5
 
-    return round(volume * diversity * consistency * source_fit, 4)
+    base = volume * diversity * consistency * source_fit
+
+    # Corroboration lift: an entity backed by the OP *and* the crowd, or seen
+    # across multiple independent threads, is more trustworthy than its raw
+    # volume implies. Lifts toward 1.0 without ever exceeding it.
+    corro = max(0.0, min(1.0, corroboration))
+    final = base + (1.0 - base) * corro * cfg.CORROBORATION_WEIGHT
+    return round(final, 4)
 
 
 def _confidence_tier(score: float) -> str:
@@ -445,14 +472,24 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
     # How many distinct platforms were searched (for diversity factor)
     _total_platforms = len(set(_source_map.values())) if _source_map else 1
 
-    # Build comment text lookup for quote extraction
+    # Build comment text lookup for quote extraction, plus thread/unit maps so
+    # the scorer can detect post↔comment and multi-thread corroboration.
     comment_text_map: Dict[str, str] = {}
+    thread_map: Dict[str, str] = {}
+    unit_map: Dict[str, str] = {}
     if comments:
         for c in comments:
             cid = c.get("id", "") if isinstance(c, dict) else getattr(c, "id", "")
             text = c.get("text", "") if isinstance(c, dict) else getattr(c, "text", "")
             if cid and text:
                 comment_text_map[cid] = text
+            if cid:
+                tid = c.get("thread_id", "") if isinstance(c, dict) else getattr(c, "thread_id", "")
+                ut = c.get("unit_type", "comment") if isinstance(c, dict) else getattr(c, "unit_type", "comment")
+                # Unknown thread → empty bucket, so units without thread info collapse
+                # together and never masquerade as independent corroborating threads.
+                thread_map[cid] = tid or ""
+                unit_map[cid] = ut or "comment"
 
     entity_stats = defaultdict(lambda: {
         'mentions': 0,
@@ -466,6 +503,8 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
         'sources': set(),        # which platforms contributed mentions
         'raw_sentiments': [],    # raw sentiment floats for consistency calc
         'sqm_values': [],        # SQM per contributing comment for source-fit calc
+        'thread_units': defaultdict(set),  # thread_id -> set of unit_types mentioning entity
+        'evidence_values': [],   # per-mention GPT evidence_strength (0-1)
     })
 
     # Aggregate entity data
@@ -506,6 +545,15 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
             # so they still contribute but don't dominate the ranking.
             effective_weight = base_weight if is_primary else base_weight * 0.75
 
+            # 5. Evidence quality: a detailed review or a credible ranking pulls the
+            # score more than a casual name-drop. Scales weight in [0.4, 1.2].
+            ev_strength = getattr(entity, 'evidence_strength', 0.5)
+            try:
+                ev_strength = max(0.0, min(1.0, float(ev_strength)))
+            except (TypeError, ValueError):
+                ev_strength = 0.5
+            effective_weight *= (0.4 + 0.8 * ev_strength)
+
             normalized_name = _normalize_entity_name(entity.name)
             entity_stats[normalized_name]['mentions'] += 1
             entity_stats[normalized_name]['confidence_sum'] += entity.confidence
@@ -515,6 +563,10 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
             entity_stats[normalized_name]['sources'].add(src)
             entity_stats[normalized_name]['raw_sentiments'].append(entity_sentiment)
             entity_stats[normalized_name]['sqm_values'].append(sqm)
+            _tid = thread_map.get(anno.comment_id, "")
+            _ut = unit_map.get(anno.comment_id, "comment")
+            entity_stats[normalized_name]['thread_units'][_tid].add(_ut)
+            entity_stats[normalized_name]['evidence_values'].append(ev_strength)
             # Collect quote candidate from the source comment
             if comment_text_map and anno.comment_id in comment_text_map:
                 raw_text = comment_text_map[anno.comment_id]
@@ -541,6 +593,12 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
     _names = sorted(entity_stats.keys(), key=lambda n: len(set(n.split())))
     _absorbed: dict = {}
 
+    # How many multi-word names start with each first word — used to only merge a
+    # bare single word into a longer name when that longer name is UNAMBIGUOUS
+    # (exactly one candidate). This merges "cote" → "cote korean steakhouse" but
+    # refuses to guess when several names share a first word.
+    _first_word_counts = Counter(n.split()[0] for n in _names if len(n.split()) >= 2)
+
     for _short in _names:
         _sw = set(_short.split())
         _sw_list = _short.split()
@@ -553,12 +611,14 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
             if len(_sw) >= 2 and _sw < _lw:
                 _absorbed[_short] = _long
                 break
-            # Pass B: single-word brand prefix match
-            # "deskhaus" → absorbed into "deskhaus apex pro" (starts with "deskhaus")
-            # but NOT "park" → "park slope ramen" (too generic)
+            # Pass B: single-word prefix match — only when the longer name is the
+            # sole candidate starting with that word (avoids "park" → guessing
+            # among "park slope ramen"/"park ave diner"). ≥4 chars skips generic
+            # short words like "bar"/"the"/"inn".
             if (len(_sw) == 1 and len(_lw_list) >= 2
                     and _lw_list[0] == _sw_list[0]
-                    and len(_sw_list[0]) >= 5):       # brand word must be ≥5 chars to avoid false matches
+                    and len(_sw_list[0]) >= 4
+                    and _first_word_counts[_sw_list[0]] == 1):
                 _absorbed[_short] = _long
                 break
 
@@ -574,6 +634,12 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
             t['candidate_quotes'].extend(s['candidate_quotes'])
             for _asp, _scores in s['aspect_scores'].items():
                 t['aspect_scores'][_asp].extend(_scores)
+            t['sources'].update(s['sources'])
+            t['raw_sentiments'].extend(s['raw_sentiments'])
+            t['sqm_values'].extend(s['sqm_values'])
+            t['evidence_values'].extend(s['evidence_values'])
+            for _tid, _uts in s['thread_units'].items():
+                t['thread_units'][_tid].update(_uts)
             del entity_stats[_short]
 
     # Create ranking items
@@ -589,9 +655,21 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
             if stats['primary_mentions'] == 0:
                 raw_stars = 0.6 * raw_stars + 0.4 * 3.0
 
+            # Evidence quality for this entity: blend of typical and best evidence,
+            # so one authoritative/detailed piece counts even amid casual mentions.
+            _ev = stats['evidence_values'] or [0.5]
+            evidence_quality = 0.5 * (sum(_ev) / len(_ev)) + 0.5 * max(_ev)
+            # Baseline at the neutral default (0.5) so ONLY above-average evidence
+            # lifts anything; neutral/missing evidence reproduces prior behavior.
+            evidence_lift = max(0.0, (evidence_quality - 0.5) / 0.5)
+
             # Apply Bayesian credibility adjustment so a single glowing mention
-            # doesn't appear equal to an entity praised across many reviews.
-            overall_stars = _bayesian_stars(raw_stars, stats['mentions'])
+            # doesn't appear equal to an entity praised across many reviews — but
+            # let strong evidence (a detailed review or a credible ranking) act
+            # like extra observations so authoritative single mentions resist
+            # being shrunk back toward neutral.
+            effective_n = stats['mentions'] + ConfidenceConfig.EVIDENCE_PRIOR * evidence_lift
+            overall_stars = _bayesian_stars(raw_stars, effective_n)
 
             aspect_scores = {}
             for aspect_name, scores in stats['aspect_scores'].items():
@@ -624,13 +702,30 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
             else:
                 data_confidence = "very_low"
 
-            # Four-factor composite confidence score
+            # Corroboration: ≥2 distinct threads, and/or a single thread where the
+            # post/transcript (OP/creator) and a comment (crowd) both name the entity.
+            _thread_units = stats['thread_units']
+            distinct_threads = len(_thread_units)
+            cross_unit = any(
+                ({"post", "transcript"} & uts) and ("comment" in uts)
+                for uts in _thread_units.values()
+            )
+            corroboration = _corroboration_strength(distinct_threads, cross_unit)
+
+            # An authoritative/detailed single mention is as trustworthy as
+            # multi-source corroboration, so let strong evidence lift confidence
+            # too — this is what surfaces a Michelin/"50 Best" pick that only one
+            # comment cited out of the "insufficient" tier.
+            lift = max(corroboration, evidence_lift)
+
+            # Four-factor composite confidence score (lifted by corroboration/evidence)
             conf_score = _four_factor_confidence(
                 n_mentions=stats['mentions'],
                 sentiment_scores=stats['raw_sentiments'],
                 sources_contributing=stats['sources'],
                 total_platforms_queried=_total_platforms,
                 sqm_values=stats['sqm_values'],
+                corroboration=lift,
             )
             tier = _confidence_tier(conf_score)
 
@@ -678,26 +773,28 @@ def rank_entities_with_relaxation(annos: List[GPTCommentAnno], upvote_map: Dict[
     Returns:
         List of RankingItem objects sorted by overall score and mentions
     """
+    floor = SearchConstants.MIN_RANKED_RESULTS
     thresholds = sorted({min_mentions, max(1, min_mentions // 2), 1}, reverse=True)
     ranked = []
     for threshold in thresholds:
         logger.info(f"Entity ranking attempt: min_mentions={threshold}")
         ranked = rank_entities(annos, upvote_map, entity_type, threshold, query=query, comments=comments, source_map=source_map, query_category=query_category)
-        if len(ranked) >= 3:
-            logger.info(f"Entity ranking: {len(ranked)} entities at min_mentions={threshold}")
+        if len(ranked) >= floor:
+            logger.info(f"Entity ranking: {len(ranked)} confident entities at min_mentions={threshold}")
             return ranked
 
-    # If all thresholds with confidence suppression returned nothing, do a final
-    # pass with suppression disabled so the pipeline always surfaces something
-    # when data exists.  Entities from this fallback carry tier="insufficient"
-    # so the UI can display them with an appropriate low-confidence treatment.
-    if not ranked:
-        ranked = rank_entities(annos, upvote_map, entity_type, 1, query=query,
-                               comments=comments, source_map=source_map,
-                               query_category=query_category,
-                               suppress_insufficient=False)
-        if ranked:
-            logger.info(f"Entity ranking: {len(ranked)} entities (fallback, confidence suppression off)")
+    # The confident ranking is sparser than the floor (or empty).  Do a final
+    # pass with suppression disabled so the pipeline surfaces the long tail when
+    # data exists.  Entities that only clear this relaxed pass carry
+    # tier="insufficient" so the UI can show them under a separate low-confidence
+    # "also mentioned" section rather than mixing them with the primary picks.
+    full = rank_entities(annos, upvote_map, entity_type, 1, query=query,
+                         comments=comments, source_map=source_map,
+                         query_category=query_category,
+                         suppress_insufficient=False)
+    if len(full) > len(ranked):
+        ranked = full
+        logger.info(f"Entity ranking: {len(ranked)} entities (sparse rescue, suppression off)")
 
     logger.info(f"Entity ranking: {len(ranked)} entities after full relaxation")
     return ranked

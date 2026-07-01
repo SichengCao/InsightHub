@@ -13,7 +13,7 @@ import sys
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
 from insighthub.core.config import settings
-from insighthub.core.constants import SearchConstants
+from insighthub.core.constants import SearchConstants, ConfidenceConfig
 from insighthub.services.reddit_client import RedditService
 from insighthub.services.llm import LLMServiceFactory
 from insighthub.services.cross_platform_manager import CrossPlatformManager
@@ -98,8 +98,9 @@ def _source_tag(review: dict) -> str:
 
 def _entity_verdict(item: dict) -> str:
     aspects = item.get("aspect_scores", {})
-    conf = item.get("confidence", 0.5)
-    conf_lbl = "strong consensus" if conf >= 0.7 else "moderate consensus" if conf >= 0.4 else "limited data"
+    # Ranking confidence (four-factor), NOT GPT extraction confidence.
+    conf = item.get("confidence_score", item.get("confidence", 0.5))
+    conf_lbl = "strong consensus" if conf >= 0.6 else "moderate consensus" if conf >= 0.35 else "limited evidence"
     if not aspects:
         return conf_lbl.capitalize()
     best = max(aspects, key=aspects.get)
@@ -410,6 +411,24 @@ h1, h2, h3 {
 .ih-rank-card-gold   { border-left: 3px solid #c89b3c !important; }
 .ih-rank-card-silver { border-left: 3px solid #6b7a8d !important; }
 .ih-rank-card-bronze { border-left: 3px solid #8a6040 !important; }
+.ih-rank-card-faint {
+  opacity: 0.72;
+  border-style: dashed;
+  background: rgba(255,255,255,0.015);
+}
+.ih-also-tag {
+  font-size: 0.66rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: #8a93a3;
+  background: rgba(138,147,163,0.12);
+  border: 1px solid rgba(138,147,163,0.25);
+  border-radius: 6px;
+  padding: 0.12rem 0.5rem;
+  margin-left: 0.55rem;
+  vertical-align: middle;
+}
 
 .ih-rank-head {
   display: flex;
@@ -642,6 +661,7 @@ h1, h2, h3 {
 .ih-plat-strip { display: flex; gap: 2rem; padding: 0.5rem 0 0.25rem; }
 .ih-plat-item { font-size: 0.78rem; color: #64748b; font-family: 'JetBrains Mono', monospace; }
 .ih-plat-count { font-weight: 700; color: #94a3b8; margin-right: 0.3rem; }
+.ih-plat-sub { color: #475569; }
 
 /* ── Homepage search area ── */
 .ih-search-area { padding: 3.25rem 1rem 1.5rem; text-align: center; }
@@ -1257,12 +1277,16 @@ if run_analysis and query.strip():
         _done.append(f"Query type: {intent_schema.intent} · {len(intent_schema.aspects)} dimensions")
 
         def _normalize(review):
+            _g = (lambda k, d=None: review.get(k, d)) if isinstance(review, dict) else (lambda k, d=None: getattr(review, k, d))
             return {
-                "id":         review.get("id")          if isinstance(review, dict) else review.id,
-                "text":       review.get("text")         if isinstance(review, dict) else review.text,
-                "upvotes":    review.get("upvotes", 0)   if isinstance(review, dict) else getattr(review, "upvotes", 0),
-                "permalink":  review.get("permalink","") if isinstance(review, dict) else getattr(review, "permalink",""),
-                "post_title": review.get("post_title","") if isinstance(review, dict) else getattr(review, "post_title",""),
+                "id":         _g("id"),
+                "text":       _g("text"),
+                "upvotes":    _g("upvotes", 0) or 0,
+                "permalink":  _g("permalink", ""),
+                "post_title": _g("post_title", ""),
+                "source":     _g("source", "reddit"),
+                "unit_type":  _g("unit_type", "comment"),
+                "thread_id":  _g("thread_id", ""),
             }
 
         if use_cross:
@@ -1356,13 +1380,27 @@ if run_analysis and query.strip():
                 ranking = [e for e in ranking if e.name in valid]
             ranking = llm_service.validate_entity_locations(ranking, query)
 
-            ranking_data = [{"name": e.name, "overall_stars": e.overall_stars, "mentions": e.mentions, "quotes": e.quotes} for e in ranking]
+            _insufficient = ConfidenceConfig.TIER_LABELS["insufficient"]
+            # Primary picks vs. low-confidence long tail surfaced by the sparse-rescue path.
+            confident = [e for e in ranking if e.confidence_tier != _insufficient]
+            also_mentioned = [e for e in ranking if e.confidence_tier == _insufficient]
+            # Keep the GPT summary focused on the trustworthy picks only.
+            summary_source = confident or ranking
+            ranking_data = [{"name": e.name, "overall_stars": e.overall_stars, "mentions": e.mentions, "quotes": e.quotes} for e in summary_source]
             summary = llm_service.summarize_ranking_with_gpt(query, ranking_data)
+            def _rank_dict(e):
+                return {"name": e.name, "overall_stars": e.overall_stars, "aspect_scores": e.aspect_scores,
+                        "mentions": e.mentions, "confidence": e.confidence, "quotes": e.quotes,
+                        "confidence_tier": e.confidence_tier,
+                        # Four-factor RANKING confidence (volume/diversity/consistency/
+                        # source-fit + corroboration/evidence lift) — distinct from the
+                        # GPT extraction confidence above. This is what the UI shows.
+                        "confidence_score": e.confidence_score}
             payload = {
                 "query": query, "intent": intent_schema.intent, "summary": summary,
                 "metadata": {"timestamp": time.time()},
-                "ranking": [{"name": e.name, "overall_stars": e.overall_stars, "aspect_scores": e.aspect_scores,
-                             "mentions": e.mentions, "confidence": e.confidence, "quotes": e.quotes} for e in ranking],
+                "ranking": [_rank_dict(e) for e in confident],
+                "also_mentioned": [_rank_dict(e) for e in also_mentioned],
             }
 
         elif intent_schema.intent == "SOLUTION":
@@ -1593,7 +1631,10 @@ if run_analysis and query.strip():
                             "ih-rank-card-gold" if i == 1 else "ih-rank-card-silver" if i == 2 else "ih-rank-card-bronze" if i == 3 else ""
                         )
                         sc = _score_cls(item["overall_stars"])
-                        conf_lbl2, conf_color2 = _confidence_label(item.get("confidence", 0.5))
+                        # Show the four-factor RANKING confidence (reflects evidence
+                        # volume/diversity/corroboration), not GPT extraction confidence.
+                        rank_conf = item.get("confidence_score", item.get("confidence", 0.5))
+                        conf_lbl2, conf_color2 = _confidence_label(rank_conf)
                         verdict = _entity_verdict(item)
 
                         aspect_bars = ""
@@ -1625,15 +1666,47 @@ if run_analysis and query.strip():
                             f'<div class="ih-rank-foot">'
                             f'{conf_pill}'
                             f'<span class="ih-conf-explain">'
-                            f'{item.get("confidence", 0.5):.0%} confidence'
+                            f'{rank_conf:.0%} ranking confidence'
                             f' · {item["mentions"]} mentions · upvote-weighted'
                             f'</span>'
                             f'</div>'
                             f'</div>',
                             unsafe_allow_html=True,
                         )
-                else:
+                elif not payload.get("also_mentioned"):
                     st.info("No ranked entities found. Try a more specific query or increase depth in settings.")
+
+                # Long tail surfaced by the sparse-rescue path — shown separately
+                # so it never gets confused with the primary, high-confidence picks.
+                also_mentioned = payload.get("also_mentioned", [])
+                if also_mentioned:
+                    st.markdown(
+                        '<div class="ih-section-hdr">Also mentioned '
+                        '<span class="ih-also-tag">lower confidence · single mention</span></div>',
+                        unsafe_allow_html=True,
+                    )
+                    for item in also_mentioned[: SearchConstants.MAX_ENTITIES_TO_DISPLAY]:
+                        sc = _score_cls(item["overall_stars"])
+                        st.markdown(
+                            f'<div class="ih-rank-card ih-rank-card-faint">'
+                            f'<div class="ih-rank-head">'
+                            f'<div class="ih-rank-info">'
+                            f'<div class="ih-rank-name">{item["name"]}</div>'
+                            f'<div class="ih-rank-stars">{_stars(item["overall_stars"])}</div>'
+                            f'</div>'
+                            f'<div class="ih-rank-score-block">'
+                            f'<div class="ih-rank-big-score {sc}">{item["overall_stars"]:.1f}</div>'
+                            f'<div class="ih-rank-mentions">{item["mentions"]} mention'
+                            f'{"s" if item["mentions"] != 1 else ""}</div>'
+                            f'</div>'
+                            f'</div>'
+                            f'<div class="ih-rank-foot">'
+                            f'<span class="ih-conf-explain">Mentioned in discussion but too few '
+                            f'reviews to rank confidently</span>'
+                            f'</div>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
 
             elif intent_schema.intent == "SOLUTION":
                 if payload["solutions"]:
@@ -1705,11 +1778,30 @@ if run_analysis and query.strip():
             # ═════════════════════════════════════════════════════════════════
             if use_cross:
                 st.markdown('<div class="ih-section-hdr">Source breakdown</div>', unsafe_allow_html=True)
-                plat_html = '<div class="ih-plat-strip">' + "".join(
-                    f'<div class="ih-plat-item"><span class="ih-plat-count">{len(v)}</span>{k.title()} reviews</div>'
-                    for k, v in platform_breakdown.items()
-                ) + '</div>'
+                # Describe what was actually ANALYZED (the units that survived
+                # filtering), split by platform and unit type, so these numbers
+                # reconcile with the "Reviews analyzed" stat above instead of the
+                # raw scraped totals.
+                from collections import Counter as _Counter
+                _by_src: dict = {}
+                for _c in comments:
+                    _src = (_c.get("source", "reddit") or "reddit").title()
+                    _ut = _c.get("unit_type", "comment") or "comment"
+                    _by_src.setdefault(_src, _Counter())[_ut] += 1
+                _order = ["comment", "post", "transcript"]
+                _label = {"comment": "comments", "post": "posts", "transcript": "transcripts"}
+                items = []
+                for _src, _cnt in _by_src.items():
+                    _total = sum(_cnt.values())
+                    _parts = ", ".join(f"{_cnt[u]} {_label[u]}" for u in _order if _cnt.get(u))
+                    items.append(
+                        f'<div class="ih-plat-item"><span class="ih-plat-count">{_total}</span>'
+                        f'{_src} <span class="ih-plat-sub">({_parts})</span></div>'
+                    )
+                plat_html = '<div class="ih-plat-strip">' + "".join(items) + '</div>'
                 st.markdown(plat_html, unsafe_allow_html=True)
+                st.caption(f"{len(comments)} units analyzed across {len(_by_src)} sources "
+                           f"(scraped {sum(len(v) for v in platform_breakdown.values())} before filtering).")
 
             if show_debug:
                 st.markdown('<div class="ih-section-hdr">Developer Debug</div>', unsafe_allow_html=True)

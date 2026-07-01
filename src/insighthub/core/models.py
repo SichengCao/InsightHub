@@ -53,6 +53,10 @@ class EntityRef:
     aspect_scores: Dict[str, float] = field(default_factory=dict)  # Entity-specific aspect scores
     is_primary: bool = True                         # False = mentioned for comparison/context only
     mention_context: str = ""                       # Short verbatim excerpt of how entity was mentioned
+    evidence_strength: float = 0.5                  # 0–1 credibility/depth of THIS mention:
+                                                    # detailed firsthand review or inclusion in a
+                                                    # credible ranking/award = high; casual/passing
+                                                    # mention = low. GPT-assigned, domain-agnostic.
 
 
 @dataclass
