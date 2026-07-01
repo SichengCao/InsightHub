@@ -51,7 +51,10 @@ class EntityRef:
     confidence: float                               # 0.0–1.0 extraction confidence
     sentiment_score: float = 3.0                    # Entity-specific 1–5 sentiment
     aspect_scores: Dict[str, float] = field(default_factory=dict)  # Entity-specific aspect scores
-    is_primary: bool = True                         # False = mentioned for comparison/context only
+    is_primary: bool = True                         # discussion FOCUS of the comment (unchanged semantics)
+    is_recommendation: bool = False                 # author endorses/recommends/lists this as a good
+                                                    # option (a positive "vote") — independent of focus;
+                                                    # lets list recommendations contribute fully.
     mention_context: str = ""                       # Short verbatim excerpt of how entity was mentioned
     evidence_strength: float = 0.5                  # 0–1 credibility/depth of THIS mention:
                                                     # detailed firsthand review or inclusion in a

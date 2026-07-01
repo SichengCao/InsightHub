@@ -1302,7 +1302,7 @@ if run_analysis and query.strip():
                     raw = service.scrape(query, limit)
                     cross_platform_manager._scrape_cache.set(ck, raw, expire=3600)
                 pc = [_normalize(r) for r in raw]
-                pc = llm_service.filter_relevant_comments(pc, query)
+                pc = llm_service.filter_relevant_comments(pc, query, intent=intent_schema.intent)
                 pa = llm_service.annotate_comments_with_gpt(pc, intent_schema.aspects, intent_schema.entity_type, query)
                 return platform.value, raw, pc, pa
 
@@ -1341,7 +1341,7 @@ if run_analysis and query.strip():
             # Step 3 — filter
             _update("Filtering for relevance…")
             comments = [_normalize(r) for r in reviews]
-            comments = llm_service.filter_relevant_comments(comments, query)
+            comments = llm_service.filter_relevant_comments(comments, query, intent=intent_schema.intent)
             _done.append(f"{len(comments)} relevant discussions")
             # Step 4 — annotate
             _update(f"Extracting opinions and scoring sentiment…")
@@ -1805,6 +1805,30 @@ if run_analysis and query.strip():
 
             if show_debug:
                 st.markdown('<div class="ih-section-hdr">Developer Debug</div>', unsafe_allow_html=True)
+                if intent_schema.intent == "RANKING":
+                    with st.expander("Entity flow — retrieved → filtered → extracted → ranked"):
+                        import pandas as pd
+                        from insighthub.core.diagnostics import entity_flow_table
+                        rows = entity_flow_table(reviews, comments, annos)
+                        # Tag outcome from the already-split payload so it reflects
+                        # exactly what the UI showed (confident vs also-mentioned).
+                        conf_names = {r["name"] for r in payload.get("ranking", [])}
+                        also_names = {r["name"] for r in payload.get("also_mentioned", [])}
+                        for row in rows:
+                            if row["entity"] in conf_names:
+                                row["outcome"] = "ranked"
+                            elif row["entity"] in also_names:
+                                row["outcome"] = "also-mentioned"
+                            else:
+                                row["outcome"] = "dropped"
+                        if rows:
+                            st.dataframe(pd.DataFrame(rows)[
+                                ["entity", "retrieved", "filtered", "extracted", "primary", "outcome"]
+                            ])
+                            st.caption("retrieved = raw units mentioning it · filtered = survived relevance · "
+                                       "extracted = GPT pulled it out · outcome = final placement.")
+                        else:
+                            st.caption("No entities extracted this run.")
                 with st.expander("Raw data — first 3 reviews"):
                     import pandas as pd
                     st.dataframe(pd.DataFrame(reviews[:3])[["id","author","upvotes","permalink","text"]])

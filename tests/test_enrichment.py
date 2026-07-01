@@ -186,6 +186,85 @@ def test_single_word_prefix_not_merged_when_ambiguous():
     assert names == ["Park", "Park Ave Diner", "Park Slope Ramen"]
 
 
+# ── 4d. deterministic tiebreak by ranking confidence ─────────────────────────
+
+def test_tied_stars_break_by_confidence_score():
+    """Two entities with equal stars must order by confidence_score, not by
+    dict/iteration order. Same sentiment+evidence -> equal stars; different
+    source-fit (reddit vs youtube-post SQM) -> different confidence."""
+    annos = [_anno("r1", "RedditPick", score=5.0, evidence=0.9),
+             _anno("yt1", "YoutubePick", score=5.0, evidence=0.9)]
+    comments = [{"id": "r1", "text": "x", "thread_id": "t1", "unit_type": "comment", "source": "reddit"},
+                {"id": "yt1", "text": "y", "thread_id": "v1", "unit_type": "post", "source": "youtube"}]
+    res = rank_entities(annos, {"r1": 10, "yt1": 10}, "restaurant", min_mentions=1,
+                        comments=comments, source_map={"r1": "reddit", "yt1": "youtube"},
+                        query="best", suppress_insufficient=False)
+    assert abs(res[0].overall_stars - res[1].overall_stars) < 0.001  # tied on stars
+    # Tie is broken deterministically by ranking confidence (higher first),
+    # never by iteration order.
+    assert res[0].confidence_score >= res[1].confidence_score
+    assert res[0].name == max(res, key=lambda e: e.confidence_score).name
+
+
+def test_filter_relevant_comments_accepts_intent_param():
+    """The ranking-aware signature must be back-compatible (empty input path)."""
+    from insighthub.services.llm import FallbackLLMService
+    svc = FallbackLLMService()
+    # empty input returns empty regardless of intent — no API call
+    assert svc.filter_relevant_comments([], "best pizza", intent="RANKING") == []
+
+
+# ── 4f. recommendation (vote) signal in aggregation ──────────────────────────
+
+def _anno_ent(cid, ent):
+    return GPTCommentAnno(comment_id=cid, overall_score=4.0, aspect_scores={}, entities=[ent])
+
+
+def test_recommendation_counts_fully_vs_context():
+    """A recommendation/vote (is_primary=False, is_recommendation=True) with no
+    explicit sentiment must score positive and beat a pure passing-context mention,
+    which stays neutral."""
+    rec = EntityRef(name="RecOnly", entity_type="restaurant", confidence=0.9,
+                    sentiment_score=3.0, is_primary=False, is_recommendation=True)
+    ctx = EntityRef(name="CtxOnly", entity_type="restaurant", confidence=0.9,
+                    sentiment_score=3.0, is_primary=False, is_recommendation=False)
+    annos = [_anno_ent("c1", rec), _anno_ent("c2", ctx)]
+    res = {r.name: r for r in rank_entities(
+        annos, {"c1": 10, "c2": 10}, "restaurant", min_mentions=1,
+        comments=[{"id": "c1", "text": "x"}, {"id": "c2", "text": "y"}],
+        source_map={"c1": "reddit", "c2": "reddit"}, query="best",
+        suppress_insufficient=False)}
+    assert res["RecOnly"].overall_stars > res["CtxOnly"].overall_stars
+    assert res["CtxOnly"].overall_stars == 3.0  # context stays neutral-blended
+
+
+def test_entityref_defaults_backward_compatible():
+    """is_recommendation defaults False so existing extraction/tests are unchanged."""
+    e = EntityRef(name="X", entity_type="restaurant", confidence=0.9)
+    assert e.is_recommendation is False and e.is_primary is True
+
+
+# ── 4e. entity flow diagnostics ──────────────────────────────────────────────
+
+def test_entity_flow_table_stages():
+    from insighthub.core.diagnostics import entity_flow_table
+    from insighthub.core.models import RankingItem
+    # raw mentions Mapo x3 and Atomix x1; filtered keeps 2 of the Mapo units
+    reviews = [{"id": "r1", "text": "Mapo is great"}, {"id": "r2", "text": "love Mapo"},
+               {"id": "r3", "text": "Mapo again"}, {"id": "r4", "text": "Atomix is elite"},
+               {"id": "r5", "text": "unrelated pizza"}]
+    comments = [{"id": "r1", "text": "Mapo is great"}, {"id": "r2", "text": "love Mapo"},
+                {"id": "r4", "text": "Atomix is elite"}]
+    annos = [_anno("r1", "Mapo"), _anno("r2", "Mapo"), _anno("r4", "Atomix")]
+    ranked = [RankingItem(name="Mapo", overall_stars=4.2, aspect_scores={}, mentions=2,
+                          confidence=0.9, quotes=[])]
+    rows = entity_flow_table(reviews, comments, annos, ranked=ranked, also_mentioned=[])
+    by = {r["entity"]: r for r in rows}
+    assert by["Mapo"]["retrieved"] == 3 and by["Mapo"]["filtered"] == 2
+    assert by["Mapo"]["extracted"] == 2 and by["Mapo"]["outcome"] == "ranked"
+    assert by["Atomix"]["retrieved"] == 1 and by["Atomix"]["outcome"] == "dropped"
+
+
 # ── 5. Reddit scraper emits post-units ───────────────────────────────────────
 
 def test_reddit_scraper_emits_post_unit():

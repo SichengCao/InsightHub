@@ -494,6 +494,7 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
     entity_stats = defaultdict(lambda: {
         'mentions': 0,
         'primary_mentions': 0,
+        'recommendation_mentions': 0,
         'confidence_sum': 0.0,
         'overall_scores': [],
         'aspect_scores': defaultdict(list),
@@ -532,18 +533,29 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
                 continue
 
             # ── Scoring ──────────────────────────────────────────────────────
-            # Use entity-specific sentiment_score (new field).
-            # Fall back to anno.overall_score only for primary entities; non-primary
-            # entities without an explicit score get a neutral 3.0 to avoid polluting
-            # rankings with misattributed comment-level sentiment.
+            # is_primary  = the comment's discussion focus.
+            # is_recommendation = the author endorses/lists this as a good option
+            #   (a positive vote) — counts fully even when it isn't the focus.
             is_primary = getattr(entity, 'is_primary', True)
+            is_recommendation = getattr(entity, 'is_recommendation', False)
+            # Fall back to a per-entity sentiment when GPT left it neutral/absent:
+            #   focus -> the comment's overall score; a recommendation -> a mild
+            #   positive (being recommended for "best X" IS a positive vote);
+            #   otherwise neutral, to avoid misattributing sentiment to a passing
+            #   comparison/context mention.
             entity_sentiment = getattr(entity, 'sentiment_score', None)
             if entity_sentiment is None or entity_sentiment == 3.0:
-                entity_sentiment = anno.overall_score if is_primary else 3.0
+                if is_primary:
+                    entity_sentiment = anno.overall_score
+                elif is_recommendation:
+                    entity_sentiment = 4.0
+                else:
+                    entity_sentiment = 3.0
 
-            # 4. Non-primary entities (comparison/context mentions) get 0.75× weight
-            # so they still contribute but don't dominate the ranking.
-            effective_weight = base_weight if is_primary else base_weight * 0.75
+            # A recommendation counts like a focus mention (full weight); only
+            # pure comparison/context mentions get the 0.75× discount.
+            counts_fully = is_primary or is_recommendation
+            effective_weight = base_weight if counts_fully else base_weight * 0.75
 
             # 5. Evidence quality: a detailed review or a credible ranking pulls the
             # score more than a casual name-drop. Scales weight in [0.4, 1.2].
@@ -576,6 +588,8 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
                     entity_stats[normalized_name]['candidate_quotes'].append((upvotes, quote))
             if is_primary:
                 entity_stats[normalized_name]['primary_mentions'] += 1
+            if is_recommendation:
+                entity_stats[normalized_name]['recommendation_mentions'] += 1
 
             # Use entity-specific aspect scores when available; fall back to
             # comment-level aspect scores only for primary entities.
@@ -627,6 +641,7 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
             s, t = entity_stats[_short], entity_stats[_long]
             t['mentions'] += s['mentions']
             t['primary_mentions'] += s['primary_mentions']
+            t['recommendation_mentions'] += s['recommendation_mentions']
             t['confidence_sum'] += s['confidence_sum']
             t['overall_scores'].extend(s['overall_scores'])
             t['comment_ids'].extend(s['comment_ids'])
@@ -648,11 +663,12 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
         if stats['mentions'] >= min_mentions:
             raw_stars = _weighted_mean(stats['overall_scores']) if stats['overall_scores'] else 3.0
 
-            # Entities that were NEVER a primary mention (only appeared in
-            # comparison lists or passing context) get blended toward neutral.
-            # This prevents "Course A, B, C are all great" from inflating B and C
-            # to the same 5★ as the comment's primary focus (Course A).
-            if stats['primary_mentions'] == 0:
+            # Entities that were NEVER a focus AND never an explicit recommendation
+            # (only appeared as a passing comparison/context mention) get blended
+            # toward neutral, to avoid inflating a compared-against foil. A genuine
+            # recommendation/vote is real positive signal, so it is NOT blended —
+            # this is what lets list recommendations contribute fully.
+            if stats['primary_mentions'] == 0 and stats['recommendation_mentions'] == 0:
                 raw_stars = 0.6 * raw_stars + 0.4 * 3.0
 
             # Evidence quality for this entity: blend of typical and best evidence,
@@ -748,8 +764,10 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
                 confidence_tier=tier,
             ))
 
-    # Sort by credibility-adjusted score descending, then by mentions descending
-    ranking_items.sort(key=lambda x: (-x.overall_stars, -x.mentions))
+    # Sort by credibility-adjusted score, then break ties deterministically by
+    # RANKING confidence (evidence volume/diversity/corroboration/authority) and
+    # finally raw mention count — never by dict/iteration order.
+    ranking_items.sort(key=lambda x: (-x.overall_stars, -x.confidence_score, -x.mentions))
     
     return ranking_items
 

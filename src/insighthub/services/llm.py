@@ -392,16 +392,29 @@ class OpenAIService:
                     raise
     
     def filter_entities_by_type(self, names: list, entity_type: str) -> list:
-        """Return only names whose primary identity matches entity_type, via a single GPT call."""
+        """Drop only names that are CLEARLY the wrong kind of thing.
+
+        This is a light sanity guard on top of annotation, which already extracts
+        with the target type AND the surrounding comment context. Judging a name in
+        isolation is strictly less informed, so it must FAIL OPEN: a name is removed
+        only when the model is confident it is something else (a person, a city, a
+        dish, a generic word). Ambiguous/unknown names (e.g. "Atomix", "Naro") are
+        kept — the context-aware extractor already vouched for them.
+        """
         if not names or not entity_type:
             return names
         label = entity_type.replace("_", " ")
         try:
             verdict = self.chat(
-                system="You are a fact-checker. Answer ONLY with a JSON array of booleans.",
+                system="You are a careful classifier. Answer ONLY with a JSON array of booleans.",
                 user=(
-                    f"For each name below, return true if it is primarily known as a {label} "
-                    f"and false if it is not. Use your world knowledge, not just the name itself.\n"
+                    f'A context-aware extractor has already identified each name below as a '
+                    f'"{label}". Your job is only to catch obvious mistakes.\n'
+                    f"For each name return FALSE only if you are CONFIDENT it is NOT a {label} "
+                    f"because it is clearly something else — a person's name, a city/region, a "
+                    f"dish/food item, a generic word, or a plainly different category of business. "
+                    f"Return TRUE if it is a {label}, could plausibly be one, or you are unsure. "
+                    f"When in doubt, return TRUE.\n"
                     f"Names: {names}\nReturn ONLY a JSON array like [true, false, true, ...]"
                 ),
                 temperature=0.0,
@@ -409,7 +422,11 @@ class OpenAIService:
             )
             import re as _re, json as _json
             flags = _json.loads(_re.search(r'\[.*\]', verdict, _re.S).group(0))
-            kept = [n for n, ok in zip(names, flags) if ok]
+            # Fail open per-element: only drop on an explicit False.
+            kept = [n for n, ok in zip(names, flags) if ok is not False]
+            # If the model returned the wrong length, keep everything.
+            if len(flags) != len(names):
+                kept = names
             logger.info(f"Entity type filter: {len(kept)}/{len(names)} kept for {entity_type}")
             return kept
         except Exception as e:
@@ -1178,10 +1195,21 @@ Return JSON:
         re.IGNORECASE,
     )
 
-    def filter_relevant_comments(self, comments: List[Dict], query: str, threshold: float = 0.65) -> List[Dict]:
-        """Drop comments that are not topically relevant to the query using GPT batch evaluation."""
+    def filter_relevant_comments(self, comments: List[Dict], query: str, threshold: float = 0.65, intent: str = None) -> List[Dict]:
+        """Drop comments that are not topically relevant to the query using GPT batch evaluation.
+
+        For RANKING queries the filter is deliberately looser: a recommendation,
+        vote, short endorsement, best-of list, or comparison is legitimate signal
+        for "what does the internet think is best", so we keep those instead of
+        demanding a detailed firsthand review. Non-ranking intents keep the
+        stricter review-mining behavior.
+        """
         if not comments:
             return comments
+
+        is_ranking = (intent or "").upper() == "RANKING"
+        # Looser acceptance bar and score cutoff for ranking/recommendation queries.
+        eff_threshold = 0.45 if is_ranking else threshold
 
         # Tag and exclude sponsored/gifted reviews before relevance scoring.
         # This prevents undisclosed-bias content from influencing rankings.
@@ -1229,17 +1257,31 @@ Return JSON:
         batch_size = 20
         batches = [comments[i:i + batch_size] for i in range(0, len(comments), batch_size)]
 
-        system_msg = (
-            "You are a strict relevance filter for a consumer intelligence tool. "
-            "Mark a comment RELEVANT only when it contains concrete firsthand opinions or "
-            "experiences about the specific entities, venues, or products the user is asking about. "
-            "Mark NOT RELEVANT when the comment: discusses unrelated topics (politics, economy, "
-            "weather, news, other businesses, other cities/countries); mentions the query subject "
-            "only in passing or as a comparison; discusses the same category in a different location; "
-            "or provides generic city commentary with no direct connection to the query. "
-            "Be strict — a comment that could belong in a hundred different threads is NOT relevant. "
-            "Return ONLY a JSON array of objects, one per comment, in input order."
-        )
+        if is_ranking:
+            system_msg = (
+                "You are a relevance filter for a recommendation-ranking tool. The user wants to "
+                "know which specific options are best for their query. Mark a comment RELEVANT if it "
+                "gives ANY signal about which option is good or bad — a recommendation, a vote, a "
+                "short endorsement ('Mapo is the best'), a best-of/ranking list, a comparison "
+                "('X is better than Y', where BOTH are on-topic), or a firsthand review. Brief is "
+                "fine; it does not need detail. Mark NOT RELEVANT only when the comment is genuinely "
+                "off-topic: a different category or a different location than the query, unrelated "
+                "chatter (politics, weather, news), or a bare question/logistics with no "
+                "recommendation of any specific option. When a comment names a relevant option "
+                "positively or negatively, keep it. Return ONLY a JSON array, one per comment, in order."
+            )
+        else:
+            system_msg = (
+                "You are a strict relevance filter for a consumer intelligence tool. "
+                "Mark a comment RELEVANT only when it contains concrete firsthand opinions or "
+                "experiences about the specific entities, venues, or products the user is asking about. "
+                "Mark NOT RELEVANT when the comment: discusses unrelated topics (politics, economy, "
+                "weather, news, other businesses, other cities/countries); mentions the query subject "
+                "only in passing or as a comparison; discusses the same category in a different location; "
+                "or provides generic city commentary with no direct connection to the query. "
+                "Be strict — a comment that could belong in a hundred different threads is NOT relevant. "
+                "Return ONLY a JSON array of objects, one per comment, in input order."
+            )
 
         def _evaluate_batch(batch_idx: int, batch: list) -> tuple:
             batch_text = ""
@@ -1250,13 +1292,24 @@ Return JSON:
                 title_ctx = f'[Thread: "{post_title[:120]}"] ' if post_title else ""
                 batch_text += f"Comment {j + 1}: {title_ctx}{truncated}\n\n"
 
+            if is_ranking:
+                _criterion = (
+                    f'- relevant: true if the comment gives ANY opinion, recommendation, vote, '
+                    f'endorsement, comparison, or best-of/ranking mention about a specific option '
+                    f'for "{query}" — even a brief one. Set false only for off-topic content, a '
+                    f'different location/category, or a bare question/logistics with no recommendation'
+                )
+            else:
+                _criterion = (
+                    f'- relevant: true ONLY if the comment contains specific opinions or recommendations '
+                    f'directly about "{query}" — NOT for general city news, politics, other cuisines, '
+                    f'steakhouses, bagels, or content only tangentially related'
+                )
             prompt = (
                 f'User query: "{query}"\n\n'
                 f"{batch_text}"
                 f'For each comment return:\n'
-                f'- relevant: true ONLY if the comment contains specific opinions or recommendations '
-                f'directly about "{query}" — NOT for general city news, politics, other cuisines, '
-                f'steakhouses, bagels, or content only tangentially related\n'
+                f'{_criterion}\n'
                 f'- relevance_score: 0.0 to 1.0\n'
                 f'- reason: one short phrase\n\n'
                 f'Return a JSON array [{{"relevant": bool, "relevance_score": float, "reason": str}}, ...] '
@@ -1292,7 +1345,7 @@ Return JSON:
                 score = verdict.get("relevance_score", 0.0)
                 is_relevant = verdict.get("relevant", False)
                 all_scored.append((comment, score, is_relevant))
-                if is_relevant and score >= threshold:
+                if is_relevant and score >= eff_threshold:
                     kept.append(comment)
                 else:
                     dropped += 1
@@ -1321,20 +1374,26 @@ Return JSON:
         return kept + enriched_units
 
     def validate_entity_locations(self, entities: list, query: str) -> list:
-        """Remove ranked entities whose geographic location does not match the query's location context."""
+        """Remove ranked entities that are CONFIDENTLY in a different location.
+
+        Like the type filter, this judges names in isolation, so it must FAIL OPEN:
+        an entity is dropped only when the model is sure it is elsewhere. An unknown
+        or ambiguous venue is kept — the context-aware extractor already found it in
+        discussions about this query's location.
+        """
         if not entities:
             return entities
         names = [e.name for e in entities]
         try:
             verdict = self.chat(
-                system="You are a geography fact-checker. Answer ONLY with a JSON array of booleans.",
+                system="You are a careful geography checker. Answer ONLY with a JSON array of booleans.",
                 user=(
                     f'User query: "{query}"\n'
-                    f"For each entity/venue below, return true if it is located in the geographic area "
-                    f"specified by the query, and false if it is in a DIFFERENT location. "
-                    f"If the query has no specific location, return true for all.\n"
-                    f"Use your world knowledge, not just the name.\n"
-                    f"Entities: {names}\n"
+                    f"For each venue below, return FALSE only if you are CONFIDENT it is located in a "
+                    f"DIFFERENT geographic area than the query specifies. Return TRUE if it is in the "
+                    f"query's area, if the query has no specific location, or if you are unsure where it "
+                    f"is. When in doubt, return TRUE.\n"
+                    f"Venues: {names}\n"
                     f"Return ONLY a JSON array like [true, false, true, ...]"
                 ),
                 temperature=0.0,
@@ -1342,7 +1401,10 @@ Return JSON:
             )
             import re as _re, json as _json
             flags = _json.loads(_re.search(r'\[.*\]', verdict, _re.S).group(0))
-            kept = [e for e, ok in zip(entities, flags) if ok]
+            if len(flags) != len(entities):
+                return entities  # length mismatch -> keep all
+            # Fail open per-element: only drop on an explicit False.
+            kept = [e for e, ok in zip(entities, flags) if ok is not False]
             logger.info(f"Location filter: {len(kept)}/{len(entities)} entities kept for '{query}'")
             return kept
         except Exception as e:
@@ -1470,8 +1532,18 @@ ENTITY EXTRACTION RULES (critical for accuracy):
 - For EACH entity provide a SEPARATE sentiment_score (1-5) based solely on how the author
   feels about THAT specific entity -- not the comment's overall tone.
   Example: "iPhone 15 blows away the Samsung S24" -> iPhone 15 sentiment=5, Samsung S24 sentiment=2
-- Set is_primary=true for the entity that is the main subject/focus.
-  Set is_primary=false for entities mentioned only as comparisons or context.
+- EXTRACT EVERY NAMED OPTION. If the comment lists multiple options — including a bare
+  comma- or hyphen-separated list with no description (e.g. "Jongro, Nubiani, New Wonjo" or
+  "- Mapo - Hahm Ji Bach - Nubiani") — you MUST return an entity for EVERY name, not just
+  the first. Recommendation lists are the most important signal for ranking; never truncate them.
+- is_primary: true for the entity that is the comment's main subject/FOCUS. It is fine for a
+  comment to have no primary (a plain list) or one primary. Do NOT mark every listed name primary.
+- is_recommendation: true when the author is recommending, endorsing, upvoting, or listing the
+  entity as a GOOD option for the query — even briefly or in a bare list. This is a positive
+  "vote" and is INDEPENDENT of is_primary. Set it false for entities named only as a negative
+  comparison, a warning, or neutral context. A recommended entity implies positive sentiment:
+  give it sentiment_score >= 4 unless the author expresses a specific reservation.
+- Set is_primary=false for entities mentioned only as comparisons or context.
 - Include mention_context: a verbatim excerpt (~10 chars) showing how the entity was mentioned.
 - ALWAYS write entity names in English or romanized Latin script. If a name appears in a
   non-Latin script (Korean, Chinese, Japanese, Arabic, etc.), romanize it to its standard
@@ -1548,6 +1620,7 @@ Return a JSON array -- one object per comment, in input order:
                 "sentiment_score": 4.5,
                 "aspect_scores": {{"quality": 5, "value": 3}},
                 "is_primary": true,
+                "is_recommendation": true,
                 "mention_context": "iPhone 15 Pro camera is outstanding",
                 "evidence_strength": 0.9
             }},
@@ -1558,6 +1631,7 @@ Return a JSON array -- one object per comment, in input order:
                 "sentiment_score": 2.0,
                 "aspect_scores": {{"quality": 3, "value": 2}},
                 "is_primary": false,
+                "is_recommendation": false,
                 "mention_context": "compared to my old Samsung which felt cheap",
                 "evidence_strength": 0.4
             }}
@@ -1566,11 +1640,15 @@ Return a JSON array -- one object per comment, in input order:
     }}
 ]"""
 
+                # Scale the output budget with batch size so entity-dense batches
+                # (long recommendation lists) don't truncate the JSON tail and
+                # silently drop the last comments' entities.
+                _out_tokens = min(4096, max(2500, len(batch) * 320))
                 response = self.chat(
                     system=system_msg,
                     user=prompt,
                     temperature=0.2,
-                    max_tokens=2500,
+                    max_tokens=_out_tokens,
                 )
 
                 batch_annotations = _safe_json_loads(response)
@@ -1594,6 +1672,7 @@ Return a JSON array -- one object per comment, in input order:
                             sentiment_score=float(ed.get("sentiment_score", annotation_data.get("overall_score", 3.0))),
                             aspect_scores={k: float(v) for k, v in (ed.get("aspect_scores") or {}).items()},
                             is_primary=bool(ed.get("is_primary", True)),
+                            is_recommendation=bool(ed.get("is_recommendation", False)),
                             mention_context=str(ed.get("mention_context", ""))[:100],
                             evidence_strength=_ev,
                         ))
@@ -1700,8 +1779,12 @@ class FallbackLLMService:
         """Fallback: no LLM available — let caller use its neutral default."""
         return ""
 
-    def filter_relevant_comments(self, comments: list, query: str, threshold: float = 0.35) -> list:
-        """Fallback: return all comments unchanged (no LLM available)."""
+    def filter_relevant_comments(self, comments: list, query: str, threshold: float = 0.35, intent: str = None) -> list:
+        """Fallback: return all comments unchanged (no LLM available).
+
+        Accepts (and ignores) `intent` for signature parity with OpenAIService so
+        callers can always pass it.
+        """
         return comments
 
     def validate_entity_locations(self, entities: list, query: str) -> list:
