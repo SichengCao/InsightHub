@@ -595,6 +595,33 @@ class TestEntityDeduplication:
         assert merged.mentions == 7, \
             f"Merged entity should have 3+4=7 mentions, got {merged.mentions}"
 
+    def test_spaceless_alias_merged(self):
+        """'Yakini Q' and 'YakiniQ' differ only in spacing — one entity."""
+        annos = (
+            [make_anno(f"s{i}", entities=[make_entity("Yakini Q")]) for i in range(3)]
+            + [make_anno(f"l{i}", entities=[make_entity("YakiniQ")]) for i in range(2)]
+        )
+        result = _rank(annos)
+        yakini = [e for e in result if "yakini" in e.name.lower()]
+        assert len(yakini) == 1, \
+            f"Spacing-only aliases should merge into one entity, got: {[e.name for e in result]}"
+        assert yakini[0].mentions == 5
+
+    def test_spaceless_alias_chain_into_longer_name(self):
+        """Spaceless merge target absorbed by a prefix pass — stats must survive the chain."""
+        annos = (
+            [make_anno(f"a{i}", entities=[make_entity("YakiniQ")]) for i in range(2)]
+            + [make_anno(f"b{i}", entities=[make_entity("Yakini Q")]) for i in range(3)]
+            + [make_anno(f"c{i}", entities=[make_entity("Yakini Q Korean BBQ")]) for i in range(2)]
+        )
+        result = _rank(annos)
+        yakini = [e for e in result if "yakini" in e.name.lower()]
+        assert len(yakini) == 1, \
+            f"All three variants should collapse to one entity, got: {[e.name for e in result]}"
+        assert yakini[0].name == "Yakini Q Korean BBQ"
+        assert yakini[0].mentions == 7, \
+            f"Chained merge should keep all 2+3+2=7 mentions, got {yakini[0].mentions}"
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 7. rank_entities_with_relaxation

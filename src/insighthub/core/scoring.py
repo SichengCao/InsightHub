@@ -607,6 +607,22 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
     _names = sorted(entity_stats.keys(), key=lambda n: len(set(n.split())))
     _absorbed: dict = {}
 
+    # Pass 0 — spacing-only aliases: "yakini q" and "yakiniq" are the same name
+    # typed differently, so canonicalize by the space-stripped form before the
+    # word-based passes (which can't see them: neither is a word-subset of the
+    # other). Keep the variant with the most mentions; ties prefer the spaced
+    # (more readable) form, then alphabetical for determinism.
+    _spaceless = defaultdict(list)
+    for _n in _names:
+        _spaceless[_n.replace(" ", "")].append(_n)
+    for _variants in _spaceless.values():
+        if len(_variants) < 2:
+            continue
+        _keep = max(_variants, key=lambda n: (entity_stats[n]['mentions'], len(n.split()), n))
+        for _v in _variants:
+            if _v != _keep:
+                _absorbed[_v] = _keep
+
     # How many multi-word names start with each first word — used to only merge a
     # bare single word into a longer name when that longer name is UNAMBIGUOUS
     # (exactly one candidate). This merges "cote" → "cote korean steakhouse" but
@@ -637,6 +653,11 @@ def rank_entities(annos: List[GPTCommentAnno], upvote_map: Dict[str, int], entit
                 break
 
     for _short, _long in _absorbed.items():
+        # Resolve chains: a Pass-0 target may itself be absorbed by a prefix
+        # pass ("yakiniq" → "yakini q" → "yakini q korean bbq"); merging into
+        # the final survivor keeps stats regardless of dict iteration order.
+        while _long in _absorbed:
+            _long = _absorbed[_long]
         if _short in entity_stats and _long in entity_stats:
             s, t = entity_stats[_short], entity_stats[_long]
             t['mentions'] += s['mentions']
