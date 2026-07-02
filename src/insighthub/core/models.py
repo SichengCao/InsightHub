@@ -85,6 +85,7 @@ class RankingItem:
     data_confidence: str = "low"       # volume-based: "very_low" | "low" | "medium" | "high"
     confidence_score: float = 0.0      # four-factor composite [0, 1]
     confidence_tier: str = "mentioned" # "established" | "emerging" | "mentioned" | "insufficient"
+    image_url: Optional[str] = None    # enriched entity photo (Google Places → Yelp Fusion); None if enrichment failed
 
 
 @dataclass
