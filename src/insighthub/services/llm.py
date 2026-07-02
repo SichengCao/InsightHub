@@ -105,7 +105,7 @@ Produce JSON with exactly these keys:
     "[product] worth it", "[product] thoughts", "[product] impressed", "[product] upgrade".
     AVOID terms that attract support posts like "[product] help", "[product] problem", "[product] fix".
   * PRIORITIZE specificity over recall - better to get fewer, more relevant results
-- "subreddits": 2-4 names (no "r/" prefix). AVOID "all" unless absolutely necessary. PRIORITIZE the most relevant and active subreddits.
+- "subreddits": 3-6 names (no "r/" prefix). AVOID "all" unless absolutely necessary. PRIORITIZE the most relevant and active subreddits; include both broad city/topic communities and niche ones dedicated to the query's category.
 - "time_filter": one of ["day","week","month","year","all"].
 - "strategies": 1-3 from ["relevance","top","new"].
 - "min_comment_score": integer 0..50.
@@ -113,12 +113,37 @@ Produce JSON with exactly these keys:
 - "comment_must_patterns": Always empty list [].
 
 Heuristics by inferred intent:
-- RANKING -> strategies: ["top","relevance"]; time_filter: "all" (recommendations are evergreen -- never use "week" or "month"); per_post_top_n: 5-8; min_comment_score: 3-5 (higher for quality).
+- RANKING -> strategies: ["top","relevance"]; time_filter: "all" (recommendations are evergreen -- never use "week" or "month"); per_post_top_n: 8-12; min_comment_score: 0-2 (recall first -- a 1-upvote comment naming a great option is still evidence; downstream filters handle noise).
 - SOLUTION -> strategies: ["new","relevance"]; time_filter: "week" or "month"; per_post_top_n: 6-10; min_comment_score: 0-2.
 - GENERIC -> strategies: ["relevance","top"]; time_filter: "month" or "year"; per_post_top_n: 5-8; min_comment_score: 2-4 (higher for quality).
 
 Output strict JSON only. No comments, no trailing commas.
 """).strip()
+
+def _salvage_json_array(s: str):
+    """Recover the complete leading objects of a TRUNCATED JSON array.
+
+    When a response gets cut off by max_tokens mid-array, _safe_json_loads
+    finds no closing bracket and gives up. Here we trim to the last complete
+    object and close the array, so a truncated tail costs only the missing
+    elements instead of the whole batch. Returns a list or None.
+    """
+    if not s:
+        return None
+    start = s.find("[")
+    if start == -1:
+        return None
+    frag = s[start:]
+    while True:
+        last = frag.rfind("}")
+        if last == -1:
+            return None
+        try:
+            out = json.loads(frag[:last + 1] + "]")
+            return out if isinstance(out, list) and out else None
+        except Exception:
+            frag = frag[:last]  # drop the partial trailing object, try one earlier
+
 
 def _safe_json_loads(s: str):
     """Safely parse JSON from LLM response, handling common formatting issues."""
@@ -477,7 +502,7 @@ class OpenAIService:
                 return c
         return ""
 
-    def plan_reddit_search(self, query: str, max_subreddits: int = 4) -> dict:
+    def plan_reddit_search(self, query: str, max_subreddits: int = SearchConstants.DEFAULT_SUBREDDITS_UI) -> dict:
         """Plan Reddit search strategy using LLM."""
         try:
             sys = "You output strict JSON to plan Reddit searches."
@@ -499,10 +524,21 @@ class OpenAIService:
             plan["subreddits"] = list(dict.fromkeys(subs))[:max_subreddits]
 
             # Retrieval knobs are pinned (mechanical, not domain decisions) for a
-            # STABLE, repeatable candidate pool: top posts over a 1-year window
-            # don't shift like "relevance"/"new" or a rolling month do.
-            plan["time_filter"] = "year"
-            plan["strategies"] = ["top"]
+            # STABLE, repeatable candidate pool.
+            # NOTE: "top" alone is a trap — Reddit's search matches loosely, so
+            # top-sort surfaces the subreddits' most-upvoted posts that merely
+            # contain the query's common words (city megathreads, news) while the
+            # actually-relevant threads never appear. "relevance" finds the right
+            # threads; "top" adds upvote-weighted volume. Determinism is preserved
+            # downstream by the stable sort over the pooled union.
+            #
+            # time_filter is GPT's call (validated): RANKING wants "all" — the
+            # canonical best-of threads are evergreen and often >1 year old, so a
+            # pinned "year" window silently excluded them. "all" is also the most
+            # stable window (a rolling year shifts daily).
+            if plan.get("time_filter") not in ("day", "week", "month", "year", "all"):
+                plan["time_filter"] = "all"
+            plan["strategies"] = ["relevance", "top"]
             plan["min_comment_score"] = max(0, int(plan.get("min_comment_score", 1)))  # Default configuration: score 1
             plan["per_post_top_n"] = min(15, max(3, int(plan.get("per_post_top_n", 12))))  # denser per-thread pull → higher mention counts
 
@@ -515,9 +551,9 @@ class OpenAIService:
             return {
                 "terms": [query],
                 "subreddits": ["AskReddit"],  # More focused than "all"
-                "time_filter": "year",       # stable, repeatable window
-                "strategies": ["top"],       # deterministic sort
-                "min_comment_score": 3,  # Higher quality default
+                "time_filter": "all",        # evergreen recommendations; most stable window
+                "strategies": ["relevance", "top"],
+                "min_comment_score": 1,  # recall first; downstream filters handle noise
                 "per_post_top_n": 12,  # denser per-thread pull
                 "comment_must_patterns": []  # GPT sentiment analysis handles quality
             }
@@ -1243,14 +1279,21 @@ Return JSON:
         # Eliminates comments that share a keyword with the query but discuss
         # an unrelated topic (e.g. arm-injury thread mentioning iPhone).
         # Runs before the GPT call to save cost and latency.
-        from ..core.relevance import pre_filter_comments
-        comments, pre_filter_stats = pre_filter_comments(comments, query)
-        if pre_filter_stats.get("pre_filter_applied"):
-            logger.info(
-                f"Pre-filter: {pre_filter_stats['kept']}/{pre_filter_stats['total_input']} "
-                f"kept  drop_rate={pre_filter_stats['drop_rate']:.1%}  "
-                f"terms={pre_filter_stats['query_terms']}"
-            )
+        #
+        # SKIPPED for RANKING: the answers there are proper nouns ("Noz is worth
+        # every penny") that share no tokens with the query, while off-topic city
+        # chatter matches generic tokens like "new york" — token overlap
+        # anti-selects. The GPT filter below judges with thread-title context and
+        # is cheap at ranking corpus sizes (a few 20-comment batches).
+        if not is_ranking:
+            from ..core.relevance import pre_filter_comments
+            comments, pre_filter_stats = pre_filter_comments(comments, query)
+            if pre_filter_stats.get("pre_filter_applied"):
+                logger.info(
+                    f"Pre-filter: {pre_filter_stats['kept']}/{pre_filter_stats['total_input']} "
+                    f"kept  drop_rate={pre_filter_stats['drop_rate']:.1%}  "
+                    f"terms={pre_filter_stats['query_terms']}"
+                )
 
         # The pre-filter (or sponsored exclusion above) may have emptied the
         # list. Bail out before building batches — an empty `batches` would make
@@ -1291,7 +1334,11 @@ Return JSON:
             batch_text = ""
             for j, comment in enumerate(batch):
                 text = comment.get("text", "")
-                truncated = text[:400] + "..." if len(text) > 400 else text
+                # Unit-aware window: list-posts and transcripts bury their
+                # recommendations deep — a 400-char peek made GPT (correctly)
+                # call them "no recommendations" and drop real evidence.
+                cap = 1200 if comment.get("unit_type") in ("post", "transcript") else 400
+                truncated = text[:cap] + "..." if len(text) > cap else text
                 post_title = comment.get("post_title", "") or ""
                 title_ctx = f'[Thread: "{post_title[:120]}"] ' if post_title else ""
                 batch_text += f"Comment {j + 1}: {title_ctx}{truncated}\n\n"
@@ -1315,18 +1362,44 @@ Return JSON:
                 f'For each comment return:\n'
                 f'{_criterion}\n'
                 f'- relevance_score: 0.0 to 1.0\n'
-                f'- reason: one short phrase\n\n'
+                f'- reason: 2-4 words\n\n'
                 f'Return a JSON array [{{"relevant": bool, "relevance_score": float, "reason": str}}, ...] '
                 f'with exactly {len(batch)} elements in input order.'
             )
-            try:
-                response = self.chat(system=system_msg, user=prompt, temperature=0.0, max_tokens=len(batch) * 40 + 20)
+
+            def _ask(cap: int):
+                response = self.chat(system=system_msg, user=prompt, temperature=0.0, max_tokens=cap)
                 results = _safe_json_loads(response)
-                if isinstance(results, list) and len(results) >= len(batch):
+                if isinstance(results, list) and results:
+                    return results
+                return _salvage_json_array(response)
+
+            try:
+                # Generous budget: ~30-40 tokens per verdict object; the old
+                # len*40+20 cap truncated 20-comment batches mid-array, the parse
+                # failed, and the whole batch was silently dropped (fail-closed) —
+                # entire platforms vanished from results.
+                results = _ask(len(batch) * 60 + 100)
+                if not results or len(results) < len(batch):
+                    logger.warning(
+                        f"Relevance batch {batch_idx}: short/unparseable verdicts "
+                        f"({len(results) if results else 0}/{len(batch)}) — retrying with larger budget")
+                    retry = _ask(len(batch) * 90 + 200)
+                    if retry and (not results or len(retry) > len(results)):
+                        results = retry
+                if results:
+                    if len(results) < len(batch):
+                        # Keep the verdicts we did get; fail-closed only for the
+                        # truncated tail instead of the entire batch.
+                        logger.warning(
+                            f"Relevance batch {batch_idx}: padding {len(batch) - len(results)} "
+                            f"missing verdicts as not-relevant")
+                        results = results + [{"relevant": False, "relevance_score": 0.0}] * (len(batch) - len(results))
                     return batch_idx, results[:len(batch)]
             except Exception as e:
                 logger.warning(f"Relevance filter batch {batch_idx} failed: {e}")
             # fail-closed: drop all comments in this batch rather than passing noise
+            logger.warning(f"Relevance batch {batch_idx}: no usable verdicts — dropping {len(batch)} comments")
             return batch_idx, [{"relevant": False, "relevance_score": 0.0}] * len(batch)
 
         results_by_idx: dict = {}
@@ -1501,13 +1574,18 @@ Return JSON:
                 for j, comment in enumerate(batch):
                     text = comment.get('text', '') if isinstance(comment, dict) else getattr(comment, 'text', '')
                     ut = comment.get('unit_type', 'comment') if isinstance(comment, dict) else getattr(comment, 'unit_type', 'comment')
+                    title = comment.get('post_title', '') if isinstance(comment, dict) else getattr(comment, 'post_title', '')
                     # Posts/transcripts carry far more recommendations than a single
                     # comment, so give them a larger window; bump comments too — the
                     # old 150-char cap was dropping entities listed later in a comment.
                     _lim = 1200 if ut in ("post", "transcript") else 300
                     truncated = text[:_lim] + "..." if len(text) > _lim else text
                     label = {"post": "Post", "transcript": "Transcript"}.get(ut, "Comment")
-                    batch_text += f"{label} {j+1}: {truncated}\n\n"
+                    # Thread/video title: without it, comments that praise the
+                    # context's subject without naming it ("worth every penny")
+                    # can never be attributed to an entity.
+                    title_ctx = f' [Context: "{str(title)[:100]}"]' if (title and ut != "post") else ""
+                    batch_text += f"{label} {j+1}:{title_ctx} {truncated}\n\n"
 
                 prompt = f"""Analyze these Reddit comments and provide structured annotations.
 
@@ -1521,6 +1599,13 @@ Aspects to score: {aspects_str}
 ENTITY EXTRACTION RULES (critical for accuracy):
 - Extract specific named VENUES, PRODUCTS, or BUSINESSES that the author directly experienced.
   These are proper nouns representing reviewable things: golf courses, restaurants, phones, hotels.
+- CONTEXT ATTRIBUTION: a comment may carry [Context: "..."] — the title of the thread or video
+  it was posted under. When the Context names exactly ONE specific entity and the comment clearly
+  refers to that subject without naming it ("this place is amazing", "worth every penny",
+  "their omakase blew my mind"), extract that entity from the Context with the comment's
+  sentiment, confidence <= 0.7, and mention_context quoting the comment. Do NOT do this when
+  the Context names multiple options, a generic topic, or no specific entity — never invent an
+  entity a generic title does not name.
 - If EXTRACT ONLY is specified above, only extract entities of that exact category.
   Skip people, instructors, media channels, brands, events, or anything not of that category.
   Example: EXTRACT ONLY golf_course -> extract "Harding Park" but NOT "Tom Hsieh" or "Fried Egg Golf".
@@ -1562,8 +1647,11 @@ SENTIMENT GROUNDING RULES:
   Restaurant: food quality, service, atmosphere, price. Product: performance, build, features.
 - Do NOT score based on peripheral details: logos, aesthetics, travel context, or any text
   that does not describe hands-on experience with the entity.
-- If a comment only names an entity without reviewing it (e.g. lists it, mentions its logo,
-  or references it geographically only), set confidence=0.4.
+- CONFIDENCE measures EXTRACTION certainty (is this really a named entity of the right
+  category?), NOT review depth. A bare name-drop in a recommendation list is still a
+  certain extraction: give it confidence 0.7+ when the name is unambiguous, and express
+  its weakness through a LOW evidence_strength (0.2-0.4) instead. Reserve confidence < 0.5
+  for genuinely uncertain extractions (ambiguous names, possible typos, unclear category).
 - AUTHORITATIVE ENDORSEMENT IS POSITIVE: if an entity is listed in a CREDIBLE external ranking,
   award, or expert/critic best-of list (e.g. a published "best restaurants" list, a Michelin
   star, "World's 50 Best", a major newspaper's top-100), treat that inclusion as a STRONG

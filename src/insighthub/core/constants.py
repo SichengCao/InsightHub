@@ -6,7 +6,7 @@ class SearchConstants:
     
     # API Rate Limiting (Optimized for speed)
     REDDIT_API_DELAY = 0.02  # seconds between API calls (reduced from 0.05)
-    REDDIT_SEARCH_LIMIT = 20  # posts per search call (reduced from 30 for faster searches)
+    REDDIT_SEARCH_LIMIT = 30  # posts per search call — recall first; the GPT relevance filter prunes downstream
     REDDIT_MAX_RAW_COMMENTS = 3  # multiplier for comment collection (reduced from 4 for early termination)
     
     # Quality Filtering
@@ -56,10 +56,10 @@ class SearchConstants:
     
     MAX_SUBREDDITS_UI = 8  # maximum subreddits user can request (reduced from 12)
     MIN_SUBREDDITS_UI = 2  # minimum subreddits user can request (reduced from 3)
-    DEFAULT_SUBREDDITS_UI = 4  # default subreddit count (reduced from 6)
+    DEFAULT_SUBREDDITS_UI = 6  # default subreddit count — broader community coverage by default
     
     # Search Strategy Limits (Optimized for speed)
-    MAX_SEARCH_TERMS = 4  # maximum search terms per query (reduced from 8)
+    MAX_SEARCH_TERMS = 6  # maximum search terms per query — broader coverage, filtered downstream
     MAX_SEARCH_STRATEGIES = 2  # maximum search strategies (reduced from 3)
     MAX_COMMENT_PATTERNS = 2  # maximum regex patterns (reduced from 3)
     MAX_POSTS_PER_SUBREDDIT = 15  # posts per subreddit per search (increased for better coverage)
@@ -69,7 +69,7 @@ class PromptConstants:
     """Constants for LLM prompts and templates."""
     
     # Prompt Versions (for cache invalidation)
-    PLANNER_PROMPT_VERSION = "v2.1"
+    PLANNER_PROMPT_VERSION = "v2.2"  # recall-first: 3-6 subreddits, min_comment_score 0-2, more terms
     
     # Response Limits
     MAX_ASPECTS_PER_QUERY = 6  # maximum aspects to extract
@@ -108,6 +108,7 @@ class FileConstants:
     """Constants for file operations."""
     
     CACHE_DIR = "cache/llm_cache"  # cache directory
+    IMAGE_CACHE_DIR = "cache/image_cache"  # entity image_url enrichment cache
     CONFIG_FILE = ".env.example"  # configuration template file
     LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 

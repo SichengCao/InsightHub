@@ -14,6 +14,30 @@ from ..core.config import settings
 logger = logging.getLogger(__name__)
 
 
+def thumbnail_from_id(video_id: str) -> str:
+    """Construct a thumbnail URL from a bare video ID (API-free fallback)."""
+    return f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+
+
+def _fmt_duration(iso: str) -> str:
+    """ISO-8601 duration (PT1H12M34S) → display string (1:12:34 / 12:34)."""
+    import re as _re
+    m = _re.fullmatch(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", iso or "")
+    if not m:
+        return ""
+    h, mi, s = (int(x or 0) for x in m.groups())
+    return f"{h}:{mi:02d}:{s:02d}" if h else f"{mi}:{s:02d}"
+
+
+def _best_thumbnail(thumbnails: dict, video_id: str) -> str:
+    """Pick the highest-resolution thumbnail the API returned, else construct one."""
+    for size in ("maxres", "standard", "high", "medium", "default"):
+        url = (thumbnails.get(size) or {}).get("url")
+        if url:
+            return url
+    return thumbnail_from_id(video_id)
+
+
 def _strip_html(text: str) -> str:
     """Remove HTML tags from YouTube comment text and normalise whitespace."""
     if not text:
@@ -69,16 +93,17 @@ class YouTubeService:
             for item in search_response.get("items", []):
                 video_id = item["id"]["videoId"]
                 snippet = item["snippet"]
-                
+
                 videos.append({
                     "video_id": video_id,
                     "title": snippet["title"],
                     "description": snippet["description"],
                     "channel_title": snippet["channelTitle"],
                     "published_at": snippet["publishedAt"],
-                    "thumbnail": snippet["thumbnails"]["default"]["url"]
+                    "thumbnail": _best_thumbnail(snippet.get("thumbnails", {}), video_id),
                 })
-            
+
+            self._enrich_video_stats(videos)
             logger.info(f"Found {len(videos)} videos for query: {query}")
             return videos
             
@@ -86,6 +111,29 @@ class YouTubeService:
             logger.error(f"YouTube search failed: {e}")
             return self._get_mock_videos(query, max_results)
     
+    def _enrich_video_stats(self, videos: List[Dict[str, Any]]) -> None:
+        """Attach view_count, duration, and the FULL description to each video
+        via one batched videos().list call (1 quota unit). search().list only
+        returns a ~160-char description stub, but full food/travel video
+        descriptions typically name every place featured — a strong entity
+        signal, and the main YouTube evidence when transcripts are blocked.
+        Fail-open: missing stats leave view_count=0 / duration=""."""
+        if not videos or not self.youtube:
+            return
+        try:
+            ids = ",".join(v["video_id"] for v in videos if v.get("video_id"))
+            resp = self.youtube.videos().list(part="snippet,statistics,contentDetails", id=ids).execute()
+            by_id = {it["id"]: it for it in resp.get("items", [])}
+            for v in videos:
+                it = by_id.get(v.get("video_id"), {})
+                v["view_count"] = int(it.get("statistics", {}).get("viewCount", 0) or 0)
+                v["duration"] = _fmt_duration(it.get("contentDetails", {}).get("duration", ""))
+                full_desc = (it.get("snippet", {}).get("description") or "").strip()
+                if len(full_desc) > len(v.get("description") or ""):
+                    v["description"] = full_desc
+        except Exception as e:
+            logger.warning(f"Video stats enrichment skipped: {e}")
+
     def get_video_comments(self, video_id: str, max_comments: int = 100,
                            _youtube_client=None) -> List[Dict[str, Any]]:
         """Get comments for a specific video."""
@@ -222,6 +270,9 @@ class YouTubeService:
                 c["video_title"] = video["title"]
                 c["video_id"] = video["video_id"]
                 c["channel_title"] = video["channel_title"]
+                c["thumbnail_url"] = video.get("thumbnail", "")
+                c["view_count"] = video.get("view_count", 0)
+                c["duration"] = video.get("duration", "")
             return comments
 
         all_comments = []
@@ -267,7 +318,11 @@ class YouTubeService:
                         "video_title": comment.get("video_title", ""),
                         "channel_title": comment.get("channel_title", ""),
                         "reply_count": comment.get("reply_count", 0),
-                        "is_reply": comment.get("is_reply", False)
+                        "is_reply": comment.get("is_reply", False),
+                        # API thumbnail; falls back to ID-constructed URL if absent.
+                        "thumbnail_url": comment.get("thumbnail_url") or thumbnail_from_id(comment["video_id"]),
+                        "view_count": comment.get("view_count", 0),
+                        "duration": comment.get("duration", ""),
                     }
                 }
                 reviews.append(review_dict)
@@ -299,7 +354,9 @@ class YouTubeService:
                     "unit_type": "post",
                     "thread_id": vid,
                     "post_title": title,
-                    "meta": {"video_title": title, "channel_title": v.get("channel_title", "")},
+                    "meta": {"video_title": title, "channel_title": v.get("channel_title", ""),
+                             "thumbnail_url": v.get("thumbnail") or thumbnail_from_id(vid),
+                             "view_count": v.get("view_count", 0), "duration": v.get("duration", "")},
                 })
             transcript = self._fetch_transcript(vid)
             if transcript:
@@ -315,11 +372,35 @@ class YouTubeService:
                     "unit_type": "transcript",
                     "thread_id": vid,
                     "post_title": title,
-                    "meta": {"video_title": title, "channel_title": v.get("channel_title", "")},
+                    "meta": {"video_title": title, "channel_title": v.get("channel_title", ""),
+                             "thumbnail_url": v.get("thumbnail") or thumbnail_from_id(vid),
+                             "view_count": v.get("view_count", 0), "duration": v.get("duration", "")},
                 })
 
+        n_transcripts = sum(1 for r in reviews if r.get("unit_type") == "transcript")
+        if target_videos and not n_transcripts:
+            logger.info(
+                "No transcripts retrieved for any video — YouTube is likely "
+                "blocking this IP (VPN/datacenter). Set TRANSCRIPT_PROXY to route "
+                "around it; falling back to full descriptions + comments.")
         logger.info(f"Scraped {len(reviews)} YouTube reviews for '{query}'")
         return reviews
+
+    def _transcript_api(self):
+        """Build a YouTubeTranscriptApi honoring the optional TRANSCRIPT_PROXY
+        env var (http(s) proxy URL) — the documented workaround for YouTube
+        IP-blocking transcript requests (VPNs/datacenter IPs)."""
+        from youtube_transcript_api import YouTubeTranscriptApi
+        import os
+        proxy = os.environ.get("TRANSCRIPT_PROXY", "").strip()
+        if proxy:
+            try:
+                from youtube_transcript_api.proxies import GenericProxyConfig
+                return YouTubeTranscriptApi(
+                    proxy_config=GenericProxyConfig(http_url=proxy, https_url=proxy))
+            except Exception as e:
+                logger.warning(f"TRANSCRIPT_PROXY ignored ({e}); using direct connection")
+        return YouTubeTranscriptApi()
 
     def _fetch_transcript(self, video_id: str, max_chars: int = 4000) -> str:
         """Fetch a video's transcript as plain text, truncated to max_chars.
@@ -338,7 +419,7 @@ class YouTubeService:
             # Support both the v1.x instance API (.fetch) and the legacy
             # classmethod (.get_transcript), which return objects/dicts respectively.
             if hasattr(YouTubeTranscriptApi, "fetch"):
-                fetched = YouTubeTranscriptApi().fetch(video_id)
+                fetched = self._transcript_api().fetch(video_id)
                 parts = [getattr(s, "text", "") for s in fetched]
             else:  # legacy <1.0
                 segments = YouTubeTranscriptApi.get_transcript(video_id)
@@ -347,6 +428,7 @@ class YouTubeService:
             text = " ".join(text.split())  # collapse whitespace/newlines
             return text[:max_chars]
         except Exception as e:
+            self._transcript_failures = getattr(self, "_transcript_failures", 0) + 1
             logger.debug(f"No transcript for {video_id}: {e}")
             return ""
     
@@ -359,7 +441,9 @@ class YouTubeService:
                 "description": f"This is a mock video about {query}",
                 "channel_title": f"Review Channel {i+1}",
                 "published_at": (datetime.now() - timedelta(days=i*7)).isoformat() + "Z",
-                "thumbnail": "https://via.placeholder.com/120x90"
+                "thumbnail": "https://via.placeholder.com/120x90",
+                "view_count": (i + 1) * 12000,
+                "duration": f"{8 + i}:{15 + i:02d}",
             }
             for i in range(min(max_results, 5))
         ]
