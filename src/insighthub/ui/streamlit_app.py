@@ -85,15 +85,63 @@ def _aspect_bar(label: str, score: float, max_score: float = 5.0) -> str:
         f'</div>'
     )
 
+# ── brand marks (inline SVG — self-contained, used consistently across the UI) ──
+
+_RD_ICON = (
+    '<span class="brandic"><svg viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">'
+    '<circle cx="10" cy="10" r="10" fill="#FF4500"/>'
+    '<circle cx="13.9" cy="4.7" r="1.2" fill="#fff"/>'
+    '<path d="M10.1 8.2 L11.2 4.9 L13.6 5.3" stroke="#fff" stroke-width="0.9" fill="none"/>'
+    '<circle cx="4.4" cy="10.4" r="1.4" fill="#fff"/><circle cx="15.6" cy="10.4" r="1.4" fill="#fff"/>'
+    '<ellipse cx="10" cy="11.6" rx="5.3" ry="3.7" fill="#fff"/>'
+    '<circle cx="7.9" cy="11" r="1" fill="#FF4500"/><circle cx="12.1" cy="11" r="1" fill="#FF4500"/>'
+    '<path d="M7.9 13.3 q2.1 1.5 4.2 0" stroke="#FF4500" stroke-width="0.85" fill="none" stroke-linecap="round"/>'
+    '</svg></span>')
+
+_YT_ICON = (
+    '<span class="brandic"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">'
+    '<rect x="1" y="4.5" width="22" height="15" rx="4" fill="#FF0000"/>'
+    '<path d="M9.8 9 L15.4 12 L9.8 15 Z" fill="#fff"/></svg></span>')
+
+
+def _rel_time(ts) -> str:
+    """Unix timestamp → compact relative age ('3d ago'); '' when unknown."""
+    try:
+        d = time.time() - float(ts)
+    except (TypeError, ValueError):
+        return ""
+    if d < 0:
+        return ""
+    for cut, div, unit in ((3600, 60, "m"), (86400, 3600, "h"), (86400 * 30, 86400, "d"),
+                           (86400 * 365, 86400 * 30, "mo")):
+        if d < cut:
+            return f"{max(1, int(d // div))}{unit} ago"
+    return f"{int(d // (86400 * 365))}y ago"
+
+
+def _fmt_views(n) -> str:
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return ""
+    if n <= 0:
+        return ""
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M views"
+    if n >= 1_000:
+        return f"{n / 1_000:.0f}K views"
+    return f"{n} views"
+
+
 def _source_tag(review: dict) -> str:
     source = review.get("source", "") or ""
     url = review.get("url", "") or ""
     permalink = review.get("permalink", "") or ""
     combined = (source + url + permalink).lower()
     if "youtube" in combined or "youtu.be" in combined:
-        return '<span class="ih-src ih-src-youtube">YouTube</span>'
+        return f'<span class="ih-src ih-src-youtube">{_YT_ICON}YouTube</span>'
     if permalink:
-        return '<span class="ih-src ih-src-reddit">Reddit</span>'
+        return f'<span class="ih-src ih-src-reddit">{_RD_ICON}Reddit</span>'
     return ""
 
 def _entity_verdict(item: dict) -> str:
@@ -1151,7 +1199,7 @@ DEBATES = [
     },
 ]
 
-if not run_analysis:
+if not run_analysis and not st.session_state.get("results"):
     # ── Hero insight card ─────────────────────────────────────────────────────
     st.markdown('<div class="ih-home-lbl">Featured Intelligence</div>', unsafe_allow_html=True)
 
@@ -1233,6 +1281,1042 @@ if not run_analysis:
                 st.session_state["pending_query"] = d["query"]
                 st.session_state["run_analysis"] = True
                 st.rerun()
+
+# ── Results renderer (tabbed dashboard) ────────────────────────────────────────
+
+_RESULTS_CSS = """
+<style>
+.ih-metric-card{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);
+  border-radius:12px;padding:0.85rem 1rem;text-align:center;}
+.ih-metric-val{font-size:1.5rem;font-weight:700;color:#e2e8f0;line-height:1.1;}
+.ih-metric-lbl{font-size:0.68rem;color:#8a93a3;text-transform:uppercase;letter-spacing:.04em;margin-top:.25rem;}
+.ih-ov-hdr{font-size:.9rem;font-weight:700;color:#cbd5e1;margin:1.4rem 0 .6rem;
+  border-left:3px solid #6366f1;padding-left:.5rem;}
+.ih-ent-card{background:rgba(99,102,241,0.045);border:1px solid rgba(99,102,241,0.16);
+  border-radius:12px;padding:.9rem 1rem;height:100%;position:relative;transition:border-color .15s;}
+.ih-ent-card:hover{border-color:rgba(99,102,241,0.4);}
+.ih-ent-top{display:flex;justify-content:space-between;align-items:flex-start;gap:.5rem;}
+.ih-ent-rank{font-size:.7rem;font-weight:700;color:#fff;background:#6366f1;border-radius:6px;
+  padding:.05rem .4rem;}
+.ih-ent-rank.g1{background:#c89b3c;} .ih-ent-rank.g2{background:#6b7a8d;} .ih-ent-rank.g3{background:#8a6040;}
+.ih-ent-name{font-size:1.02rem;font-weight:700;color:#f1f5f9;margin:.35rem 0 .1rem;}
+.ih-ent-big{font-size:1.35rem;font-weight:800;}
+.ih-ent-verdict{font-size:.74rem;color:#94a3b8;margin:.2rem 0 .5rem;min-height:2.1em;}
+.ih-chip{display:inline-block;font-size:.66rem;color:#a9b2c3;background:rgba(148,163,184,0.12);
+  border:1px solid rgba(148,163,184,0.2);border-radius:20px;padding:.08rem .5rem;margin:0 .25rem .25rem 0;}
+.ih-cbadge{font-size:.63rem;font-weight:600;border-radius:6px;padding:.08rem .45rem;}
+.ih-asp-mini{display:flex;align-items:center;gap:.4rem;margin:.15rem 0;}
+.ih-asp-mini .lbl{font-size:.64rem;color:#8a93a3;width:64px;flex:none;text-transform:capitalize;}
+.ih-asp-mini .track{flex:1;height:5px;background:rgba(255,255,255,0.07);border-radius:3px;overflow:hidden;}
+.ih-asp-mini .fill{height:100%;border-radius:3px;}
+.ih-asp-mini .v{font-size:.63rem;color:#94a3b8;width:22px;text-align:right;flex:none;}
+.ih-sbar{display:flex;align-items:center;gap:.6rem;margin:.35rem 0;}
+.ih-sbar .lbl{font-size:.74rem;width:70px;flex:none;}
+.ih-sbar .track{flex:1;height:10px;background:rgba(255,255,255,0.06);border-radius:6px;overflow:hidden;}
+.ih-sbar .fill{height:100%;border-radius:6px;}
+.ih-sbar .v{font-size:.72rem;color:#94a3b8;width:52px;text-align:right;flex:none;}
+.ih-srccard{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);
+  border-radius:12px;padding:1rem;}
+.ih-srccard h4{margin:0 0 .5rem;font-size:.82rem;color:#cbd5e1;}
+.ih-srccard .row{display:flex;justify-content:space-between;font-size:.76rem;color:#94a3b8;padding:.15rem 0;}
+.ih-srccard .row b{color:#e2e8f0;}
+.ih-evcard{background:rgba(255,255,255,0.028);border:1px solid rgba(255,255,255,0.08);
+  border-radius:10px;padding:.75rem .9rem;margin-bottom:.6rem;}
+.ih-evcard-head{display:flex;align-items:center;gap:.45rem;flex-wrap:wrap;margin-bottom:.4rem;}
+.ih-evcard-auth{font-size:.75rem;color:#cbd5e1;font-weight:600;}
+.ih-evcard-sub{font-size:.7rem;color:#8a93a3;}
+.ih-clamp3{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;
+  font-size:.8rem;color:#b6c0cf;line-height:1.5;}
+.ih-yt{display:flex;gap:.8rem;}
+.ih-yt-thumb{width:168px;height:94px;border-radius:8px;object-fit:cover;flex:none;
+  border:1px solid rgba(255,255,255,0.1);}
+.ih-yt-body{flex:1;min-width:0;}
+.ih-badge-src{font-size:.63rem;font-weight:700;border-radius:5px;padding:.06rem .4rem;}
+.ih-badge-rd{color:#ff6b4a;background:rgba(255,107,74,0.12);border:1px solid rgba(255,107,74,0.3);}
+.ih-badge-yt{color:#ff4a4a;background:rgba(255,74,74,0.12);border:1px solid rgba(255,74,74,0.3);}
+.ih-open-link{font-size:.72rem;color:#818cf8;text-decoration:none;font-weight:600;}
+.brandic{display:inline-flex;vertical-align:-3px;margin-right:.28rem;}
+.brandic svg{width:15px;height:15px;}
+</style>
+"""
+
+
+_OVERVIEW_CSS = """
+<style>
+.ov-metrics{display:grid;grid-template-columns:repeat(5,1fr);gap:.9rem;margin:.4rem 0 1.2rem;}
+.ov-mcard{background:#12161d;border:1px solid rgba(255,255,255,0.07);border-radius:14px;padding:1rem 1.1rem;}
+.ov-mic{width:30px;height:30px;border-radius:8px;background:rgba(99,102,241,0.16);color:#a5b4fc;
+  display:flex;align-items:center;justify-content:center;font-size:.9rem;margin-bottom:.6rem;}
+.ov-mval{font-size:1.7rem;font-weight:800;color:#f1f5f9;line-height:1;}
+.ov-mlbl{font-size:.8rem;color:#cbd5e1;font-weight:600;margin-top:.35rem;}
+.ov-msub{font-size:.68rem;color:#7b8698;margin-top:.1rem;}
+.ov-3col{display:grid;grid-template-columns:1fr 1.15fr .85fr;gap:.9rem;margin-bottom:1.6rem;}
+.ov-panel{background:#12161d;border:1px solid rgba(255,255,255,0.07);border-radius:14px;padding:1.1rem 1.2rem;}
+.ov-ptitle{font-size:.9rem;font-weight:700;color:#e2e8f0;margin-bottom:1rem;}
+.ov-senti{display:flex;align-items:center;gap:1.2rem;}
+.ov-donut{width:110px;height:110px;border-radius:50%;position:relative;flex:none;}
+.ov-donut-h{position:absolute;inset:26px;background:#12161d;border-radius:50%;}
+.ov-legend{display:flex;flex-direction:column;gap:.55rem;font-size:.8rem;color:#b6c0cf;}
+.ov-legend>div{display:flex;align-items:center;gap:.5rem;}
+.ov-legend b{margin-left:auto;color:#e2e8f0;}
+.ov-legend .dot{width:9px;height:9px;border-radius:50%;display:inline-block;}
+.ov-asp{display:flex;align-items:center;gap:.7rem;margin:.55rem 0;}
+.ov-asp .lbl{font-size:.76rem;color:#aab4c2;width:104px;flex:none;}
+.ov-asp .track{flex:1;height:8px;background:rgba(255,255,255,0.06);border-radius:5px;overflow:hidden;}
+.ov-asp .fill{height:100%;border-radius:5px;}
+.ov-asp .v{font-size:.74rem;color:#cbd5e1;width:34px;text-align:right;flex:none;font-weight:600;}
+.ov-empty{color:#64748b;font-size:.8rem;}
+.ov-srcrow{display:flex;align-items:center;gap:.7rem;margin-bottom:1rem;}
+.ov-srcic{width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;
+  font-weight:700;font-size:.85rem;flex:none;color:#fff;}
+.ov-srcic.rd{background:#ff4500;} .ov-srcic.yt{background:#ff0000;}
+.ov-srcname{font-size:.82rem;color:#e2e8f0;font-weight:600;}
+.ov-srccnt{font-size:.74rem;color:#8a93a3;} .ov-srccnt b{color:#e2e8f0;font-size:1.05rem;}
+.ov-sechdr{font-size:1.15rem;font-weight:800;color:#f1f5f9;margin:.6rem 0 .9rem;}
+.ov-picks{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:.85rem;margin-bottom:1.8rem;}
+.ov-pick{background:#12161d;border:1px solid rgba(255,255,255,0.07);border-radius:14px;overflow:hidden;
+  transition:transform .12s,border-color .12s;}
+.ov-pick:hover{transform:translateY(-3px);border-color:rgba(99,102,241,0.35);}
+.ov-pimg{height:118px;background-size:cover;background-position:center;position:relative;}
+.ov-pph{display:flex;align-items:center;justify-content:center;}
+.ov-pph span{font-size:2.2rem;font-weight:800;color:rgba(255,255,255,0.55);}
+.ov-rbadge{position:absolute;top:.5rem;left:.5rem;width:24px;height:24px;border-radius:7px;background:#334155;
+  color:#fff;font-size:.8rem;font-weight:800;display:flex;align-items:center;justify-content:center;}
+.ov-rbadge.g1{background:#e0a83c;} .ov-rbadge.g2{background:#9aa7b5;} .ov-rbadge.g3{background:#b5794a;}
+.ov-pbody{padding:.7rem .8rem .85rem;}
+.ov-pname{font-size:.92rem;font-weight:700;color:#f1f5f9;line-height:1.2;margin-bottom:.3rem;}
+.ov-prate{display:flex;align-items:center;gap:.35rem;color:#f0b429;font-size:.8rem;}
+.ov-pscore{color:#e2e8f0;font-weight:700;}
+.ov-pcat{font-size:.68rem;color:#818cf8;margin:.25rem 0 .4rem;}
+.ov-pdesc{font-size:.72rem;color:#95a1b2;line-height:1.45;display:-webkit-box;-webkit-line-clamp:3;
+  -webkit-box-orient:vertical;overflow:hidden;min-height:3.1em;}
+.ov-pment{font-size:.68rem;color:#6b7686;margin-top:.5rem;}
+.ov-sub2{font-size:.85rem;font-weight:600;color:#cbd5e1;margin:.2rem 0 .7rem;}
+.ov-vgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:.6rem;}
+.ov-vid{display:block;text-decoration:none;}
+.ov-vthumb{height:86px;border-radius:9px;background-size:cover;background-position:center;position:relative;
+  display:flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,0.08);}
+.ov-play{width:30px;height:30px;border-radius:50%;background:rgba(0,0,0,0.6);color:#fff;
+  display:flex;align-items:center;justify-content:center;font-size:.72rem;}
+.ov-vtitle{font-size:.74rem;color:#e2e8f0;font-weight:600;margin-top:.4rem;line-height:1.3;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+.ov-vch{font-size:.68rem;color:#8a93a3;margin-top:.15rem;}
+.ov-rdlist{display:flex;flex-direction:column;gap:.55rem;}
+.ov-rd{display:flex;gap:.6rem;text-decoration:none;background:#12161d;border:1px solid rgba(255,255,255,0.07);
+  border-radius:11px;padding:.65rem .8rem;transition:border-color .12s;}
+.ov-rd:hover{border-color:rgba(255,69,0,0.4);}
+.ov-rdic{width:26px;height:26px;border-radius:7px;background:#ff4500;color:#fff;font-weight:700;font-size:.72rem;
+  display:flex;align-items:center;justify-content:center;flex:none;}
+.ov-rdtitle{font-size:.8rem;color:#e2e8f0;font-weight:600;line-height:1.3;}
+.ov-rdmeta{font-size:.7rem;color:#8a93a3;margin-top:.15rem;}
+.ov-tk{display:flex;gap:.55rem;align-items:flex-start;margin:.5rem 0;font-size:.8rem;color:#c2ccd8;line-height:1.45;}
+.ov-tkchk{color:#22c58a;font-weight:800;flex:none;}
+.ov-nx{display:flex;align-items:center;gap:.7rem;padding:.6rem 0;border-bottom:1px solid rgba(255,255,255,0.05);}
+.ov-nxic{width:32px;height:32px;border-radius:9px;background:rgba(99,102,241,0.16);color:#a5b4fc;
+  display:flex;align-items:center;justify-content:center;flex:none;}
+.ov-nxt{font-size:.82rem;color:#e2e8f0;font-weight:600;}
+.ov-nxs{font-size:.7rem;color:#8a93a3;}
+.ov-nxarrow{margin-left:auto;color:#6b7686;}
+@media(max-width:900px){.ov-metrics{grid-template-columns:repeat(2,1fr);}.ov-3col{grid-template-columns:1fr;}}
+</style>
+"""
+
+
+# Master–detail explorer (Overview tab, RANKING intent): compact selector cards
+# on top, one fixed evidence-first detail panel below that swaps content in place.
+_EXPLORER_CSS = """
+<style>
+@keyframes fadeUp{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:none;}}
+.ex-hint{color:#8a93a3;font-size:.82rem;margin:-.35rem 0 .8rem;}
+/* whole compact card is the click target: invisible button stretched over the column */
+div[data-testid="stColumn"]:has(div[class*="st-key-expick"]){position:relative;}
+div[class*="st-key-expick"]{position:absolute;inset:0;z-index:6;margin:0;}
+div[class*="st-key-expick"] button{width:100%;height:100%;opacity:0;cursor:pointer;}
+.ex-card{display:flex;gap:.6rem;align-items:center;background:#12161d;
+  border:1px solid rgba(255,255,255,.08);border-radius:13px;padding:.55rem .65rem;
+  transition:border-color .12s,transform .12s;}
+.ex-card:hover{border-color:rgba(129,140,248,.45);transform:translateY(-1px);}
+.ex-card.sel{border-color:#818cf8;background:#151a24;
+  box-shadow:0 0 0 1px #818cf8,0 6px 18px rgba(129,140,248,.18);}
+.ex-cthumb{width:44px;height:44px;border-radius:10px;background-size:cover;background-position:center;
+  flex:none;position:relative;display:flex;align-items:center;justify-content:center;
+  font-weight:800;color:rgba(255,255,255,.6);font-size:1.05rem;}
+.ex-crank{position:absolute;top:-6px;left:-6px;width:18px;height:18px;border-radius:6px;background:#334155;
+  color:#fff;font-size:.6rem;font-weight:800;display:flex;align-items:center;justify-content:center;
+  border:1px solid #0e1117;}
+.ex-crank.g1{background:#e0a83c;} .ex-crank.g2{background:#9aa7b5;} .ex-crank.g3{background:#b5794a;}
+.ex-cbody{min-width:0;}
+.ex-cname{font-size:.83rem;font-weight:700;color:#f1f5f9;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;line-height:1.25;}
+.ex-cmeta{font-size:.7rem;color:#f0b429;margin-top:.12rem;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;}
+.ex-cmeta .mm{color:#7b8698;}
+/* ── detail panel ── */
+.ex-detail{background:#12161d;border:1px solid rgba(255,255,255,.08);border-radius:16px;
+  padding:1.35rem 1.6rem 1.5rem;margin:.9rem 0 1.4rem;animation:fadeUp .25s ease;}
+.ex-dhead{display:flex;gap:1.1rem;align-items:center;padding-bottom:1.05rem;
+  border-bottom:1px solid rgba(255,255,255,.06);}
+.ex-dimg{width:84px;height:84px;border-radius:14px;background-size:cover;background-position:center;flex:none;
+  border:1px solid rgba(255,255,255,.1);display:flex;align-items:center;justify-content:center;
+  font-size:1.9rem;font-weight:800;color:rgba(255,255,255,.6);}
+.ex-dname{font-size:1.45rem;font-weight:800;color:#f5f7fa;line-height:1.08;letter-spacing:-.025em;}
+.ex-dsub{font-size:.74rem;color:#818cf8;margin:.22rem 0 .4rem;font-weight:600;
+  text-transform:uppercase;letter-spacing:.05em;}
+.ex-drate{display:flex;align-items:center;gap:.55rem;font-size:.86rem;color:#f0b429;flex-wrap:wrap;}
+.ex-drate b{color:#f1f5f9;font-size:1.08rem;}
+.ex-drate .ex-meta{color:#8a93a3;}
+.ex-cbadge{font-size:.68rem;font-weight:700;padding:.12rem .5rem;border-radius:20px;}
+.ex-why{font-size:1.04rem;font-weight:800;color:#e8edf4;margin:1.1rem 0 .1rem;}
+.ex-why b{color:#a5b4fc;}
+.ex-lbl{font-size:.71rem;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#94a3b8;margin-bottom:.55rem;}
+.ex-sec{margin-top:1.15rem;}
+/* Reddit evidence cards */
+.ex-detail a,.ex-detail a:hover,.ex-detail a *{text-decoration:none !important;}
+.ex-ev{background:#0f1319;border:1px solid rgba(255,255,255,.06);border-radius:12px;
+  padding:.7rem .9rem;margin-bottom:.55rem;}
+.ex-evtop{display:flex;align-items:center;gap:.45rem;font-size:.73rem;color:#9aa5b4;flex-wrap:wrap;}
+.ex-evsub{color:#ff6b4a;font-weight:700;}
+.ex-evby{color:#b9c2cf;font-weight:600;}
+.ex-evup{color:#ff8a5f;font-weight:800;}
+.ex-evdot{color:#4c5665;}
+.ex-evtime{color:#7b8698;}
+.ex-open{margin-left:auto;flex:none;font-size:.68rem;font-weight:700;border-radius:16px;
+  padding:.18rem .6rem;border:1px solid transparent;white-space:nowrap;}
+.ex-open.rd{color:#ff6b4a;background:rgba(255,69,0,.10);border-color:rgba(255,69,0,.30);}
+.ex-open.rd:hover{background:rgba(255,69,0,.22);}
+.ex-open.yt{color:#ff5252;background:rgba(255,0,0,.10);border-color:rgba(255,0,0,.30);}
+.ex-open.yt:hover{background:rgba(255,0,0,.22);}
+.ex-evmeta{font-size:.69rem;color:#8a93a3;margin-top:.35rem;}
+.ex-evtitle{font-size:.88rem;font-weight:700;color:#eef2f7;line-height:1.35;margin-top:.4rem;}
+.ex-ev.pos{border-left:3px solid #22d3a0;} .ex-ev.mix{border-left:3px solid #f59e0b;}
+.ex-ev.crit{border-left:3px solid #f87171;}
+/* nested top-comments inside a conversation card */
+.ex-nlbl{font-size:.64rem;font-weight:800;letter-spacing:.09em;text-transform:uppercase;
+  color:#7b8698;margin:.75rem 0 .35rem;}
+.ex-nest{display:flex;flex-direction:column;gap:.45rem;margin-left:.35rem;
+  padding-left:.8rem;border-left:2px solid rgba(255,255,255,.09);}
+.ex-ncom{background:rgba(255,255,255,.025);border-radius:9px;padding:.5rem .7rem;
+  border-left:2px solid #5b6b7f;}
+.ex-ncom.pos{border-left-color:#22d3a0;} .ex-ncom.mix{border-left-color:#f59e0b;}
+.ex-ncom.crit{border-left-color:#f87171;}
+.ex-nhead{display:flex;align-items:center;gap:.45rem;font-size:.7rem;color:#9aa5b4;flex-wrap:wrap;}
+.ex-nopen{margin-left:auto;color:#818cf8;font-weight:800;font-size:.8rem;}
+.ex-ncom .ex-clamp,.ex-ncom .ex-noclamp{font-size:.81rem;}
+/* video header inside a conversation card: strip its standalone chrome */
+.ex-ev .ex-vc{background:none;border:none;padding:0;}
+/* expand / collapse — pure CSS <details>, no Streamlit rerun */
+details.ex-x{margin-top:.45rem;}
+details.ex-x summary{list-style:none;cursor:pointer;}
+details.ex-x summary::-webkit-details-marker{display:none;}
+.ex-clamp{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;
+  font-size:.84rem;color:#d4dce6;line-height:1.55;}
+details.ex-x[open] .ex-clamp{-webkit-line-clamp:unset;display:block;}
+.ex-xbtn{display:inline-block;margin-top:.3rem;font-size:.7rem;font-weight:700;color:#818cf8;}
+.ex-xbtn::after{content:"Read more ▾";}
+details.ex-x[open] .ex-xbtn::after{content:"Collapse ▴";}
+.ex-noclamp{font-size:.84rem;color:#d4dce6;line-height:1.55;margin-top:.45rem;}
+/* YouTube evidence cards */
+.ex-vgrid{display:grid;grid-template-columns:1fr 1fr;gap:.7rem;align-items:start;}
+.ex-vc{display:flex;gap:.8rem;background:#0f1319;border:1px solid rgba(255,255,255,.06);
+  border-radius:12px;padding:.7rem .9rem;}
+.ex-vthumb{width:172px;height:97px;border-radius:9px;background-size:cover;background-position:center;
+  position:relative;flex:none;display:flex;align-items:center;justify-content:center;
+  border:1px solid rgba(255,255,255,.08);}
+.ex-vdur{position:absolute;right:.35rem;bottom:.35rem;background:rgba(0,0,0,.82);color:#fff;
+  font-size:.64rem;font-weight:700;border-radius:4px;padding:.05rem .3rem;}
+.ex-vbody{flex:1;min-width:0;}
+.ex-vtop{display:flex;align-items:center;gap:.45rem;font-size:.71rem;color:#9aa5b4;flex-wrap:wrap;}
+.ex-vch{color:#b9c2cf;font-weight:600;}
+.ex-vviews{color:#7b8698;}
+.ex-vtitle{font-size:.86rem;font-weight:700;color:#eef2f7;line-height:1.3;margin-top:.25rem;}
+.ex-vcomm{font-size:.69rem;font-weight:700;color:#8fa0b5;margin-top:.45rem;
+  text-transform:uppercase;letter-spacing:.06em;}
+.ex-basis{font-size:.73rem;color:#818cf8;font-weight:600;margin-bottom:.4rem;}
+.ex-consensus p{font-size:.92rem;color:#dbe2ea;line-height:1.6;margin:0;}
+.ex-grid3{display:grid;grid-template-columns:1.15fr 1fr 1fr;gap:1rem;align-items:start;}
+.ex-pcbox{background:#0f1319;border:1px solid rgba(255,255,255,.06);border-radius:12px;padding:.85rem 1rem;}
+.ex-pcbox ul{margin:0;padding:0;}
+.ex-pcbox li{font-size:.82rem;color:#c8d2dd;line-height:1.5;margin:.32rem 0;list-style:none;display:flex;gap:.5rem;}
+.ex-pcbox .ic{flex:none;font-weight:800;}
+.ex-pros .ic{color:#22d3a0;} .ex-cons .ic{color:#f87171;}
+.ex-reps3{display:grid;grid-template-columns:repeat(3,1fr);gap:.6rem;align-items:start;}
+.ex-rep{background:#0f1319;border:1px solid rgba(255,255,255,.06);border-left:3px solid #5b6b7f;
+  border-radius:10px;padding:.7rem .9rem;}
+.ex-rep.pos{border-left-color:#22d3a0;} .ex-rep.mix{border-left-color:#f59e0b;} .ex-rep.crit{border-left-color:#f87171;}
+.ex-rephead{display:flex;align-items:center;gap:.45rem;font-size:.68rem;margin-bottom:.35rem;flex-wrap:wrap;}
+.ex-reptag{font-weight:800;text-transform:uppercase;letter-spacing:.05em;}
+.ex-repsrc{color:#8a93a3;} .ex-repup{color:#8a93a3;margin-left:auto;}
+.ex-reptxt{font-size:.84rem;color:#c8d2dd;line-height:1.52;}
+.ex-empty{color:#64748b;font-size:.8rem;font-style:italic;padding:.3rem 0;}
+@media(max-width:900px){.ex-grid3{grid-template-columns:1fr;}.ex-reps3{grid-template-columns:1fr;}
+  .ex-vgrid{grid-template-columns:1fr;}}
+</style>
+"""
+
+
+def _conf_badge(score: float) -> str:
+    lbl, color = _confidence_label(score)
+    return (f'<span class="ih-cbadge" style="color:{color};background:{color}1a;'
+            f'border:1px solid {color}33">{lbl}</span>')
+
+
+def _aspect_mini(name: str, val: float) -> str:
+    color = _score_color(val)
+    pct = max(4, min(100, val / 5.0 * 100))
+    return (f'<div class="ih-asp-mini"><span class="lbl">{name.replace("_"," ")}</span>'
+            f'<span class="track"><span class="fill" style="width:{pct:.0f}%;background:{color}"></span></span>'
+            f'<span class="v">{val:.1f}</span></div>')
+
+
+def _entity_card_html(rank: int, item: dict) -> str:
+    gcls = f"g{rank}" if rank <= 3 else ""
+    sc_cls = _score_cls(item["overall_stars"])
+    conf = item.get("confidence_score", item.get("confidence", 0.5))
+    asp = sorted((item.get("aspect_scores") or {}).items(), key=lambda x: x[1], reverse=True)[:3]
+    asp_html = "".join(_aspect_mini(k, v) for k, v in asp)
+    return (
+        f'<div class="ih-ent-card">'
+        f'<div class="ih-ent-top"><span class="ih-ent-rank {gcls}">#{rank}</span>{_conf_badge(conf)}</div>'
+        f'<div class="ih-ent-name">{item["name"]}</div>'
+        f'<div style="display:flex;align-items:baseline;gap:.5rem">'
+        f'<span class="ih-ent-big {sc_cls}">{item["overall_stars"]:.1f}</span>'
+        f'<span style="font-size:.7rem;color:#8a93a3">{item["mentions"]} mention'
+        f'{"s" if item["mentions"]!=1 else ""}</span></div>'
+        f'<div class="ih-ent-verdict">{_entity_verdict(item)}</div>'
+        f'{asp_html}'
+        f'</div>'
+    )
+
+
+def _grad_for(seed: str) -> str:
+    """Deterministic tasteful gradient for image placeholders (no real photo)."""
+    import hashlib
+    h = int(hashlib.md5((seed or "x").encode()).hexdigest(), 16)
+    hue = h % 360
+    return f"linear-gradient(135deg,hsl({hue},48%,26%),hsl({(hue+38)%360},52%,16%))"
+
+
+def render_results(R):
+    import re as _re
+    from collections import Counter as _Counter
+    from datetime import datetime as _dt
+
+    query = R["query"]; intent = R["intent"]; entity_type = R.get("entity_type")
+    aspects = R.get("aspects") or []; payload = R["payload"]
+    comments = R["comments"]; annos = R["annos"]
+    platform_breakdown = R["platform_breakdown"]; search_time = R.get("search_time", 0.0)
+    subreddits = R.get("subreddits") or []; use_cross = R.get("use_cross", False)
+    show_debug = R.get("show_debug", False)
+
+    st.markdown(_RESULTS_CSS, unsafe_allow_html=True)
+    reviews = [r for rl in platform_breakdown.values() for r in rl]
+    anno_map = {a.comment_id: a for a in annos}
+
+    def _rid(r): return r.get("id") if isinstance(r, dict) else getattr(r, "id", "")
+    def _txt(r): return ((r.get("text") if isinstance(r, dict) else getattr(r, "text", "")) or "")
+    def _get(r, k, d=""):
+        return (r.get(k, d) if isinstance(r, dict) else getattr(r, k, d)) or d
+    def _score(r):
+        a = anno_map.get(_rid(r)); return a.overall_score if a and hasattr(a, "overall_score") else None
+    def _is_yt(r):
+        return "youtube" in (_get(r, "url") + _get(r, "permalink")).lower() or _get(r, "source") == "youtube"
+    def _vid(r):
+        # url and permalink are concatenated (no separator), so bound the match to
+        # exactly 11 chars — a YouTube ID — or the greedy match runs into the next
+        # URL's "https" and yields a corrupt id → 404 thumbnail (gray placeholder).
+        s = _get(r, "url") + " " + _get(r, "permalink")
+        m = _re.search(r"[?&]v=([\w-]{11})", s) or _re.search(r"youtu\.be/([\w-]{11})", s)
+        return m.group(1) if m else ""
+    def _subr(r):
+        m = _re.search(r"/r/([A-Za-z0-9_]+)", _get(r, "permalink"))
+        return m.group(1) if m else ""
+    def _ents(r):
+        a = anno_map.get(_rid(r))
+        if not a:
+            return []
+        return list(dict.fromkeys(e.name for e in (a.entities or []) if getattr(e, "confidence", 0) >= 0.5 and e.name))
+
+    annotated = set(anno_map.keys())
+    relevant = [r for r in reviews if _rid(r) in annotated]
+    meaningful = [r for r in relevant if len(_txt(r)) >= 100]
+    ev_all = [r for r in relevant if len(_txt(r)) >= 60]
+    pos = [r for r in ev_all if (_score(r) or 0) >= 3.8]
+    crit = [r for r in ev_all if _score(r) is not None and _score(r) < 2.8]
+    mixed = [r for r in ev_all if r not in pos and r not in crit]
+    ranking = payload.get("ranking", []) if intent == "RANKING" else []
+    also = payload.get("also_mentioned", []) if intent == "RANKING" else []
+    plat_str = " + ".join(p.title() for p in platform_breakdown.keys())
+
+    # ── header ──
+    ts = _dt.fromtimestamp(payload["metadata"]["timestamp"]).strftime("%b %d, %Y at %H:%M")
+    ent_part = f'<span class="ih-meta-dot">·</span><span class="ih-meta-txt">{entity_type}</span>' if entity_type else ""
+    st.markdown(
+        f'<div class="ih-result-header"><div class="ih-query-title">{query}</div>'
+        f'<div class="ih-meta-row"><span class="ih-intent-badge ih-badge-{intent}">{intent}</span>{ent_part}'
+        f'<span class="ih-meta-dot">·</span><span class="ih-meta-txt">{plat_str} · {ts}</span></div></div>',
+        unsafe_allow_html=True,
+    )
+
+    tabs = st.tabs(["Overview", "Rankings", "Reviews", "Sources", "Aspects", "Developer"])
+
+    def _explorer():
+        """Master–detail restaurant explorer: pick a card → see all its evidence."""
+        names = [it["name"] for it in ranking]
+        sel = st.session_state.get("sel_rest")
+        if sel not in names:                    # default / self-heal after a new search
+            sel = names[0]
+        st.session_state["sel_rest"] = sel
+
+        # ---- per-entity evidence helpers (entity name links a review via its anno) ----
+        def _supp(name):
+            return [r for r in reviews if name in _ents(r)]
+
+        def _ent_ref(r, name):
+            a = anno_map.get(_rid(r))
+            for e in (getattr(a, "entities", []) or []) if a else []:
+                if e.name == name:
+                    return e
+            return None
+
+        def _ent_score(r, name):
+            e = _ent_ref(r, name)
+            s = getattr(e, "sentiment_score", None) if e else None
+            if s is None:
+                s = _score(r)
+            return 3.0 if s is None else s
+
+        def _ent_thumb(name):
+            for r in _supp(name):
+                if _is_yt(r):
+                    v = _vid(r)
+                    if v:
+                        m = _get(r, "meta", {}) or {}
+                        return m.get("thumbnail_url") or f"https://i.ytimg.com/vi/{v}/hqdefault.jpg"
+            return None
+
+        # AI consensus + pros/cons for one entity (cached per query+entity; GPT with fallback).
+        def _entity_brief(name, item):
+            ck = f"__brief__::{query}::{name}"
+            if ck in st.session_state:
+                return st.session_state[ck]
+            aspects = item.get("aspect_scores") or {}
+            quotes = (item.get("quotes") or [])[:6]
+            m = item["mentions"]
+            fb_pros = [k.replace("_", " ").title() for k, v in sorted(aspects.items(), key=lambda x: -x[1]) if v >= 3.6][:3]
+            fb_cons = [k.replace("_", " ").title() for k, v in sorted(aspects.items(), key=lambda x: x[1]) if v < 2.9][:3]
+            fb = {
+                "summary": f'{_entity_verdict(item)}. Based on {m} mention{"s" if m != 1 else ""} across {plat_str}.',
+                "pros": fb_pros or ["Generally well regarded"],
+                "cons": fb_cons or ["No consistent complaints surfaced"],
+            }
+            out = fb
+            try:
+                from insighthub.services.llm import _safe_json_loads
+                sysmsg = ("You summarize the consumer consensus about ONE specific place using only the "
+                          "provided review excerpts and aspect scores. Concise, factual, no invented "
+                          "details. Reply with JSON only.")
+                usr = (f'Place: {name}\nAspect scores (1-5): {aspects}\nReview excerpts:\n'
+                       + "\n".join(f'- {q}' for q in quotes)
+                       + '\n\nReturn JSON: {"summary":"2-3 sentence consensus",'
+                         '"pros":["short phrase",...max 4],"cons":["short phrase",...max 4]}')
+                resp = llm_service.chat(sysmsg, usr, temperature=0.2, max_tokens=320)
+                data = _safe_json_loads(resp) if resp else None
+                if isinstance(data, dict) and data.get("summary"):
+                    out = {
+                        "summary": str(data.get("summary", "")).strip() or fb["summary"],
+                        "pros": [str(x) for x in (data.get("pros") or []) if str(x).strip()][:4] or fb["pros"],
+                        "cons": [str(x) for x in (data.get("cons") or []) if str(x).strip()][:4] or fb["cons"],
+                    }
+            except Exception as _e:
+                logger.warning(f"entity brief GPT failed for {name}: {_e}")
+            st.session_state[ck] = out
+            return out
+
+        # ═══ MASTER: compact selector cards — selectors, not content (one row) ═══
+        cat = entity_type.replace("_", " ").title() if entity_type else ""
+        hdr = f"Top Ranked {cat}s" if cat else "Top Ranked Results"
+        st.markdown(f'<div class="ov-sechdr">{hdr}</div>', unsafe_allow_html=True)
+        st.markdown('<div class="ex-hint">Click a card to explore its evidence — the panel below updates in place.</div>',
+                    unsafe_allow_html=True)
+        picks = ranking[:6]
+
+        def _select(name):
+            st.session_state["sel_rest"] = name
+
+        cols = st.columns(len(picks))
+        for col, it in zip(cols, picks):
+            rank = ranking.index(it) + 1
+            is_sel = it["name"] == sel
+            rc = f"g{rank}" if rank <= 3 else ""
+            photo = it.get("image_url") or _ent_thumb(it["name"])
+            thumb = (f'<div class="ex-cthumb" style="background-image:url({photo})">' if photo
+                     else f'<div class="ex-cthumb" style="background:{_grad_for(it["name"])}">{it["name"][:1].upper()}')
+            thumb += f'<span class="ex-crank {rc}">{rank}</span></div>'
+            col.markdown(
+                f'<div class="ex-card{" sel" if is_sel else ""}">{thumb}'
+                f'<div class="ex-cbody"><div class="ex-cname" title="{it["name"]}">{it["name"]}</div>'
+                f'<div class="ex-cmeta">★ {it["overall_stars"]:.1f} <span class="mm">({it["mentions"]})</span></div>'
+                f'</div></div>', unsafe_allow_html=True)
+            col.button(it["name"], key=f"expick_{rank}", on_click=_select, args=(it["name"],))
+
+        # ═══ DETAIL: one fixed evidence-first panel — content swaps, position doesn't ═══
+        import html as _h
+        item = next(it for it in ranking if it["name"] == sel)
+        rank_no = ranking.index(item) + 1
+        supp = _supp(sel)
+        brief = _entity_brief(sel, item)
+        conf = item.get("confidence_score", item.get("confidence", 0.5))
+        clbl, ccol = _confidence_label(conf)
+        photo = item.get("image_url") or _ent_thumb(sel)
+        dimg = (f'<div class="ex-dimg" style="background-image:url({photo})"></div>' if photo
+                else f'<div class="ex-dimg" style="background:{_grad_for(sel)}">{sel[:1].upper()}</div>')
+
+        head = (
+            f'<div class="ex-dhead">{dimg}<div>'
+            f'<div class="ex-dname">{sel}</div>'
+            f'<div class="ex-dsub">{cat or "Result"}</div>'
+            f'<div class="ex-drate">{_stars(item["overall_stars"])}<b>{item["overall_stars"]:.1f}</b>'
+            f'<span class="ex-meta">· {item["mentions"]} mention{"s" if item["mentions"] != 1 else ""}</span>'
+            f'<span class="ex-cbadge" style="color:{ccol};background:{ccol}1f">{clbl} · {conf:.0%}</span>'
+            f'</div></div></div>'
+        )
+
+        def _clamp_block(text, btn_cls="", cap=900, fold=380):
+            """2-3 line clamped quote with a pure-CSS Expand/Collapse when long.
+
+            fold ≈ chars that fit in the 3 visible lines; below it the toggle
+            would be a no-op, so render plain text instead."""
+            t = _h.escape(_excerpt(text, cap))
+            if len((text or "").strip()) <= fold:
+                return f'<div class="ex-noclamp">{t}</div>'
+            return (f'<details class="ex-x"><summary><span class="ex-clamp">{t}</span>'
+                    f'<span class="ex-xbtn {btn_cls}"></span></summary></details>')
+
+        # ═══ Community evidence — the hero of the page ═══
+        rd_units = [r for r in supp if not _is_yt(r)]
+        seen_sig, shown_ids = set(), set()
+
+        def _rd_top(r, up, show_author=True, lead=""):
+            sub = _subr(r)
+            author = str(_get(r, "author", "") or "").removeprefix("u/")
+            when = _rel_time(_get(r, "created_utc", None))
+            bits = [b for b in (
+                lead,
+                f'<span class="ex-evsub">r/{sub}</span>' if sub else "",
+                f'<span class="ex-evby">u/{_h.escape(author)}</span>' if (author and show_author) else "",
+                f'<span class="ex-evup">▲ {up:,}</span>',
+                f'<span class="ex-evtime">{when}</span>' if when else "") if b]
+            return (_RD_ICON + '<span class="ex-evdot">·</span>'.join(bits)
+                    + f'<a class="ex-open rd" href="https://reddit.com{_get(r, "permalink")}" '
+                      f'target="_blank">Open Reddit ↗</a>')
+
+        # Thread posts from the FULL corpus — a discussion's title/author/body are
+        # context for the comments below even when the OP never names the entity.
+        all_posts = {}
+        for r in reviews:
+            if not _is_yt(r) and _get(r, "unit_type", "comment") == "post":
+                all_posts.setdefault(_get(r, "thread_id") or _rid(r), r)
+
+        # -- 1. Reddit Discussions: one CONVERSATION card per thread — the post
+        # (title + expandable preview) with its top entity-relevant comments
+        # nested inside. Threads ranked by total engagement of their units. --
+        def _tone(s):
+            return ("Positive", "pos") if s >= 3.8 else ("Mixed", "mix") if s >= 2.8 else ("Critical", "crit")
+
+        def _ncom_rd(r):
+            body = _txt(r).strip()
+            seen_sig.add(_sig(body))
+            shown_ids.add(_rid(r))
+            s = _ent_score(r, sel)
+            tag, cls = _tone(s)
+            _, scol, _sbg = _sentiment_label(s)
+            author = str(_get(r, "author", "") or "").removeprefix("u/")
+            when = _rel_time(_get(r, "created_utc", None))
+            up = _get(r, "upvotes", 0) or 0
+            bits = [b for b in (
+                f'<span class="ex-reptag" style="color:{scol}">{tag}</span>',
+                f'<span class="ex-evby">u/{_h.escape(author)}</span>' if author else "",
+                f'<span class="ex-evup">▲ {up:,}</span>',
+                f'<span class="ex-evtime">{when}</span>' if when else "") if b]
+            head = ('<span class="ex-evdot">·</span>'.join(bits)
+                    + f'<a class="ex-nopen" href="https://reddit.com{_get(r, "permalink")}" '
+                      f'target="_blank">↗</a>')
+            return f'<div class="ex-ncom {cls}"><div class="ex-nhead">{head}</div>{_clamp_block(body)}</div>'
+
+        by_tid = {}
+        for r in rd_units:
+            by_tid.setdefault(_get(r, "thread_id") or _rid(r), []).append(r)
+
+        disc_cards = []
+        for tid, units in sorted(by_tid.items(),
+                                 key=lambda kv: -sum((_get(u, "upvotes", 0) or 0) for u in kv[1]))[:3]:
+            post = all_posts.get(tid)
+            src = post if post is not None else units[0]
+            title = (_get(src, "post_title") or "").strip()
+            if not title:
+                continue
+            body = ""
+            if post is not None:
+                shown_ids.add(_rid(post))
+                raw = _txt(post).strip()
+                raw = raw[len(title):].strip() if raw.startswith(title) else raw
+                if len(raw) >= 60:
+                    seen_sig.add(_sig(raw))
+                    body = _clamp_block(raw)
+            up = int(_get(post, "upvotes", 0) or 0) if post is not None else \
+                max((_get(u, "upvotes", 0) or 0) for u in units)
+            cmts = sorted((u for u in units if _get(u, "unit_type", "comment") != "post"
+                           and len(_txt(u).strip()) >= 40 and _sig(_txt(u).strip()) not in seen_sig),
+                          key=lambda u: -(_get(u, "upvotes", 0) or 0))
+            nested = "".join(_ncom_rd(u) for u in cmts[:3])
+            nested_html = (f'<div class="ex-nlbl">Top comments</div>'
+                           f'<div class="ex-nest">{nested}</div>') if nested else ""
+            disc_cards.append(
+                f'<div class="ex-ev"><div class="ex-evtop">'
+                f'{_rd_top(src, up, show_author=post is not None)}</div>'
+                f'<div class="ex-evtitle">{_h.escape(_excerpt(title, 120))}</div>{body}{nested_html}</div>')
+        disc_html = (f'<div class="ex-sec"><div class="ex-lbl">{_RD_ICON}Reddit Discussions</div>'
+                     f'{"".join(disc_cards)}</div>') if disc_cards else ""
+
+        # -- 2. YouTube: one CONVERSATION card per video — thumbnail/title/channel/
+        # views/duration header with the top viewer comments (from the annotation
+        # pipeline) nested inside. Videos ranked by view count. --
+        def _ncom_yt(r):
+            body = _txt(r).strip()
+            seen_sig.add(_sig(body))
+            shown_ids.add(_rid(r))
+            s = _ent_score(r, sel)
+            tag, cls = _tone(s)
+            _, scol, _sbg = _sentiment_label(s)
+            likes = _get(r, "upvotes", 0) or 0
+            author = str(_get(r, "author", "") or "")
+            when = _rel_time(_get(r, "created_utc", None))
+            bits = [b for b in (
+                f'<span class="ex-reptag" style="color:{scol}">{tag}</span>',
+                f'<span class="ex-evby">{_h.escape(author)}</span>' if author else "",
+                f'<span class="ex-evup">👍 {likes:,}</span>' if likes > 0 else "",
+                f'<span class="ex-evtime">{when}</span>' if when else "") if b]
+            link = _get(r, "url") or _get(r, "permalink")
+            head = ('<span class="ex-evdot">·</span>'.join(bits)
+                    + (f'<a class="ex-nopen" href="{link}" target="_blank">↗</a>' if link else ""))
+            return f'<div class="ex-ncom {cls}"><div class="ex-nhead">{head}</div>{_clamp_block(body)}</div>'
+
+        vids = {}
+        for r in supp:
+            if not _is_yt(r):
+                continue
+            v = _vid(r)
+            if not v:
+                continue
+            m = _get(r, "meta", {}) or {}
+            vd = vids.setdefault(v, {"vid": v, "title": m.get("video_title", "Video"),
+                                     "ch": m.get("channel_title", ""),
+                                     "thumb": m.get("thumbnail_url") or f"https://i.ytimg.com/vi/{v}/hqdefault.jpg",
+                                     "views": m.get("view_count", 0), "dur": m.get("duration", ""),
+                                     "cmts": []})
+            if _get(r, "unit_type", "comment") == "comment" and len(_txt(r).strip()) >= 40:
+                vd["cmts"].append(r)
+        vcards = ""
+        for v in sorted(vids.values(), key=lambda v: -(v["views"] or 0))[:3]:
+            watch = f"https://youtube.com/watch?v={v['vid']}"
+            views = _fmt_views(v["views"])
+            dur = f'<span class="ex-vdur">{v["dur"]}</span>' if v["dur"] else ""
+            bits = [b for b in (
+                f'<span class="ex-vch">{_h.escape(v["ch"])}</span>' if v["ch"] else "",
+                f'<span class="ex-vviews">{views}</span>' if views else "") if b]
+            top = (_YT_ICON + '<span class="ex-evdot">·</span>'.join(bits)
+                   + f'<a class="ex-open yt" href="{watch}" target="_blank">Watch on YouTube ↗</a>')
+            cmts = sorted((u for u in v["cmts"] if _sig(_txt(u).strip()) not in seen_sig),
+                          key=lambda u: -(_get(u, "upvotes", 0) or 0))
+            nested = "".join(_ncom_yt(u) for u in cmts[:3])
+            nested_html = (f'<div class="ex-nlbl">Top comments</div>'
+                           f'<div class="ex-nest">{nested}</div>') if nested else ""
+            vcards += (
+                f'<div class="ex-ev"><div class="ex-vc"><a class="ex-vthumb" href="{watch}" target="_blank" '
+                f'style="background-image:url({v["thumb"]})">{dur}<span class="ov-play">▶</span></a>'
+                f'<div class="ex-vbody"><div class="ex-vtop">{top}</div>'
+                f'<div class="ex-vtitle">{_h.escape(v["title"])}</div></div></div>'
+                f'{nested_html}</div>')
+        vid_html = (f'<div class="ex-sec"><div class="ex-lbl">{_YT_ICON}YouTube Videos</div>'
+                    f'{vcards}</div>') if vcards else ""
+
+        # -- 4. AI Consensus — rendered AFTER all evidence, grounded in its counts --
+        n_threads = len({_get(r, "thread_id") or _rid(r) for r in rd_units})
+        basis_bits = []
+        if n_threads:
+            basis_bits.append(f'{n_threads} Reddit discussion{"s" if n_threads != 1 else ""}')
+        if vids:
+            basis_bits.append(f'{len(vids)} YouTube video{"s" if len(vids) != 1 else ""}')
+        basis = ("Generated from " + " and ".join(basis_bits)) if basis_bits else \
+            f'Generated from {item["mentions"]} mention{"s" if item["mentions"] != 1 else ""}'
+        cons_html = (f'<div class="ex-sec ex-consensus"><div class="ex-lbl">AI Consensus</div>'
+                     f'<div class="ex-basis">{basis}</div><p>{brief["summary"]}</p></div>')
+
+        # -- 5. aspects + pros/cons, three compact columns --
+        aspects_d = item.get("aspect_scores") or {}
+        bars = "".join(_aspect_bar(k, v) for k, v in sorted(aspects_d.items(), key=lambda x: -x[1]))
+        pros = "".join(f'<li><span class="ic">＋</span><span>{p}</span></li>' for p in brief["pros"])
+        cons = "".join(f'<li><span class="ic">－</span><span>{c}</span></li>' for c in brief["cons"])
+        grid_html = (
+            f'<div class="ex-sec"><div class="ex-grid3">'
+            f'<div><div class="ex-lbl">Aspect Breakdown</div>{bars or "<div class=ex-empty>No aspect data.</div>"}</div>'
+            f'<div class="ex-pcbox ex-pros"><div class="ex-lbl">Pros</div><ul>{pros}</ul></div>'
+            f'<div class="ex-pcbox ex-cons"><div class="ex-lbl">Cons</div><ul>{cons}</ul></div>'
+            f'</div></div>')
+
+        # Evidence is the hero: Reddit conversations → YouTube conversations
+        # → AI consensus (summarizes the evidence) → aspects/pros-cons.
+        st.markdown(
+            f'<div class="ex-detail">{head}'
+            f'<div class="ex-why">Why is <b>{sel}</b> ranked #{rank_no}?</div>'
+            f'{disc_html}{vid_html}{cons_html}{grid_html}</div>',
+            unsafe_allow_html=True)
+
+    # ═══ OVERVIEW — consumer-product landing ═══
+    with tabs[0]:
+        st.markdown(_OVERVIEW_CSS, unsafe_allow_html=True)
+
+        st.markdown(_EXPLORER_CSS, unsafe_allow_html=True)
+
+        if intent == "RANKING" and ranking:
+            _explorer()
+        else:
+            # entity → a YouTube video that features it, for card imagery
+            _vid_of = {_rid(r): _vid(r) for r in reviews if _is_yt(r)}
+            ent_video = {}
+            for a in annos:
+                v = _vid_of.get(a.comment_id)
+                if not v:
+                    continue
+                for e in (getattr(a, "entities", []) or []):
+                    if getattr(e, "confidence", 0) >= 0.5 and e.name and e.name not in ent_video:
+                        ent_video[e.name] = v
+
+            _ent_word = (entity_type.split("_")[-1].replace("-", " ").title() + "s") if entity_type else "Entities"
+
+            # ── 1. metric cards ──
+            s3v = (len(ranking) if intent == "RANKING"
+                   else len(payload.get("solutions", [])) if intent == "SOLUTION"
+                   else f'{payload.get("overall", 0):.1f}')
+            s3l = (f"{_ent_word} Ranked" if intent == "RANKING"
+                   else "Solutions Found" if intent == "SOLUTION" else "Average Score")
+            mcards = [("◈", len(comments), "Discussions", "Analyzed"),
+                      ("❝", len(meaningful), "Detailed Reviews", "Extracted"),
+                      ("★", s3v, s3l, ""),
+                      ("◷", f"{search_time:.1f}s", "Analysis Time", "Completed"),
+                      ("⬡", len(platform_breakdown), "Platforms", plat_str)]
+            st.markdown(
+                '<div class="ov-metrics">' + "".join(
+                    f'<div class="ov-mcard"><div class="ov-mic">{ic}</div><div class="ov-mval">{val}</div>'
+                    f'<div class="ov-mlbl">{lbl}</div><div class="ov-msub">{sub}</div></div>'
+                    for ic, val, lbl, sub in mcards) + '</div>',
+                unsafe_allow_html=True)
+
+            # ── 2. sentiment donut · top aspects · source breakdown ──
+            tot = max(1, len(pos) + len(mixed) + len(crit))
+            pp, npct = round(len(pos) / tot * 100), round(len(mixed) / tot * 100)
+            cp = max(0, 100 - pp - npct)
+            donut = (f'<div class="ov-donut" style="background:conic-gradient(#22c58a 0 {pp}%,'
+                     f'#5b6b7f {pp}% {pp+npct}%,#f0655a {pp+npct}% 100%)"><div class="ov-donut-h"></div></div>')
+            senti = (f'<div class="ov-panel"><div class="ov-ptitle">Sentiment Overview</div>'
+                     f'<div class="ov-senti">{donut}<div class="ov-legend">'
+                     f'<div><span class="dot" style="background:#22c58a"></span>Positive<b>{pp}%</b></div>'
+                     f'<div><span class="dot" style="background:#5b6b7f"></span>Neutral<b>{npct}%</b></div>'
+                     f'<div><span class="dot" style="background:#f0655a"></span>Critical<b>{cp}%</b></div>'
+                     f'</div></div></div>')
+
+            agg = {}
+            for it in ranking:
+                for k, v in (it.get("aspect_scores") or {}).items():
+                    agg.setdefault(k, []).append((v, it.get("mentions", 1)))
+            asp_avg = [(k, sum(a * b for a, b in vs) / (sum(b for _, b in vs) or 1)) for k, vs in agg.items()]
+            if not asp_avg and payload.get("aspects"):
+                asp_avg = list(payload["aspects"].items())
+            asp_avg.sort(key=lambda x: -x[1])
+            _ac = ["#22c58a", "#3b82f6", "#8b5cf6", "#f59e0b", "#eab308"]
+            asp_rows = "".join(
+                f'<div class="ov-asp"><span class="lbl">{k.replace("_"," ").title()}</span>'
+                f'<span class="track"><span class="fill" style="width:{round(v/5*100)}%;background:{_ac[i%5]}"></span></span>'
+                f'<span class="v">{round(v/5*100)}%</span></div>'
+                for i, (k, v) in enumerate(asp_avg[:5])) or '<div class="ov-empty">No aspect data</div>'
+            aspects_panel = f'<div class="ov-panel"><div class="ov-ptitle">Top Aspects Discussed</div>{asp_rows}</div>'
+
+            disc = {}
+            for r in reviews:
+                disc.setdefault("YouTube" if _is_yt(r) else "Reddit", set()).add(_get(r, "thread_id") or _rid(r))
+            src_rows = "".join(
+                f'<div class="ov-srcrow"><span class="ov-srcic {"yt" if s=="YouTube" else "rd"}">'
+                f'{"▶" if s=="YouTube" else "r/"}</span><div><div class="ov-srcname">{s}</div>'
+                f'<div class="ov-srccnt"><b>{len(t)}</b> discussions</div></div></div>'
+                for s, t in sorted(disc.items()))
+            src_panel = f'<div class="ov-panel"><div class="ov-ptitle">Source Breakdown</div>{src_rows}</div>'
+            st.markdown(f'<div class="ov-3col">{senti}{aspects_panel}{src_panel}</div>', unsafe_allow_html=True)
+
+            # ── 3. top ranked picks (visual cards) ──
+            if ranking:
+                st.markdown(f'<div class="ov-sechdr">Top Ranked {_ent_word}</div>', unsafe_allow_html=True)
+                picks = ""
+                for i, it in enumerate(ranking[:6], 1):
+                    # Image priority: enriched entity photo → a YouTube video that
+                    # features it → gradient placeholder only when both truly fail.
+                    photo = it.get("image_url")
+                    vid = ent_video.get(it["name"])
+                    if photo:
+                        img = f'<div class="ov-pimg" style="background-image:url({photo})">'
+                    elif vid:
+                        img = f'<div class="ov-pimg" style="background-image:url(https://i.ytimg.com/vi/{vid}/hqdefault.jpg)">'
+                    else:
+                        img = f'<div class="ov-pimg ov-pph" style="background:{_grad_for(it["name"])}"><span>{it["name"][:1].upper()}</span>'
+                    rc = f"g{i}" if i <= 3 else ""
+                    img += f'<span class="ov-rbadge {rc}">{i}</span></div>'
+                    cat = entity_type.replace("_", " ").title() if entity_type else ""
+                    desc = _excerpt(it["quotes"][0], 88) if it.get("quotes") else _entity_verdict(it)
+                    picks += (
+                        f'<div class="ov-pick">{img}<div class="ov-pbody">'
+                        f'<div class="ov-pname">{it["name"]}</div>'
+                        f'<div class="ov-prate">{_stars(it["overall_stars"])}<span class="ov-pscore">{it["overall_stars"]:.1f}</span></div>'
+                        f'<div class="ov-pcat">{cat}</div>'
+                        f'<div class="ov-pdesc">{desc}</div>'
+                        f'<div class="ov-pment">{it["mentions"]} mention{"s" if it["mentions"]!=1 else ""}</div>'
+                        f'</div></div>')
+                st.markdown(f'<div class="ov-picks">{picks}</div>', unsafe_allow_html=True)
+
+            # ── 4. community highlights: YouTube videos + Reddit discussions ──
+            videos = {}
+            for r in reviews:
+                if _is_yt(r):
+                    v = _vid(r)
+                    if v and v not in videos:
+                        m = _get(r, "meta", {}) or {}
+                        videos[v] = {"vid": v, "title": m.get("video_title", "Video"), "ch": m.get("channel_title", ""),
+                                     "thumb": m.get("thumbnail_url") or f"https://i.ytimg.com/vi/{v}/hqdefault.jpg"}
+            threads = {}
+            for r in reviews:
+                if not _is_yt(r):
+                    tid = _get(r, "thread_id") or _rid(r)
+                    up = _get(r, "upvotes", 0) or 0
+                    cur = threads.get(tid)
+                    if not cur:
+                        threads[tid] = {"title": _get(r, "post_title") or _excerpt(_txt(r), 70),
+                                        "up": up, "sub": _subr(r), "perma": _get(r, "permalink")}
+                    else:
+                        cur["up"] = max(cur["up"], up)
+            vids = list(videos.values())[:3]
+            rthreads = sorted(threads.values(), key=lambda x: -x["up"])[:4]
+
+            if vids or rthreads:
+                st.markdown('<div class="ov-sechdr">Community Highlights</div>', unsafe_allow_html=True)
+                colv, colr = st.columns(2)
+                if vids:
+                    vcards = "".join(
+                        f'<a class="ov-vid" href="https://youtube.com/watch?v={v["vid"]}" target="_blank">'
+                        f'<div class="ov-vthumb" style="background-image:url({v["thumb"]})">'
+                        f'<span class="ov-play">▶</span></div>'
+                        f'<div class="ov-vtitle">{v["title"]}</div>'
+                        f'<div class="ov-vch">{v["ch"]}</div></a>' for v in vids)
+                    colv.markdown('<div class="ov-sub2">Top YouTube Videos</div>'
+                                  f'<div class="ov-vgrid">{vcards}</div>', unsafe_allow_html=True)
+                if rthreads:
+                    rrows = "".join(
+                        f'<a class="ov-rd" href="https://reddit.com{t["perma"]}" target="_blank">'
+                        f'<span class="ov-rdic">r/</span><div><div class="ov-rdtitle">{t["title"]}</div>'
+                        f'<div class="ov-rdmeta">{("r/"+t["sub"]+" · ") if t["sub"] else ""}▲ {t["up"]:,} upvotes</div>'
+                        f'</div></a>' for t in rthreads)
+                    colr.markdown('<div class="ov-sub2">Top Reddit Discussions</div>'
+                                  f'<div class="ov-rdlist">{rrows}</div>', unsafe_allow_html=True)
+
+            # ── 5. key takeaways + what's next ──
+            sents = [s.strip() for s in _re.split(r'(?<=[.!?])\s+', payload.get("summary", "")) if len(s.strip()) > 14][:5]
+            colk, coln = st.columns(2)
+            if sents:
+                tk = "".join(f'<div class="ov-tk"><span class="ov-tkchk">✓</span><span>{s}</span></div>' for s in sents)
+                colk.markdown(f'<div class="ov-panel"><div class="ov-ptitle">Key Takeaways</div>{tk}</div>',
+                              unsafe_allow_html=True)
+            nexts = [("❝", "Explore Full Reviews", "Dive into individual reviews and discussions"),
+                     ("▤", "Compare " + _ent_word, "Side-by-side of the top-rated picks"),
+                     ("⇪", "Save & Share", "Export results or share with friends")]
+            nn = "".join(f'<div class="ov-nx"><span class="ov-nxic">{i}</span>'
+                         f'<div><div class="ov-nxt">{t}</div><div class="ov-nxs">{s}</div></div>'
+                         f'<span class="ov-nxarrow">→</span></div>' for i, t, s in nexts)
+            coln.markdown(f'<div class="ov-panel"><div class="ov-ptitle">What\'s Next?</div>{nn}</div>',
+                          unsafe_allow_html=True)
+
+    # ═══ RANKINGS ═══
+    with tabs[1]:
+        if not ranking and not also:
+            st.info("No ranked entities. Try a broader query or increase depth.")
+        if ranking:
+            n = st.session_state.get("rank_n", 6)
+            for i, item in enumerate(ranking[:n], 1):
+                conf = item.get("confidence_score", item.get("confidence", 0.5))
+                st.markdown(_entity_card_html(i, item), unsafe_allow_html=True)
+                with st.expander("Details · aspects · evidence"):
+                    if item.get("aspect_scores"):
+                        st.markdown("".join(_aspect_bar(k, v) for k, v in
+                                    sorted(item["aspect_scores"].items(), key=lambda x: -x[1])),
+                                    unsafe_allow_html=True)
+                    st.caption(f"{conf:.0%} ranking confidence · {item['mentions']} mentions · upvote-weighted")
+                    for q in (item.get("quotes") or [])[:3]:
+                        st.markdown(f'<div class="ih-evcard"><div class="ih-clamp3">{q}</div></div>',
+                                    unsafe_allow_html=True)
+            if len(ranking) > n:
+                if st.button(f"Load more ({len(ranking)-n} left)", key="rank_more"):
+                    st.session_state["rank_n"] = n + 6
+                    st.rerun()
+        if also:
+            with st.expander(f"Also mentioned · lower confidence ({len(also)})"):
+                for item in also:
+                    st.markdown(f'**{item["name"]}** — {item["overall_stars"]:.1f} · {item["mentions"]} mention'
+                                f'{"s" if item["mentions"]!=1 else ""} · too few reviews to rank confidently')
+
+    # ═══ EVIDENCE ═══
+    with tabs[2]:
+        f1, f2, f3, f4 = st.columns(4)
+        sent_f = f1.radio("Sentiment", ["All", "Positive", "Mixed", "Critical"], key="ev_sent", horizontal=False)
+        src_opts = [p.title() for p in platform_breakdown.keys()]
+        src_f = f2.multiselect("Source", src_opts, default=src_opts, key="ev_src")
+        ent_names = ["All"] + [it["name"] for it in ranking]
+        ent_f = f3.selectbox("Entity", ent_names, key="ev_entity")
+        sort_f = f4.selectbox("Sort", ["Relevance", "Upvotes", "Recent"], key="ev_sort")
+
+        pool = {"All": ev_all, "Positive": pos, "Mixed": mixed, "Critical": crit}[sent_f]
+        def _srcname(r): return "YouTube" if _is_yt(r) else "Reddit"
+        # case-insensitive: the options come from platform keys via .title()
+        # ("Youtube") while _srcname says "YouTube" — a direct `in` check
+        # silently excluded every YouTube review from this tab.
+        _src_sel = {s.lower() for s in src_f}
+        pool = [r for r in pool if _srcname(r).lower() in _src_sel]
+        if ent_f != "All":
+            pool = [r for r in pool if ent_f in _ents(r)]
+        if sort_f == "Upvotes":
+            pool = sorted(pool, key=lambda r: -(_get(r, "upvotes", 0) or 0))
+        elif sort_f == "Recent":
+            pool = sorted(pool, key=lambda r: -(_get(r, "created_utc", 0) or 0))
+
+        st.caption(f"{len(pool)} matching reviews")
+        n = st.session_state.get("ev_n", 8)
+        for r in pool[:n]:
+            sc = _score(r)
+            sent_badge = ""
+            if sc is not None:
+                sl, scol, sbg = _sentiment_label(sc)
+                sent_badge = f'<span class="ih-cbadge" style="color:{scol};background:{sbg}">{sl}</span>'
+            up = _get(r, "upvotes", 0) or 0
+            ent_chips = "".join(f'<span class="ih-chip">{e}</span>' for e in _ents(r)[:5])
+            snippet = _excerpt(_txt(r), 260)
+            if _is_yt(r):
+                vid = _vid(r); meta = _get(r, "meta", {}) or {}
+                title = meta.get("video_title", "") or "YouTube video"
+                chan = meta.get("channel_title", "")
+                thumb_src = meta.get("thumbnail_url") or (f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg" if vid else "")
+                thumb = f'<img class="ih-yt-thumb" src="{thumb_src}">' if thumb_src else ""
+                link = _get(r, "url") or (f"https://youtube.com/watch?v={vid}" if vid else "#")
+                st.markdown(
+                    f'<div class="ih-evcard"><div class="ih-yt">{thumb}<div class="ih-yt-body">'
+                    f'<div class="ih-evcard-head"><span class="ih-badge-src ih-badge-yt">YouTube</span>{sent_badge}'
+                    f'<span class="ih-evcard-sub">👍 {up:,}</span></div>'
+                    f'<div class="ih-evcard-auth">{title}</div>'
+                    f'<div class="ih-evcard-sub">{chan}</div>'
+                    f'<div class="ih-clamp3">{snippet}</div>{ent_chips}'
+                    f'<div style="margin-top:.3rem"><a class="ih-open-link" href="{link}" target="_blank">Open Video ↗</a></div>'
+                    f'</div></div></div>', unsafe_allow_html=True)
+            else:
+                sub = _subr(r); perma = _get(r, "permalink")
+                link = f"https://reddit.com{perma}" if perma else _get(r, "url", "#")
+                sub_txt = f'<span class="ih-evcard-sub">r/{sub}</span>' if sub else ""
+                st.markdown(
+                    f'<div class="ih-evcard"><div class="ih-evcard-head">'
+                    f'<span class="ih-badge-src ih-badge-rd">Reddit</span>{sent_badge}'
+                    f'<span class="ih-evcard-auth">{_get(r,"author","anon")}</span>{sub_txt}'
+                    f'<span class="ih-evcard-sub">▲ {up:,}</span></div>'
+                    f'<div class="ih-clamp3">{snippet}</div>{ent_chips}'
+                    f'<div style="margin-top:.3rem"><a class="ih-open-link" href="{link}" target="_blank">Open Reddit ↗</a></div>'
+                    f'</div>', unsafe_allow_html=True)
+        if len(pool) > n:
+            if st.button(f"Load more ({len(pool)-n} left)", key="ev_more"):
+                st.session_state["ev_n"] = n + 8
+                st.rerun()
+
+    # ═══ SOURCES ═══
+    with tabs[3]:
+        by = {}
+        for c in comments:
+            by.setdefault((c.get("source", "reddit") or "reddit").title(), _Counter())[c.get("unit_type", "comment")] += 1
+        scols = st.columns(max(1, len(by)))
+        for col, (src, cnt) in zip(scols, by.items()):
+            rows = "".join(f'<div class="row"><span>{k}s analyzed</span><b>{v}</b></div>' for k, v in cnt.items())
+            col.markdown(f'<div class="ih-srccard"><h4>{src}</h4>{rows}</div>', unsafe_allow_html=True)
+        scraped = sum(len(v) for v in platform_breakdown.values())
+        st.markdown('<div class="ih-ov-hdr">Pipeline funnel</div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="ih-srccard">'
+            f'<div class="row"><span>Scraped (raw units)</span><b>{scraped}</b></div>'
+            f'<div class="row"><span>After relevance filter</span><b>{len(comments)}</b></div>'
+            f'<div class="row"><span>Final analyzed</span><b>{len(relevant)}</b></div>'
+            f'</div>', unsafe_allow_html=True)
+        if subreddits:
+            st.caption("Subreddits: " + ", ".join(f"r/{s}" for s in subreddits[:8]))
+
+    # ═══ ASPECTS ═══
+    with tabs[4]:
+        agg2 = {}
+        for it in ranking:
+            for k, v in (it.get("aspect_scores") or {}).items():
+                agg2.setdefault(k, []).append((v, it.get("mentions", 1)))
+        rows = [(k, sum(a * b for a, b in vs) / (sum(b for _, b in vs) or 1)) for k, vs in agg2.items()]
+        if not rows and payload.get("aspects"):
+            rows = list(payload["aspects"].items())
+        rows.sort(key=lambda x: -x[1])
+        if rows:
+            st.markdown("**How each dimension is discussed** (mention-weighted average across ranked entities)")
+            st.markdown("".join(_aspect_bar(k, v) for k, v in rows), unsafe_allow_html=True)
+            if ranking:
+                st.markdown("**Per-entity aspect scores**")
+                import pandas as pd
+                asp_keys = [k for k, _ in rows]
+                df = pd.DataFrame([
+                    {"Entity": it["name"], **{k.replace("_", " ").title(): round((it.get("aspect_scores") or {}).get(k, float("nan")), 1)
+                                              for k in asp_keys}}
+                    for it in ranking[:12]
+                ]).set_index("Entity")
+                st.dataframe(df, use_container_width=True)
+        else:
+            st.info("No aspect data available for this query.")
+
+    # ═══ DEVELOPER ═══
+    with tabs[5]:
+        import pandas as pd
+        if intent == "RANKING":
+            try:
+                from insighthub.core.diagnostics import entity_flow_table
+                rows = entity_flow_table(reviews, comments, annos)
+                conf_names = {r["name"] for r in ranking}
+                also_names = {r["name"] for r in also}
+                for row in rows:
+                    row["outcome"] = ("ranked" if row["entity"] in conf_names
+                                      else "also-mentioned" if row["entity"] in also_names else "dropped")
+                if rows:
+                    st.markdown("**Entity flow** — retrieved → filtered → extracted → ranked")
+                    st.dataframe(pd.DataFrame(rows)[["entity", "retrieved", "filtered", "extracted", "primary", "outcome"]],
+                                 use_container_width=True)
+            except Exception as _e:
+                st.caption(f"Entity flow unavailable: {_e}")
+        with st.expander("Ranking JSON"):
+            st.json(payload.get("ranking", []))
+        with st.expander("Raw data — first 3 reviews"):
+            try:
+                st.dataframe(pd.DataFrame(reviews[:3])[["id", "author", "upvotes", "permalink", "text"]])
+            except Exception:
+                st.write(reviews[:3])
+        if not use_cross:
+            with st.expander("Reddit search plan"):
+                try:
+                    plan = reddit_service._plan_search(query)
+                    st.json({"terms": plan.terms, "subreddits": plan.subreddits,
+                             "time_filter": plan.time_filter, "strategies": plan.strategies})
+                except Exception as _e:
+                    st.caption(f"Plan unavailable: {_e}")
+
 
 # ── Analysis ──────────────────────────────────────────────────────────────────
 
@@ -1380,6 +2464,19 @@ if run_analysis and query.strip():
                 ranking = [e for e in ranking if e.name in valid]
             ranking = llm_service.validate_entity_locations(ranking, query)
 
+            # Enrich place-like entities with a real photo (Google Places → Yelp,
+            # cached). Gated to place categories so we don't burn quota resolving
+            # products; the category comes from GPT (no hardcoded keyword rules).
+            if _qcat in ("local_discovery", "service_review"):
+                try:
+                    from insighthub.services.image_enrichment import get_image_service
+                    _img = get_image_service()
+                    if _img.enabled:
+                        for e in ranking:
+                            e.image_url = _img.get_image_url(e.name, query)
+                except Exception as _e:
+                    logger.warning(f"Image enrichment skipped: {_e}")
+
             _insufficient = ConfidenceConfig.TIER_LABELS["insufficient"]
             # Primary picks vs. low-confidence long tail surfaced by the sparse-rescue path.
             confident = [e for e in ranking if e.confidence_tier != _insufficient]
@@ -1391,7 +2488,7 @@ if run_analysis and query.strip():
             def _rank_dict(e):
                 return {"name": e.name, "overall_stars": e.overall_stars, "aspect_scores": e.aspect_scores,
                         "mentions": e.mentions, "confidence": e.confidence, "quotes": e.quotes,
-                        "confidence_tier": e.confidence_tier,
+                        "confidence_tier": e.confidence_tier, "image_url": e.image_url,
                         # Four-factor RANKING confidence (volume/diversity/consistency/
                         # source-fit + corroboration/evidence lift) — distinct from the
                         # GPT extraction confidence above. This is what the UI shows.
@@ -1435,411 +2532,28 @@ if run_analysis and query.strip():
             unsafe_allow_html=True,
         )
 
-        # ── RESULTS ──────────────────────────────────────────────────────────
-
+        # ── RESULTS → persist to session_state; rendered by render_results() ──
         if not reviews:
+            st.session_state.pop("results", None)
             st.warning("No reviews found. Try a broader search term or increase depth in settings.")
         else:
-            annotated_ids = set(anno_map.keys())
-            relevant_reviews = [r for r in reviews if (r.get("id") if isinstance(r, dict) else getattr(r, "id", "")) in annotated_ids]
-            meaningful = [r for r in relevant_reviews if len((r.get("text") or "")) >= 100]
-
-            # ── Header ────────────────────────────────────────────────────────
-            badge_cls = f"ih-badge-{intent_schema.intent}"
-            entity_part = (
-                f'<span class="ih-meta-dot">·</span><span class="ih-meta-txt">{intent_schema.entity_type}</span>'
-                if intent_schema.entity_type else ""
-            )
-            aspects_preview = ", ".join(intent_schema.aspects[:5])
-            if len(intent_schema.aspects) > 5:
-                aspects_preview += "…"
-
-            st.markdown(
-                f'<div class="ih-result-header">'
-                f'<div class="ih-query-title">{query}</div>'
-                f'<div class="ih-meta-row">'
-                f'<span class="ih-intent-badge {badge_cls}">{intent_schema.intent}</span>'
-                f'{entity_part}'
-                f'<span class="ih-meta-dot">·</span>'
-                f'<span class="ih-meta-txt">{aspects_preview}</span>'
-                f'</div></div>',
-                unsafe_allow_html=True,
-            )
-
-            # ── Source disclosure ─────────────────────────────────────────────
-            from datetime import datetime as _dt
-            _ts = _dt.fromtimestamp(payload["metadata"]["timestamp"]).strftime("%b %d, %Y at %H:%M")
-            _plat_str = " + ".join(p.title() for p in platform_breakdown.keys())
-            _sub_str = ""
-            if _subreddits_used:
-                _sub_parts = [f"r/{s}" for s in _subreddits_used[:4]]
-                if len(_subreddits_used) > 4:
-                    _sub_parts.append(f"+{len(_subreddits_used) - 4} more")
-                _sub_str = " · " + ", ".join(_sub_parts)
-            st.markdown(
-                f'<div class="ih-source-disclosure">'
-                f'Analyzed {_ts} &nbsp;·&nbsp; {_plat_str}{_sub_str}'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-
-            # ── Stats strip ───────────────────────────────────────────────────
-            plat_label = " + ".join(p.title() for p in platform_breakdown.keys())
-            if intent_schema.intent == "RANKING":
-                s3_val, s3_lbl = str(len(payload.get("ranking", []))), "Entities ranked"
-            elif intent_schema.intent == "SOLUTION":
-                s3_val, s3_lbl = str(len(payload.get("solutions", []))), "Solutions found"
-            else:
-                s3_val, s3_lbl = f"{payload.get('overall', 0):.1f}", "Avg score /5"
-
-            st.markdown(
-                f'<div class="ih-stats-strip">'
-                f'<div class="ih-stat"><div class="ih-stat-val">{len(comments)}</div><div class="ih-stat-lbl">Reviews analyzed</div></div>'
-                f'<div class="ih-stat"><div class="ih-stat-val">{len(meaningful)}</div><div class="ih-stat-lbl">Detailed reviews</div></div>'
-                f'<div class="ih-stat"><div class="ih-stat-val">{s3_val}</div><div class="ih-stat-lbl">{s3_lbl}</div></div>'
-                f'<div class="ih-stat"><div class="ih-stat-val">{search_time:.1f}s</div><div class="ih-stat-lbl">Analysis time</div></div>'
-                f'<div class="ih-stat"><div class="ih-stat-val">{plat_label}</div><div class="ih-stat-lbl">Sources</div></div>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-
-            # ── Download Report button ────────────────────────────────────────
-            try:
-                from insighthub.core.report_generator import generate_pdf
-                _report_payload = dict(payload)
-                _report_payload["source_counts"] = {
-                    p: len(reviews_list)
-                    for p, reviews_list in platform_breakdown.items()
-                }
-                _pdf_bytes = generate_pdf(_report_payload)
-                _safe_query = "".join(c if c.isalnum() else "_" for c in query[:40])
-                st.download_button(
-                    label="⬇ Download PDF Report",
-                    data=_pdf_bytes,
-                    file_name=f"insighthub_{_safe_query}.pdf",
-                    mime="application/pdf",
-                    use_container_width=False,
-                )
-            except Exception as _pdf_err:
-                logger.warning(f"PDF generation failed: {_pdf_err}")
-
-            # ── Evidence data setup (used by preview and remaining sections) ──
-            detailed = [r for r in relevant_reviews if len((r.get("text") or "")) >= 100]
-
-            def _enrich(r):
-                rid = r.get("id") if isinstance(r, dict) else r.id
-                anno = anno_map.get(rid)
-                sc = anno.overall_score if anno and hasattr(anno, "overall_score") else None
-                base = dict(r) if isinstance(r, dict) else {
-                    "id": rid, "text": getattr(r, "text", ""),
-                    "upvotes": getattr(r, "upvotes", 0),
-                    "permalink": getattr(r, "permalink", ""),
-                    "url": getattr(r, "url", ""),
-                    "author": getattr(r, "author", "anonymous"),
-                }
-                base["_score"] = sc
-                return base
-
-            enriched = [r for r in [_enrich(r) for r in detailed]
-                        if r.get("_score") is None or r.get("_score") >= 2.0]
-            positive = sorted([r for r in enriched if r["_score"] is not None and r["_score"] >= 3.8], key=lambda r: -(r.get("upvotes",0) or 0))
-            critical = sorted([r for r in enriched if r["_score"] is not None and r["_score"] < 2.8],  key=lambda r: -(r.get("upvotes",0) or 0))
-            mixed    = sorted([r for r in enriched if r["_score"] is None or 2.8 <= r["_score"] < 3.8], key=lambda r: -(r.get("upvotes",0) or 0))
-
-            def _render_ev(review_list, cap=6):
-                if not review_list:
-                    return ""
-                html = ""
-                for rev in review_list[:cap]:
-                    permalink = rev.get("permalink","") or ""
-                    url       = rev.get("url","") or ""
-                    author    = rev.get("author") or "anonymous"
-                    upvotes   = rev.get("upvotes", 0) or 0
-                    sc        = rev.get("_score")
-                    src       = _source_tag(rev)
-                    upcls     = "ih-upvotes-high" if upvotes >= 100 else ""
-
-                    is_youtube = "youtube" in (url + permalink).lower() or "youtu.be" in (url + permalink).lower()
-                    if permalink and not is_youtube:
-                        ahtml = f'<a href="https://reddit.com{permalink}" target="_blank">{author}</a>'
-                    elif url or permalink:
-                        ahtml = f'<a href="{url or permalink}" target="_blank">{author}</a>'
-                    else:
-                        ahtml = author
-
-                    sent_html = ""
-                    if sc is not None:
-                        sl, sc_color, sc_bg = _sentiment_label(sc)
-                        sent_html = f'<span class="ih-sent" style="color:{sc_color};background:{sc_bg};border:1px solid {sc_color}22">{sl}</span>'
-
-                    html += (
-                        f'<div class="ih-evidence-item">'
-                        f'<div class="ih-ev-meta">{src}{sent_html}'
-                        f'<span class="ih-ev-author">{ahtml}</span>'
-                        f'<span class="ih-upvotes {upcls}">▲ {upvotes:,}</span>'
-                        f'</div>'
-                        f'<div class="ih-ev-text">{_excerpt(rev.get("text",""))}</div>'
-                        f'</div>'
-                    )
-                return html
-
-            # ═════════════════════════════════════════════════════════════════
-            # SECTION 1 — Community Evidence Preview (3 positive + 3 critical)
-            # ═════════════════════════════════════════════════════════════════
-            if positive or critical:
-                st.markdown('<div class="ih-section-hdr">Community Evidence Preview</div>', unsafe_allow_html=True)
-                if positive:
-                    st.markdown(f'<div class="ih-evidence-group-hdr" style="color:#22d3a0">Positive voices</div>', unsafe_allow_html=True)
-                    st.markdown(_render_ev(positive, 3), unsafe_allow_html=True)
-                if critical:
-                    st.markdown(f'<div class="ih-evidence-group-hdr" style="color:#f87171">Critical voices</div>', unsafe_allow_html=True)
-                    st.markdown(_render_ev(critical, 3), unsafe_allow_html=True)
-
-            # ═════════════════════════════════════════════════════════════════
-            # SECTION 2 — Community Consensus (AI Summary)
-            # ═════════════════════════════════════════════════════════════════
-            avg_conf = (
-                sum(i.get("confidence", 0.5) for i in payload.get("ranking", [{"confidence": 0.5}]))
-                / max(len(payload.get("ranking", [1])), 1)
-            ) if intent_schema.intent == "RANKING" else 0.6
-            conf_lbl, conf_color = _confidence_label(avg_conf)
-
-            st.markdown(
-                f'<div class="ih-summary-card">'
-                f'<div class="ih-summary-eyebrow">◈ Community Consensus</div>'
-                f'<div class="ih-summary-text">{payload["summary"]}</div>'
-                f'<div class="ih-summary-foot">'
-                f'<div class="ih-conf-dot" style="background:{conf_color}"></div>'
-                f'<span style="color:{conf_color}">{conf_lbl}</span>'
-                f'<span class="ih-conf-explain">'
-                f'— based on {len(meaningful)} reviews across {len(intent_schema.aspects)} dimensions'
-                f'</span>'
-                f'<span class="ih-foot-right">{len(platform_breakdown)} source{"s" if len(platform_breakdown)>1 else ""}</span>'
-                f'</div></div>',
-                unsafe_allow_html=True,
-            )
-
-            # ═════════════════════════════════════════════════════════════════
-            # SECTION 3 — Full Rankings / Solutions / Insights
-            # ═════════════════════════════════════════════════════════════════
-            if intent_schema.intent == "RANKING":
-                if payload["ranking"]:
-                    st.markdown('<div class="ih-section-hdr">Full Rankings</div>', unsafe_allow_html=True)
-                    for i, item in enumerate(payload["ranking"][: SearchConstants.MAX_ENTITIES_TO_DISPLAY], 1):
-                        pc = ("rank-gold" if i == 1 else "rank-silver" if i == 2 else "rank-bronze" if i == 3 else "")
-                        card_cls = ("ih-rank-card-top3 " if i <= 3 else "") + (
-                            "ih-rank-card-gold" if i == 1 else "ih-rank-card-silver" if i == 2 else "ih-rank-card-bronze" if i == 3 else ""
-                        )
-                        sc = _score_cls(item["overall_stars"])
-                        # Show the four-factor RANKING confidence (reflects evidence
-                        # volume/diversity/corroboration), not GPT extraction confidence.
-                        rank_conf = item.get("confidence_score", item.get("confidence", 0.5))
-                        conf_lbl2, conf_color2 = _confidence_label(rank_conf)
-                        verdict = _entity_verdict(item)
-
-                        aspect_bars = ""
-                        if item.get("aspect_scores"):
-                            sorted_asp = sorted(item["aspect_scores"].items(), key=lambda x: x[1], reverse=True)[:5]
-                            aspect_bars = '<div class="ih-aspects">' + "".join(_aspect_bar(k, v) for k, v in sorted_asp) + '</div>'
-
-                        conf_pill = (
-                            f'<span class="ih-conf-pill" '
-                            f'style="color:{conf_color2};background:{conf_color2}1a;border:1px solid {conf_color2}33">'
-                            f'{conf_lbl2}</span>'
-                        )
-
-                        st.markdown(
-                            f'<div class="ih-rank-card {card_cls}">'
-                            f'<div class="ih-rank-head">'
-                            f'<div class="ih-rank-num {pc}">#{i}</div>'
-                            f'<div class="ih-rank-info">'
-                            f'<div class="ih-rank-name">{item["name"]}</div>'
-                            f'<div class="ih-rank-stars">{_stars(item["overall_stars"])}</div>'
-                            f'<div class="ih-rank-verdict">{verdict}</div>'
-                            f'</div>'
-                            f'<div class="ih-rank-score-block">'
-                            f'<div class="ih-rank-big-score {sc}">{item["overall_stars"]:.1f}</div>'
-                            f'<div class="ih-rank-mentions">{item["mentions"]} mentions</div>'
-                            f'</div>'
-                            f'</div>'
-                            f'{aspect_bars}'
-                            f'<div class="ih-rank-foot">'
-                            f'{conf_pill}'
-                            f'<span class="ih-conf-explain">'
-                            f'{rank_conf:.0%} ranking confidence'
-                            f' · {item["mentions"]} mentions · upvote-weighted'
-                            f'</span>'
-                            f'</div>'
-                            f'</div>',
-                            unsafe_allow_html=True,
-                        )
-                elif not payload.get("also_mentioned"):
-                    st.info("No ranked entities found. Try a more specific query or increase depth in settings.")
-
-                # Long tail surfaced by the sparse-rescue path — shown separately
-                # so it never gets confused with the primary, high-confidence picks.
-                also_mentioned = payload.get("also_mentioned", [])
-                if also_mentioned:
-                    st.markdown(
-                        '<div class="ih-section-hdr">Also mentioned '
-                        '<span class="ih-also-tag">lower confidence · single mention</span></div>',
-                        unsafe_allow_html=True,
-                    )
-                    for item in also_mentioned[: SearchConstants.MAX_ENTITIES_TO_DISPLAY]:
-                        sc = _score_cls(item["overall_stars"])
-                        st.markdown(
-                            f'<div class="ih-rank-card ih-rank-card-faint">'
-                            f'<div class="ih-rank-head">'
-                            f'<div class="ih-rank-info">'
-                            f'<div class="ih-rank-name">{item["name"]}</div>'
-                            f'<div class="ih-rank-stars">{_stars(item["overall_stars"])}</div>'
-                            f'</div>'
-                            f'<div class="ih-rank-score-block">'
-                            f'<div class="ih-rank-big-score {sc}">{item["overall_stars"]:.1f}</div>'
-                            f'<div class="ih-rank-mentions">{item["mentions"]} mention'
-                            f'{"s" if item["mentions"] != 1 else ""}</div>'
-                            f'</div>'
-                            f'</div>'
-                            f'<div class="ih-rank-foot">'
-                            f'<span class="ih-conf-explain">Mentioned in discussion but too few '
-                            f'reviews to rank confidently</span>'
-                            f'</div>'
-                            f'</div>',
-                            unsafe_allow_html=True,
-                        )
-
-            elif intent_schema.intent == "SOLUTION":
-                if payload["solutions"]:
-                    st.markdown('<div class="ih-section-hdr">Solutions</div>', unsafe_allow_html=True)
-                    rows = "".join(
-                        f'<div class="ih-solution-item">'
-                        f'<div class="ih-sol-idx">{i}</div>'
-                        f'<div><div class="ih-sol-name">{c["title"]}</div>'
-                        f'<div class="ih-sol-count">{c["evidence_count"]} supporting comments</div></div>'
-                        f'</div>'
-                        for i, c in enumerate(payload["solutions"], 1)
-                    )
-                    st.markdown(rows, unsafe_allow_html=True)
-                else:
-                    st.info("No solution clusters found. Try a more specific query or increase depth in settings.")
-
-            else:  # GENERIC
-                if payload.get("quotes"):
-                    st.markdown('<div class="ih-section-hdr">Key community voices</div>', unsafe_allow_html=True)
-                    for q_text in payload["quotes"][:6]:
-                        st.markdown(f'<div class="ih-quote">{q_text}</div>', unsafe_allow_html=True)
-
-            # ═════════════════════════════════════════════════════════════════
-            # SECTION 4 — Aspect Breakdown (GENERIC only)
-            # ═════════════════════════════════════════════════════════════════
-            if intent_schema.intent == "GENERIC" and payload.get("aspects"):
-                st.markdown('<div class="ih-section-hdr">Aspect Breakdown</div>', unsafe_allow_html=True)
-                bars = "".join(_aspect_bar(k, v) for k, v in payload["aspects"].items())
-                st.markdown(bars or '<p style="color:#475569;font-size:.82rem">No aspect data</p>', unsafe_allow_html=True)
-
-            # ═════════════════════════════════════════════════════════════════
-            # SECTION 5 — Remaining Evidence
-            # ═════════════════════════════════════════════════════════════════
-            has_remaining = (
-                len(positive) > 3 or len(critical) > 3 or len(mixed) > 0
-            )
-            if detailed and has_remaining:
-                st.markdown(
-                    f'<div class="ih-section-hdr">{len(enriched)} substantive reviews · grouped by sentiment</div>',
-                    unsafe_allow_html=True,
-                )
-
-                if len(positive) > 3:
-                    st.markdown(f'<div class="ih-evidence-group-hdr" style="color:#22d3a0">Positive voices ({len(positive)})</div>', unsafe_allow_html=True)
-                    st.markdown(_render_ev(positive[3:], 5), unsafe_allow_html=True)
-                    if len(positive) > 8:
-                        with st.expander(f"{len(positive)-8} more positive reviews"):
-                            st.markdown(_render_ev(positive[8:], 50), unsafe_allow_html=True)
-
-                if len(critical) > 3:
-                    st.markdown(f'<div class="ih-evidence-group-hdr" style="color:#f87171">Critical voices ({len(critical)})</div>', unsafe_allow_html=True)
-                    st.markdown(_render_ev(critical[3:], 5), unsafe_allow_html=True)
-                    if len(critical) > 8:
-                        with st.expander(f"{len(critical)-8} more critical reviews"):
-                            st.markdown(_render_ev(critical[8:], 50), unsafe_allow_html=True)
-
-                if mixed:
-                    st.markdown(f'<div class="ih-evidence-group-hdr" style="color:#64748b">Mixed &amp; neutral ({len(mixed)})</div>', unsafe_allow_html=True)
-                    st.markdown(_render_ev(mixed, 5), unsafe_allow_html=True)
-                    if len(mixed) > 5:
-                        with st.expander(f"{len(mixed)-5} more mixed reviews"):
-                            st.markdown(_render_ev(mixed[5:], 50), unsafe_allow_html=True)
-
-            elif detailed and not has_remaining and not positive and not critical:
-                st.info("No detailed reviews found for this query.")
-
-            # ═════════════════════════════════════════════════════════════════
-            # SECTION 6 — Developer Debug
-            # ═════════════════════════════════════════════════════════════════
-            if use_cross:
-                st.markdown('<div class="ih-section-hdr">Source breakdown</div>', unsafe_allow_html=True)
-                # Describe what was actually ANALYZED (the units that survived
-                # filtering), split by platform and unit type, so these numbers
-                # reconcile with the "Reviews analyzed" stat above instead of the
-                # raw scraped totals.
-                from collections import Counter as _Counter
-                _by_src: dict = {}
-                for _c in comments:
-                    _src = (_c.get("source", "reddit") or "reddit").title()
-                    _ut = _c.get("unit_type", "comment") or "comment"
-                    _by_src.setdefault(_src, _Counter())[_ut] += 1
-                _order = ["comment", "post", "transcript"]
-                _label = {"comment": "comments", "post": "posts", "transcript": "transcripts"}
-                items = []
-                for _src, _cnt in _by_src.items():
-                    _total = sum(_cnt.values())
-                    _parts = ", ".join(f"{_cnt[u]} {_label[u]}" for u in _order if _cnt.get(u))
-                    items.append(
-                        f'<div class="ih-plat-item"><span class="ih-plat-count">{_total}</span>'
-                        f'{_src} <span class="ih-plat-sub">({_parts})</span></div>'
-                    )
-                plat_html = '<div class="ih-plat-strip">' + "".join(items) + '</div>'
-                st.markdown(plat_html, unsafe_allow_html=True)
-                st.caption(f"{len(comments)} units analyzed across {len(_by_src)} sources "
-                           f"(scraped {sum(len(v) for v in platform_breakdown.values())} before filtering).")
-
-            if show_debug:
-                st.markdown('<div class="ih-section-hdr">Developer Debug</div>', unsafe_allow_html=True)
-                if intent_schema.intent == "RANKING":
-                    with st.expander("Entity flow — retrieved → filtered → extracted → ranked"):
-                        import pandas as pd
-                        from insighthub.core.diagnostics import entity_flow_table
-                        rows = entity_flow_table(reviews, comments, annos)
-                        # Tag outcome from the already-split payload so it reflects
-                        # exactly what the UI showed (confident vs also-mentioned).
-                        conf_names = {r["name"] for r in payload.get("ranking", [])}
-                        also_names = {r["name"] for r in payload.get("also_mentioned", [])}
-                        for row in rows:
-                            if row["entity"] in conf_names:
-                                row["outcome"] = "ranked"
-                            elif row["entity"] in also_names:
-                                row["outcome"] = "also-mentioned"
-                            else:
-                                row["outcome"] = "dropped"
-                        if rows:
-                            st.dataframe(pd.DataFrame(rows)[
-                                ["entity", "retrieved", "filtered", "extracted", "primary", "outcome"]
-                            ])
-                            st.caption("retrieved = raw units mentioning it · filtered = survived relevance · "
-                                       "extracted = GPT pulled it out · outcome = final placement.")
-                        else:
-                            st.caption("No entities extracted this run.")
-                with st.expander("Raw data — first 3 reviews"):
-                    import pandas as pd
-                    st.dataframe(pd.DataFrame(reviews[:3])[["id","author","upvotes","permalink","text"]])
-                if not use_cross:
-                    with st.expander("Reddit search plan"):
-                        try:
-                            plan = reddit_service._plan_search(query)
-                            st.json({"terms":plan.terms,"subreddits":plan.subreddits,"time_filter":plan.time_filter,
-                                     "strategies":plan.strategies,"min_comment_score":plan.min_comment_score})
-                        except Exception as e:
-                            st.caption(f"Plan unavailable: {e}")
+            # reset progressive-disclosure counters for the new result set
+            for _k in ("rank_n", "ev_n"):
+                st.session_state.pop(_k, None)
+            st.session_state["results"] = {
+                "query": query,
+                "intent": intent_schema.intent,
+                "entity_type": intent_schema.entity_type,
+                "aspects": intent_schema.aspects,
+                "payload": payload,
+                "comments": comments,
+                "annos": annos,
+                "platform_breakdown": platform_breakdown,
+                "search_time": search_time,
+                "subreddits": _subreddits_used,
+                "use_cross": use_cross,
+                "show_debug": show_debug,
+            }
 
     except Exception as e:
         logger.error(f"Analysis failed: {e}")
@@ -1848,6 +2562,12 @@ if run_analysis and query.strip():
 
 elif run_analysis and not query.strip():
     st.warning("Enter a search term to begin.")
+
+# Render the tabbed dashboard from persisted state. This runs on every rerun
+# (including cheap widget/filter interactions) so the Evidence filters and
+# Load-more buttons re-render WITHOUT re-running the analysis pipeline.
+if st.session_state.get("results"):
+    render_results(st.session_state["results"])
 
 
 def main():
