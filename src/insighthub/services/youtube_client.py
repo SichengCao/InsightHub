@@ -1,5 +1,6 @@
 """YouTube data collection service for InsightHub."""
 
+import html as _html
 import logging
 import re as _re
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -39,10 +40,11 @@ def _best_thumbnail(thumbnails: dict, video_id: str) -> str:
 
 
 def _strip_html(text: str) -> str:
-    """Remove HTML tags from YouTube comment text and normalise whitespace."""
+    """Remove HTML tags/entities from YouTube comment text and normalise whitespace."""
     if not text:
         return ""
     cleaned = _re.sub(r"<[^>]+>", " ", text)
+    cleaned = _html.unescape(cleaned)   # textDisplay is HTML-escaped ("&#39;" → "'")
     cleaned = _re.sub(r"\s{2,}", " ", cleaned)
     return cleaned.strip()
 
