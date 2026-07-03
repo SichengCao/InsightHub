@@ -1533,6 +1533,29 @@ details.ex-x[open] .ex-xbtn::after{content:"Collapse ▴";}
   text-transform:uppercase;letter-spacing:.06em;}
 .ex-basis{font-size:.73rem;color:#818cf8;font-weight:600;margin-bottom:.4rem;}
 .ex-consensus p{font-size:.92rem;color:#dbe2ea;line-height:1.6;margin:0;}
+/* discussion takeaway — the thread's point at a glance */
+.ex-tk{display:flex;gap:.55rem;align-items:baseline;background:rgba(129,140,248,.07);
+  border:1px solid rgba(129,140,248,.18);border-radius:8px;padding:.45rem .65rem;
+  margin-top:.45rem;font-size:.8rem;color:#c7d2fe;line-height:1.45;}
+.ex-tklbl{flex:none;font-size:.62rem;font-weight:800;letter-spacing:.08em;
+  text-transform:uppercase;color:#818cf8;}
+/* viewpoint chip on nested comments */
+.ex-vp{font-size:.62rem;font-weight:800;text-transform:uppercase;letter-spacing:.05em;
+  padding:.1rem .45rem;border-radius:12px;white-space:nowrap;}
+/* consensus agreements / disagreements */
+.ex-agdg{display:grid;grid-template-columns:1fr 1fr;gap:.7rem;margin-top:.7rem;}
+.ex-agbox,.ex-dgbox{background:#0f1319;border:1px solid rgba(255,255,255,.06);
+  border-radius:10px;padding:.6rem .8rem;}
+.ex-aglbl{font-size:.64rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase;
+  color:#8fa0b5;margin-bottom:.35rem;}
+.ex-agbox ul,.ex-dgbox ul{margin:0;padding:0;}
+.ex-agbox li,.ex-dgbox li{list-style:none;display:flex;gap:.45rem;font-size:.8rem;
+  color:#c8d2dd;line-height:1.45;margin:.25rem 0;}
+.ex-agbox .ic{color:#22d3a0;font-weight:800;flex:none;}
+.ex-dgbox .ic{color:#f59e0b;font-weight:800;flex:none;}
+/* "in N discussions" support chip on pros/cons themes */
+.ex-pcn{margin-left:.4rem;font-size:.66rem;color:#8a93a3;background:rgba(255,255,255,.05);
+  border-radius:10px;padding:.05rem .4rem;white-space:nowrap;}
 .ex-grid3{display:grid;grid-template-columns:1.15fr 1fr 1fr;gap:1rem;align-items:start;}
 .ex-pcbox{background:#0f1319;border:1px solid rgba(255,255,255,.06);border-radius:12px;padding:.85rem 1rem;}
 .ex-pcbox ul{margin:0;padding:0;}
@@ -1549,7 +1572,7 @@ details.ex-x[open] .ex-xbtn::after{content:"Collapse ▴";}
 .ex-reptxt{font-size:.84rem;color:#c8d2dd;line-height:1.52;}
 .ex-empty{color:#64748b;font-size:.8rem;font-style:italic;padding:.3rem 0;}
 @media(max-width:900px){.ex-grid3{grid-template-columns:1fr;}.ex-reps3{grid-template-columns:1fr;}
-  .ex-vgrid{grid-template-columns:1fr;}}
+  .ex-vgrid{grid-template-columns:1fr;}.ex-agdg{grid-template-columns:1fr;}}
 </style>
 """
 
@@ -1694,38 +1717,99 @@ def render_results(R):
                         return m.get("thumbnail_url") or f"https://i.ytimg.com/vi/{v}/hqdefault.jpg"
             return None
 
-        # AI consensus + pros/cons for one entity (cached per query+entity; GPT with fallback).
-        def _entity_brief(name, item):
+        # Viewpoint chips for nested comments — fixed vocabulary so styling is stable.
+        _VP_COLORS = {"Most Helpful": "#818cf8", "Positive Experience": "#22d3a0",
+                      "Alternative View": "#f59e0b", "Critical Opinion": "#f87171",
+                      "Practical Tip": "#38bdf8"}
+
+        # AI brief for one entity, grounded in the EXACT evidence shown in the panel
+        # (cached per query+entity; GPT with heuristic fallback). Returns:
+        #   summary        — consensus that names agreements AND disagreements
+        #   agreements / disagreements — short bullets across sources
+        #   takeaways      — {thread_id: 1-2 sentence gist} for the shown threads
+        #   viewpoints     — {comment_id: viewpoint label} for the shown comments
+        #   pros / cons    — [{"text", "n"}] recurring themes, n = distinct discussions
+        def _entity_brief(name, item, threads, videos):
             ck = f"__brief__::{query}::{name}"
             if ck in st.session_state:
                 return st.session_state[ck]
             aspects = item.get("aspect_scores") or {}
-            quotes = (item.get("quotes") or [])[:6]
             m = item["mentions"]
-            fb_pros = [k.replace("_", " ").title() for k, v in sorted(aspects.items(), key=lambda x: -x[1]) if v >= 3.6][:3]
-            fb_cons = [k.replace("_", " ").title() for k, v in sorted(aspects.items(), key=lambda x: x[1]) if v < 2.9][:3]
+            fb_pros = [{"text": k.replace("_", " ").title(), "n": None}
+                       for k, v in sorted(aspects.items(), key=lambda x: -x[1]) if v >= 3.6][:3]
+            fb_cons = [{"text": k.replace("_", " ").title(), "n": None}
+                       for k, v in sorted(aspects.items(), key=lambda x: x[1]) if v < 2.9][:3]
             fb = {
                 "summary": f'{_entity_verdict(item)}. Based on {m} mention{"s" if m != 1 else ""} across {plat_str}.',
-                "pros": fb_pros or ["Generally well regarded"],
-                "cons": fb_cons or ["No consistent complaints surfaced"],
+                "agreements": [], "disagreements": [], "takeaways": {}, "viewpoints": {},
+                "pros": fb_pros or [{"text": "Generally well regarded", "n": None}],
+                "cons": fb_cons or [{"text": "No consistent complaints surfaced", "n": None}],
             }
             out = fb
             try:
                 from insighthub.services.llm import _safe_json_loads
-                sysmsg = ("You summarize the consumer consensus about ONE specific place using only the "
-                          "provided review excerpts and aspect scores. Concise, factual, no invented "
-                          "details. Reply with JSON only.")
-                usr = (f'Place: {name}\nAspect scores (1-5): {aspects}\nReview excerpts:\n'
-                       + "\n".join(f'- {q}' for q in quotes)
-                       + '\n\nReturn JSON: {"summary":"2-3 sentence consensus",'
-                         '"pros":["short phrase",...max 4],"cons":["short phrase",...max 4]}')
-                resp = llm_service.chat(sysmsg, usr, temperature=0.2, max_tokens=320)
+                # Digest of exactly what the panel shows, with stable ids GPT echoes back.
+                tid_map, lines = {}, []
+                for i, t in enumerate(threads, 1):
+                    tid_map[f"t{i}"] = t["tid"]
+                    lines.append(f'[t{i}] Reddit thread: "{_excerpt(t["title"], 140)}"')
+                    if t["body_raw"]:
+                        lines.append(f'  post: {_excerpt(t["body_raw"], 400)}')
+                    for u in t["comments"]:
+                        lines.append(f'  [c:{_rid(u)}] (▲{_get(u, "upvotes", 0) or 0}) {_excerpt(_txt(u), 300)}')
+                for i, v in enumerate(videos, 1):
+                    ch = f' by {v["ch"]}' if v["ch"] else ""
+                    lines.append(f'[v{i}] YouTube video: "{_excerpt(v["title"], 140)}"{ch}')
+                    for u in v["comments"]:
+                        lines.append(f'  [c:{_rid(u)}] (👍{_get(u, "upvotes", 0) or 0}) {_excerpt(_txt(u), 300)}')
+                vp_opts = " | ".join(f'"{k}"' for k in _VP_COLORS)
+                sysmsg = ("You analyze community evidence (Reddit threads, YouTube videos and their "
+                          "comments) about ONE specific place. Ground EVERY statement only in the "
+                          "provided excerpts — no invented details, no generic advice or recommendations. "
+                          "Reply with JSON only.")
+                usr = (f'Place: {name}\nAspect scores (1-5): {aspects}\n\nEvidence:\n'
+                       + "\n".join(lines)
+                       + '\n\nReturn JSON:\n{'
+                         '"summary":"3-4 sentences summarizing the evidence above: state concretely what '
+                         'commenters AGREE on and where they DISAGREE or debate. Reference the discussions '
+                         'by topic, never by id. No generic recommendation.",'
+                         '"agreements":["short phrase — a point multiple sources agree on",...max 3],'
+                         '"disagreements":["short phrase — a point sources disagree or debate about",'
+                         '...max 2, empty list if none],'
+                         '"takeaways":{"t1":"1-2 sentence takeaway: the main point of that thread about '
+                         'this place, so a reader gets it before reading",...one per t# id},'
+                         f'"viewpoints":{{"<id after c:>":one of {vp_opts},...one per comment; use '
+                         '"Most Helpful" at most once per thread/video},'
+                         '"pros":[{"text":"recurring positive theme","n":<distinct threads/videos '
+                         'supporting it>},...max 4, themes recurring across discussions first],'
+                         '"cons":[{"text":"recurring negative theme or caveat","n":<same>},...max 4]}')
+                resp = llm_service.chat(sysmsg, usr, temperature=0.2, max_tokens=900)
                 data = _safe_json_loads(resp) if resp else None
+
+                def _pc_norm(seq):
+                    outl = []
+                    for e in (seq or []):
+                        if isinstance(e, dict) and str(e.get("text", "")).strip():
+                            n = e.get("n")
+                            outl.append({"text": str(e["text"]).strip(),
+                                         "n": int(n) if isinstance(n, (int, float)) else None})
+                        elif isinstance(e, str) and e.strip():
+                            outl.append({"text": e.strip(), "n": None})
+                    return outl[:4]
+
                 if isinstance(data, dict) and data.get("summary"):
                     out = {
                         "summary": str(data.get("summary", "")).strip() or fb["summary"],
-                        "pros": [str(x) for x in (data.get("pros") or []) if str(x).strip()][:4] or fb["pros"],
-                        "cons": [str(x) for x in (data.get("cons") or []) if str(x).strip()][:4] or fb["cons"],
+                        "agreements": [str(x).strip() for x in (data.get("agreements") or []) if str(x).strip()][:3],
+                        "disagreements": [str(x).strip() for x in (data.get("disagreements") or []) if str(x).strip()][:2],
+                        "takeaways": {tid_map[k]: str(v).strip()
+                                      for k, v in (data.get("takeaways") or {}).items()
+                                      if k in tid_map and str(v).strip()},
+                        "viewpoints": {str(k): str(v).strip()
+                                       for k, v in (data.get("viewpoints") or {}).items()
+                                       if str(v).strip() in _VP_COLORS},
+                        "pros": _pc_norm(data.get("pros")) or fb["pros"],
+                        "cons": _pc_norm(data.get("cons")) or fb["cons"],
                     }
             except Exception as _e:
                 logger.warning(f"entity brief GPT failed for {name}: {_e}")
@@ -1764,7 +1848,6 @@ def render_results(R):
         item = next(it for it in ranking if it["name"] == sel)
         rank_no = ranking.index(item) + 1
         supp = _supp(sel)
-        brief = _entity_brief(sel, item)
         conf = item.get("confidence_score", item.get("confidence", 0.5))
         clbl, ccol = _confidence_label(conf)
         photo = item.get("image_url") or _ent_thumb(sel)
@@ -1817,37 +1900,32 @@ def render_results(R):
             if not _is_yt(r) and _get(r, "unit_type", "comment") == "post":
                 all_posts.setdefault(_get(r, "thread_id") or _rid(r), r)
 
-        # -- 1. Reddit Discussions: one CONVERSATION card per thread — the post
-        # (title + expandable preview) with its top entity-relevant comments
-        # nested inside. Threads ranked by total engagement of their units. --
+        # -- 1. SELECT the evidence first (deterministic), so the AI brief can be
+        # grounded in exactly what the panel shows. Threads ranked by total unit
+        # engagement. Nested comments are picked for VIEWPOINT DIVERSITY — the
+        # top-upvoted take plus the best alternative/critical takes when they
+        # exist — instead of a flat top-upvotes (usually all-positive) list. --
         def _tone(s):
             return ("Positive", "pos") if s >= 3.8 else ("Mixed", "mix") if s >= 2.8 else ("Critical", "crit")
 
-        def _ncom_rd(r):
-            body = _txt(r).strip()
-            seen_sig.add(_sig(body))
-            shown_ids.add(_rid(r))
-            s = _ent_score(r, sel)
-            tag, cls = _tone(s)
-            _, scol, _sbg = _sentiment_label(s)
-            author = str(_get(r, "author", "") or "").removeprefix("u/")
-            when = _rel_time(_get(r, "created_utc", None))
-            up = _get(r, "upvotes", 0) or 0
-            bits = [b for b in (
-                f'<span class="ex-reptag" style="color:{scol}">{tag}</span>',
-                f'<span class="ex-evby">u/{_h.escape(author)}</span>' if author else "",
-                f'<span class="ex-evup">▲ {up:,}</span>',
-                f'<span class="ex-evtime">{when}</span>' if when else "") if b]
-            head = ('<span class="ex-evdot">·</span>'.join(bits)
-                    + f'<a class="ex-nopen" href="https://reddit.com{_get(r, "permalink")}" '
-                      f'target="_blank">↗</a>')
-            return f'<div class="ex-ncom {cls}"><div class="ex-nhead">{head}</div>{_clamp_block(body)}</div>'
+        def _pick_diverse(cands, k=3):
+            cands = sorted(cands, key=lambda u: -(_get(u, "upvotes", 0) or 0))
+            picked = cands[:1]
+            for lo, hi in ((2.8, 3.8), (-1.0, 2.8)):     # best alternative, then best critical
+                if len(picked) >= k:
+                    break
+                nxt = next((u for u in cands if u not in picked
+                            and lo <= _ent_score(u, sel) < hi), None)
+                if nxt is not None:
+                    picked.append(nxt)
+            picked += [u for u in cands if u not in picked][: k - len(picked)]
+            return picked
 
         by_tid = {}
         for r in rd_units:
             by_tid.setdefault(_get(r, "thread_id") or _rid(r), []).append(r)
 
-        disc_cards = []
+        sel_threads = []
         for tid, units in sorted(by_tid.items(),
                                  key=lambda kv: -sum((_get(u, "upvotes", 0) or 0) for u in kv[1]))[:3]:
             post = all_posts.get(tid)
@@ -1855,51 +1933,23 @@ def render_results(R):
             title = (_get(src, "post_title") or "").strip()
             if not title:
                 continue
-            body = ""
+            body_raw = ""
             if post is not None:
                 shown_ids.add(_rid(post))
                 raw = _txt(post).strip()
                 raw = raw[len(title):].strip() if raw.startswith(title) else raw
                 if len(raw) >= 60:
                     seen_sig.add(_sig(raw))
-                    body = _clamp_block(raw)
+                    body_raw = raw
             up = int(_get(post, "upvotes", 0) or 0) if post is not None else \
                 max((_get(u, "upvotes", 0) or 0) for u in units)
-            cmts = sorted((u for u in units if _get(u, "unit_type", "comment") != "post"
-                           and len(_txt(u).strip()) >= 40 and _sig(_txt(u).strip()) not in seen_sig),
-                          key=lambda u: -(_get(u, "upvotes", 0) or 0))
-            nested = "".join(_ncom_rd(u) for u in cmts[:3])
-            nested_html = (f'<div class="ex-nlbl">Top comments</div>'
-                           f'<div class="ex-nest">{nested}</div>') if nested else ""
-            disc_cards.append(
-                f'<div class="ex-ev"><div class="ex-evtop">'
-                f'{_rd_top(src, up, show_author=post is not None)}</div>'
-                f'<div class="ex-evtitle">{_h.escape(_excerpt(title, 120))}</div>{body}{nested_html}</div>')
-        disc_html = (f'<div class="ex-sec"><div class="ex-lbl">{_RD_ICON}Reddit Discussions</div>'
-                     f'{"".join(disc_cards)}</div>') if disc_cards else ""
-
-        # -- 2. YouTube: one CONVERSATION card per video — thumbnail/title/channel/
-        # views/duration header with the top viewer comments (from the annotation
-        # pipeline) nested inside. Videos ranked by view count. --
-        def _ncom_yt(r):
-            body = _txt(r).strip()
-            seen_sig.add(_sig(body))
-            shown_ids.add(_rid(r))
-            s = _ent_score(r, sel)
-            tag, cls = _tone(s)
-            _, scol, _sbg = _sentiment_label(s)
-            likes = _get(r, "upvotes", 0) or 0
-            author = str(_get(r, "author", "") or "")
-            when = _rel_time(_get(r, "created_utc", None))
-            bits = [b for b in (
-                f'<span class="ex-reptag" style="color:{scol}">{tag}</span>',
-                f'<span class="ex-evby">{_h.escape(author)}</span>' if author else "",
-                f'<span class="ex-evup">👍 {likes:,}</span>' if likes > 0 else "",
-                f'<span class="ex-evtime">{when}</span>' if when else "") if b]
-            link = _get(r, "url") or _get(r, "permalink")
-            head = ('<span class="ex-evdot">·</span>'.join(bits)
-                    + (f'<a class="ex-nopen" href="{link}" target="_blank">↗</a>' if link else ""))
-            return f'<div class="ex-ncom {cls}"><div class="ex-nhead">{head}</div>{_clamp_block(body)}</div>'
+            cands = [u for u in units if _get(u, "unit_type", "comment") != "post"
+                     and len(_txt(u).strip()) >= 40 and _sig(_txt(u).strip()) not in seen_sig]
+            comments = _pick_diverse(cands)
+            for u in comments:
+                seen_sig.add(_sig(_txt(u).strip())); shown_ids.add(_rid(u))
+            sel_threads.append({"tid": tid, "src": src, "post": post, "title": title,
+                                "body_raw": body_raw, "up": up, "comments": comments})
 
         vids = {}
         for r in supp:
@@ -1916,8 +1966,82 @@ def render_results(R):
                                      "cmts": []})
             if _get(r, "unit_type", "comment") == "comment" and len(_txt(r).strip()) >= 40:
                 vd["cmts"].append(r)
+        sel_vids = sorted(vids.values(), key=lambda v: -(v["views"] or 0))[:3]
+        for v in sel_vids:
+            v["comments"] = _pick_diverse([u for u in v["cmts"] if _sig(_txt(u).strip()) not in seen_sig])
+            for u in v["comments"]:
+                seen_sig.add(_sig(_txt(u).strip())); shown_ids.add(_rid(u))
+
+        # -- 2. AI brief grounded in that exact selection: consensus w/ agreements
+        # + disagreements, per-thread takeaways, viewpoint labels, recurring
+        # pros/cons themes. --
+        brief = _entity_brief(sel, item, sel_threads, sel_vids)
+
+        def _vp_chip(u, idx):
+            vp = brief["viewpoints"].get(_rid(u))
+            if not vp:                                   # heuristic fallback when GPT is unavailable
+                s = _ent_score(u, sel)
+                vp = ("Most Helpful" if idx == 0 else
+                      "Critical Opinion" if s < 2.8 else
+                      "Alternative View" if s < 3.8 else "Positive Experience")
+            c = _VP_COLORS.get(vp, "#818cf8")
+            return f'<span class="ex-vp" style="color:{c};background:{c}1a;border:1px solid {c}33">{vp}</span>'
+
+        # -- 3. Reddit conversation cards: takeaway first (the thread's point at a
+        # glance), then the post and its viewpoint-labeled comments. --
+        def _ncom_rd(r, idx):
+            body = _txt(r).strip()
+            _, cls = _tone(_ent_score(r, sel))
+            author = str(_get(r, "author", "") or "").removeprefix("u/")
+            when = _rel_time(_get(r, "created_utc", None))
+            up = _get(r, "upvotes", 0) or 0
+            bits = [b for b in (
+                _vp_chip(r, idx),
+                f'<span class="ex-evby">u/{_h.escape(author)}</span>' if author else "",
+                f'<span class="ex-evup">▲ {up:,}</span>',
+                f'<span class="ex-evtime">{when}</span>' if when else "") if b]
+            head = ('<span class="ex-evdot">·</span>'.join(bits)
+                    + f'<a class="ex-nopen" href="https://reddit.com{_get(r, "permalink")}" '
+                      f'target="_blank">↗</a>')
+            return f'<div class="ex-ncom {cls}"><div class="ex-nhead">{head}</div>{_clamp_block(body)}</div>'
+
+        disc_cards = []
+        for t in sel_threads:
+            tk = brief["takeaways"].get(t["tid"], "")
+            tk_html = (f'<div class="ex-tk"><span class="ex-tklbl">Takeaway</span>'
+                       f'<span>{_h.escape(tk)}</span></div>') if tk else ""
+            body = _clamp_block(t["body_raw"]) if t["body_raw"] else ""
+            nested = "".join(_ncom_rd(u, i) for i, u in enumerate(t["comments"]))
+            nested_html = (f'<div class="ex-nlbl">Community viewpoints</div>'
+                           f'<div class="ex-nest">{nested}</div>') if nested else ""
+            disc_cards.append(
+                f'<div class="ex-ev"><div class="ex-evtop">'
+                f'{_rd_top(t["src"], t["up"], show_author=t["post"] is not None)}</div>'
+                f'<div class="ex-evtitle">{_h.escape(_excerpt(t["title"], 120))}</div>'
+                f'{tk_html}{body}{nested_html}</div>')
+        disc_html = (f'<div class="ex-sec"><div class="ex-lbl">{_RD_ICON}Reddit Discussions</div>'
+                     f'{"".join(disc_cards)}</div>') if disc_cards else ""
+
+        # -- 4. YouTube conversation cards: video header + viewpoint-labeled
+        # viewer comments nested inside. Videos ranked by view count. --
+        def _ncom_yt(r, idx):
+            body = _txt(r).strip()
+            _, cls = _tone(_ent_score(r, sel))
+            likes = _get(r, "upvotes", 0) or 0
+            author = str(_get(r, "author", "") or "")
+            when = _rel_time(_get(r, "created_utc", None))
+            bits = [b for b in (
+                _vp_chip(r, idx),
+                f'<span class="ex-evby">{_h.escape(author)}</span>' if author else "",
+                f'<span class="ex-evup">👍 {likes:,}</span>' if likes > 0 else "",
+                f'<span class="ex-evtime">{when}</span>' if when else "") if b]
+            link = _get(r, "url") or _get(r, "permalink")
+            head = ('<span class="ex-evdot">·</span>'.join(bits)
+                    + (f'<a class="ex-nopen" href="{link}" target="_blank">↗</a>' if link else ""))
+            return f'<div class="ex-ncom {cls}"><div class="ex-nhead">{head}</div>{_clamp_block(body)}</div>'
+
         vcards = ""
-        for v in sorted(vids.values(), key=lambda v: -(v["views"] or 0))[:3]:
+        for v in sel_vids:
             watch = f"https://youtube.com/watch?v={v['vid']}"
             views = _fmt_views(v["views"])
             dur = f'<span class="ex-vdur">{v["dur"]}</span>' if v["dur"] else ""
@@ -1926,10 +2050,8 @@ def render_results(R):
                 f'<span class="ex-vviews">{views}</span>' if views else "") if b]
             top = (_YT_ICON + '<span class="ex-evdot">·</span>'.join(bits)
                    + f'<a class="ex-open yt" href="{watch}" target="_blank">Watch on YouTube ↗</a>')
-            cmts = sorted((u for u in v["cmts"] if _sig(_txt(u).strip()) not in seen_sig),
-                          key=lambda u: -(_get(u, "upvotes", 0) or 0))
-            nested = "".join(_ncom_yt(u) for u in cmts[:3])
-            nested_html = (f'<div class="ex-nlbl">Top comments</div>'
+            nested = "".join(_ncom_yt(u, i) for i, u in enumerate(v["comments"]))
+            nested_html = (f'<div class="ex-nlbl">Community viewpoints</div>'
                            f'<div class="ex-nest">{nested}</div>') if nested else ""
             vcards += (
                 f'<div class="ex-ev"><div class="ex-vc"><a class="ex-vthumb" href="{watch}" target="_blank" '
@@ -1940,23 +2062,46 @@ def render_results(R):
         vid_html = (f'<div class="ex-sec"><div class="ex-lbl">{_YT_ICON}YouTube Videos</div>'
                     f'{vcards}</div>') if vcards else ""
 
-        # -- 4. AI Consensus — rendered AFTER all evidence, grounded in its counts --
-        n_threads = len({_get(r, "thread_id") or _rid(r) for r in rd_units})
+        # -- 5. AI Consensus — rendered AFTER all evidence; summarizes it explicitly
+        # (agreements AND disagreements), over a full evidence-base line. --
+        n_threads = len(by_tid)
+        n_rdc = sum(1 for r in rd_units if _get(r, "unit_type", "comment") != "post")
+        n_ytc = sum(1 for r in supp if _is_yt(r) and _get(r, "unit_type", "comment") == "comment")
         basis_bits = []
         if n_threads:
-            basis_bits.append(f'{n_threads} Reddit discussion{"s" if n_threads != 1 else ""}')
+            basis_bits.append(f'{n_threads} Reddit discussion{"s" if n_threads != 1 else ""}'
+                              + (f' with {n_rdc} community comment{"s" if n_rdc != 1 else ""}' if n_rdc else ""))
         if vids:
-            basis_bits.append(f'{len(vids)} YouTube video{"s" if len(vids) != 1 else ""}')
-        basis = ("Generated from " + " and ".join(basis_bits)) if basis_bits else \
-            f'Generated from {item["mentions"]} mention{"s" if item["mentions"] != 1 else ""}'
+            basis_bits.append(f'{len(vids)} YouTube video{"s" if len(vids) != 1 else ""}'
+                              + (f' with {n_ytc} viewer comment{"s" if n_ytc != 1 else ""}' if n_ytc else ""))
+        basis = ("Synthesized from " + " and ".join(basis_bits)) if basis_bits else \
+            f'Synthesized from {item["mentions"]} mention{"s" if item["mentions"] != 1 else ""}'
+        ag = "".join(f'<li><span class="ic">✓</span><span>{_h.escape(a)}</span></li>'
+                     for a in brief["agreements"])
+        dg = "".join(f'<li><span class="ic">≠</span><span>{_h.escape(d)}</span></li>'
+                     for d in brief["disagreements"])
+        agdg = ""
+        if ag or dg:
+            agdg = ('<div class="ex-agdg">'
+                    + (f'<div class="ex-agbox"><div class="ex-aglbl">Where sources agree</div><ul>{ag}</ul></div>' if ag else "")
+                    + (f'<div class="ex-dgbox"><div class="ex-aglbl">Where they disagree</div><ul>{dg}</ul></div>' if dg else "")
+                    + '</div>')
         cons_html = (f'<div class="ex-sec ex-consensus"><div class="ex-lbl">AI Consensus</div>'
-                     f'<div class="ex-basis">{basis}</div><p>{brief["summary"]}</p></div>')
+                     f'<div class="ex-basis">{basis}</div><p>{brief["summary"]}</p>{agdg}</div>')
 
-        # -- 5. aspects + pros/cons, three compact columns --
+        # -- 6. aspects + pros/cons (recurring themes; "in N discussions" chips
+        # when a theme spans multiple sources), three compact columns --
         aspects_d = item.get("aspect_scores") or {}
         bars = "".join(_aspect_bar(k, v) for k, v in sorted(aspects_d.items(), key=lambda x: -x[1]))
-        pros = "".join(f'<li><span class="ic">＋</span><span>{p}</span></li>' for p in brief["pros"])
-        cons = "".join(f'<li><span class="ic">－</span><span>{c}</span></li>' for c in brief["cons"])
+
+        def _pc_li(e, ic):
+            n = e.get("n")
+            chip = (f'<span class="ex-pcn">in {n} discussions</span>'
+                    if isinstance(n, int) and n >= 2 else "")
+            return f'<li><span class="ic">{ic}</span><span>{_h.escape(e["text"])}{chip}</span></li>'
+
+        pros = "".join(_pc_li(p, "＋") for p in brief["pros"])
+        cons = "".join(_pc_li(c, "－") for c in brief["cons"])
         grid_html = (
             f'<div class="ex-sec"><div class="ex-grid3">'
             f'<div><div class="ex-lbl">Aspect Breakdown</div>{bars or "<div class=ex-empty>No aspect data.</div>"}</div>'
