@@ -1577,6 +1577,146 @@ details.ex-x[open] .ex-xbtn::after{content:"Collapse ▴";}
 """
 
 
+# Generic entity page (Overview tab, GENERIC intent): buyer's-guide product page
+# — hero + consensus first, pros/cons, aspect scores, one mixed evidence feed;
+# analytics demoted to the right rail / an expander.
+_GENPAGE_CSS = """
+<style>
+.gp-hero{display:flex;gap:1.4rem;background:#12161d;border:1px solid rgba(255,255,255,.08);
+  border-radius:16px;padding:1.25rem;margin-bottom:1rem;}
+.gp-himg{width:280px;min-height:210px;border-radius:12px;background-size:cover;background-position:center;
+  flex:none;border:1px solid rgba(255,255,255,.1);align-self:stretch;
+  display:flex;align-items:center;justify-content:center;font-size:3rem;font-weight:800;
+  color:rgba(255,255,255,.55);}
+.gp-hbody{flex:1;min-width:0;}
+.gp-hname{font-size:1.85rem;font-weight:800;color:#f5f7fa;letter-spacing:-.03em;line-height:1.1;}
+.gp-hchips{display:flex;gap:.45rem;margin:.55rem 0 .9rem;flex-wrap:wrap;}
+.gp-chip{font-size:.64rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase;
+  padding:.22rem .6rem;border-radius:6px;background:rgba(255,255,255,.06);color:#aab4c2;
+  border:1px solid rgba(255,255,255,.08);}
+.gp-chip.acc{background:rgba(240,180,41,.12);color:#f0b429;border-color:rgba(240,180,41,.3);}
+.gp-hstats{display:flex;align-items:stretch;gap:1.2rem;margin-bottom:1rem;flex-wrap:wrap;}
+.gp-hstat .big{font-size:1.5rem;font-weight:800;color:#f1f5f9;line-height:1.15;}
+.gp-hstat .big .of{font-size:.85rem;color:#8a93a3;font-weight:600;}
+.gp-hstat .stars{color:#f0b429;font-size:.85rem;letter-spacing:.08em;}
+.gp-hstat .cap{font-size:.68rem;color:#8a93a3;margin-top:.2rem;}
+.gp-hsep{width:1px;background:rgba(255,255,255,.08);}
+.gp-conslbl{font-size:.9rem;font-weight:800;color:#e8edf4;margin-bottom:.35rem;}
+.gp-cons{font-size:.88rem;color:#c8d2dd;line-height:1.62;margin:0;}
+/* what people love / dislike */
+.gp-pc{display:grid;grid-template-columns:1fr 1fr;gap:.9rem;margin-bottom:1rem;}
+.gp-pcbox{background:#12161d;border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:1rem 1.15rem;}
+.gp-pchead{display:flex;align-items:center;gap:.5rem;font-size:.92rem;font-weight:800;color:#e8edf4;
+  margin-bottom:.55rem;}
+.gp-pcic{width:26px;height:26px;border-radius:8px;display:flex;align-items:center;justify-content:center;
+  font-size:.8rem;flex:none;}
+.gp-love .gp-pcic{background:rgba(34,211,160,.14);}
+.gp-dis .gp-pcic{background:rgba(248,113,113,.13);}
+.gp-pcrow{display:flex;align-items:center;gap:.55rem;padding:.42rem 0;
+  border-bottom:1px solid rgba(255,255,255,.05);font-size:.83rem;color:#c8d2dd;line-height:1.4;}
+.gp-pcrow:last-child{border-bottom:none;}
+.gp-pcrow .ic{flex:none;font-weight:800;}
+.gp-love .ic{color:#22d3a0;} .gp-dis .ic{color:#f87171;}
+.gp-pcrow .pct{margin-left:auto;flex:none;font-size:.68rem;font-weight:800;border-radius:12px;
+  padding:.12rem .5rem;}
+.gp-love .pct{color:#22d3a0;background:rgba(34,211,160,.12);}
+.gp-dis .pct{color:#f87171;background:rgba(248,113,113,.11);}
+/* shared panel */
+.gp-panel{background:#12161d;border:1px solid rgba(255,255,255,.07);border-radius:14px;
+  padding:1.05rem 1.2rem;margin-bottom:.9rem;}
+.gp-phead{display:flex;align-items:baseline;gap:.7rem;margin-bottom:.55rem;}
+.gp-ptitle{font-size:1.02rem;font-weight:800;color:#f1f5f9;}
+.gp-plegend{margin-left:auto;font-size:.66rem;color:#7b8698;}
+/* aspect scores */
+.gp-aspgrid{display:grid;grid-template-columns:1fr 1fr;gap:.15rem 2rem;}
+.gp-asp{display:flex;align-items:center;gap:.7rem;padding:.42rem 0;}
+.gp-asp .lbl{width:112px;flex:none;font-size:.8rem;color:#c2ccd8;font-weight:600;text-transform:capitalize;}
+.gp-asp .track{display:block;flex:1;height:7px;background:rgba(255,255,255,.06);border-radius:5px;overflow:hidden;}
+.gp-asp .fill{display:block;height:100%;border-radius:5px;}
+.gp-asp .v{width:30px;flex:none;text-align:right;font-size:.82rem;font-weight:800;}
+/* mixed evidence feed */
+.gp-ev{display:flex;gap:.9rem;background:#12161d;border:1px solid rgba(255,255,255,.07);
+  border-radius:14px;padding:.8rem .9rem;margin-bottom:.7rem;text-decoration:none !important;
+  transition:border-color .12s,transform .12s;}
+.gp-ev:hover{border-color:rgba(129,140,248,.4);transform:translateY(-1px);}
+.gp-ev *{text-decoration:none !important;}
+.gp-evthumb{width:150px;height:88px;border-radius:9px;background-size:cover;background-position:center;
+  flex:none;position:relative;display:flex;align-items:center;justify-content:center;
+  border:1px solid rgba(255,255,255,.08);}
+.gp-evdur{position:absolute;right:.35rem;bottom:.35rem;background:rgba(0,0,0,.82);color:#fff;
+  font-size:.62rem;font-weight:700;border-radius:4px;padding:.05rem .3rem;}
+.gp-evn{position:absolute;left:.35rem;bottom:.35rem;background:rgba(0,0,0,.72);color:#e2e8f0;
+  font-size:.62rem;font-weight:700;border-radius:4px;padding:.05rem .35rem;}
+.gp-evbody{flex:1;min-width:0;}
+.gp-evtop{display:flex;align-items:center;gap:.45rem;font-size:.71rem;color:#9aa5b4;flex-wrap:wrap;}
+.gp-evsrc{font-weight:700;color:#b9c2cf;}
+.gp-evtitle{font-size:.92rem;font-weight:700;color:#eef2f7;line-height:1.35;margin-top:.3rem;}
+.gp-evsum{font-size:.78rem;color:#95a1b2;line-height:1.5;margin-top:.3rem;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+.gp-evasp{display:flex;align-items:center;gap:.35rem;margin-top:.45rem;flex-wrap:wrap;}
+.gp-evasp .k{font-size:.64rem;color:#6b7686;}
+.gp-evtag{font-size:.64rem;font-weight:700;color:#a5b4fc;background:rgba(129,140,248,.1);
+  border:1px solid rgba(129,140,248,.22);border-radius:5px;padding:.08rem .4rem;}
+/* right rail */
+.gp-glrow{display:flex;align-items:center;gap:.7rem;padding:.45rem 0;}
+.gp-glic{width:30px;height:30px;border-radius:8px;background:rgba(99,102,241,.14);color:#a5b4fc;
+  display:flex;align-items:center;justify-content:center;font-size:.8rem;flex:none;}
+.gp-gllbl{font-size:.72rem;color:#8a93a3;}
+.gp-glval{font-size:.92rem;font-weight:800;color:#f1f5f9;line-height:1.1;}
+.gp-tkrow{display:flex;gap:.5rem;align-items:flex-start;margin:.55rem 0;font-size:.78rem;
+  color:#c2ccd8;line-height:1.5;}
+.gp-tkrow .ck{color:#22d3a0;font-weight:800;flex:none;}
+.gp-tkrow b{color:#e8edf4;}
+.gp-foot{font-size:.7rem;color:#5f6b7c;text-align:center;margin:1.2rem 0 .4rem;}
+/* three-up row: love / dislike / aspect scores */
+.gp-3col{display:grid;grid-template-columns:1fr 1fr 1.1fr;gap:.9rem;margin-bottom:1rem;align-items:start;}
+.gp-3col .gp-pcbox,.gp-3col .gp-panel{margin:0;}
+.gp-3col .gp-panel{padding:1rem 1.15rem;}
+.gp-3col .gp-aspgrid{grid-template-columns:1fr;gap:0;}
+.gp-3col .gp-asp{padding:.28rem 0;}
+.gp-3col .gp-asp .lbl{width:96px;font-size:.75rem;}
+/* most helpful reviews — AI-synthesized cards */
+.gp-revgrid a,.gp-revgrid a:hover,.gp-revgrid a *,
+.gp-qgrid a,.gp-qgrid a:hover,.gp-qgrid a *{text-decoration:none !important;}
+.gp-revgrid{display:grid;grid-template-columns:1fr 1fr;gap:.8rem;margin-bottom:1.2rem;align-items:stretch;}
+.gp-rev{display:flex;flex-direction:column;background:#12161d;border:1px solid rgba(255,255,255,.07);
+  border-radius:14px;padding:.9rem 1rem;}
+.gp-revtop{display:flex;align-items:center;gap:.45rem;font-size:.71rem;color:#9aa5b4;flex-wrap:wrap;}
+.gp-revthumb{height:122px;border-radius:9px;background-size:cover;background-position:center;
+  position:relative;margin-top:.55rem;border:1px solid rgba(255,255,255,.08);}
+.gp-revtitle{font-size:.92rem;font-weight:700;color:#eef2f7;line-height:1.35;margin-top:.5rem;}
+.gp-revstars{display:flex;align-items:center;gap:.4rem;font-size:.74rem;color:#f0b429;margin-top:.25rem;}
+.gp-revsum{font-size:.8rem;color:#b8c2cf;line-height:1.6;margin-top:.45rem;}
+.gp-revtklbl{font-size:.64rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase;
+  color:#7b8698;margin:.6rem 0 .25rem;}
+.gp-revtk{margin:0;padding:0;}
+.gp-revtk li{list-style:none;display:flex;gap:.45rem;font-size:.76rem;color:#c2ccd8;line-height:1.5;
+  margin:.18rem 0;}
+.gp-revtk li::before{content:"•";color:#818cf8;font-weight:800;}
+.gp-revmerge{font-size:.66rem;color:#8a93a3;font-style:italic;margin-top:.4rem;}
+.gp-revfoot{display:flex;align-items:center;gap:.35rem;margin-top:auto;padding-top:.6rem;flex-wrap:wrap;}
+/* community highlights — the comments that shaped the consensus */
+.gp-qgrid{display:grid;grid-template-columns:1fr 1fr;gap:.7rem;}
+.gp-quote{background:#12161d;border:1px solid rgba(255,255,255,.07);border-radius:13px;padding:.85rem 1rem;}
+.gp-qmark{color:#818cf8;font-size:1.3rem;font-weight:800;line-height:1;font-family:Georgia,serif;}
+.gp-qtxt{font-size:.83rem;color:#d4dce6;line-height:1.55;margin:.3rem 0 .55rem;font-style:italic;}
+.gp-qmeta{display:flex;align-items:center;gap:.45rem;font-size:.68rem;color:#8a93a3;flex-wrap:wrap;}
+.gp-interp{background:rgba(129,140,248,.06);border:1px solid rgba(129,140,248,.18);border-radius:12px;
+  padding:.8rem 1rem;margin:.8rem 0 1.2rem;}
+.gp-interplbl{font-size:.7rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase;
+  color:#818cf8;margin-bottom:.3rem;}
+.gp-interp p{font-size:.84rem;color:#c8d2dd;line-height:1.6;margin:0;}
+@media(max-width:900px){
+  .gp-hero{flex-direction:column;} .gp-himg{width:100%;min-height:180px;}
+  .gp-pc{grid-template-columns:1fr;} .gp-aspgrid{grid-template-columns:1fr;}
+  .gp-3col{grid-template-columns:1fr;} .gp-revgrid{grid-template-columns:1fr;}
+  .gp-qgrid{grid-template-columns:1fr;}
+  .gp-evthumb{width:110px;height:70px;}
+}
+</style>
+"""
+
+
 def _conf_badge(score: float) -> str:
     lbl, color = _confidence_label(score)
     return (f'<span class="ih-cbadge" style="color:{color};background:{color}1a;'
@@ -2126,165 +2266,539 @@ def render_results(R):
         if intent == "RANKING" and ranking:
             _explorer()
         else:
-            # entity → a YouTube video that features it, for card imagery
-            _vid_of = {_rid(r): _vid(r) for r in reviews if _is_yt(r)}
-            ent_video = {}
-            for a in annos:
-                v = _vid_of.get(a.comment_id)
-                if not v:
-                    continue
-                for e in (getattr(a, "entities", []) or []):
-                    if getattr(e, "confidence", 0) >= 0.5 and e.name and e.name not in ent_video:
-                        ent_video[e.name] = v
+            # ═══ GENERIC — buyer's-guide product page, not a dashboard. ═══
+            # Section order answers the reader's questions in sequence:
+            # what is this? → is it good? → why love / dislike it? → which
+            # aspects? → show me the evidence. Analytics are metadata and live
+            # in the right rail + an expander, never above the fold.
+            import html as _h
+            st.markdown(_GENPAGE_CSS, unsafe_allow_html=True)
 
-            _ent_word = (entity_type.split("_")[-1].replace("-", " ").title() + "s") if entity_type else "Entities"
+            overall = float(payload.get("overall", 0) or 0)
+            aspect_avgs = dict(payload.get("aspects") or {})
 
-            # ── 1. metric cards ──
-            s3v = (len(ranking) if intent == "RANKING"
-                   else len(payload.get("solutions", [])) if intent == "SOLUTION"
-                   else f'{payload.get("overall", 0):.1f}')
-            s3l = (f"{_ent_word} Ranked" if intent == "RANKING"
-                   else "Solutions Found" if intent == "SOLUTION" else "Average Score")
-            mcards = [("◈", len(comments), "Discussions", "Analyzed"),
-                      ("❝", len(meaningful), "Detailed Reviews", "Extracted"),
-                      ("★", s3v, s3l, ""),
-                      ("◷", f"{search_time:.1f}s", "Analysis Time", "Completed"),
-                      ("⬡", len(platform_breakdown), "Platforms", plat_str)]
-            st.markdown(
-                '<div class="ov-metrics">' + "".join(
-                    f'<div class="ov-mcard"><div class="ov-mic">{ic}</div><div class="ov-mval">{val}</div>'
-                    f'<div class="ov-mlbl">{lbl}</div><div class="ov-msub">{sub}</div></div>'
-                    for ic, val, lbl, sub in mcards) + '</div>',
-                unsafe_allow_html=True)
-
-            # ── 2. sentiment donut · top aspects · source breakdown ──
-            tot = max(1, len(pos) + len(mixed) + len(crit))
-            pp, npct = round(len(pos) / tot * 100), round(len(mixed) / tot * 100)
-            cp = max(0, 100 - pp - npct)
-            donut = (f'<div class="ov-donut" style="background:conic-gradient(#22c58a 0 {pp}%,'
-                     f'#5b6b7f {pp}% {pp+npct}%,#f0655a {pp+npct}% 100%)"><div class="ov-donut-h"></div></div>')
-            senti = (f'<div class="ov-panel"><div class="ov-ptitle">Sentiment Overview</div>'
-                     f'<div class="ov-senti">{donut}<div class="ov-legend">'
-                     f'<div><span class="dot" style="background:#22c58a"></span>Positive<b>{pp}%</b></div>'
-                     f'<div><span class="dot" style="background:#5b6b7f"></span>Neutral<b>{npct}%</b></div>'
-                     f'<div><span class="dot" style="background:#f0655a"></span>Critical<b>{cp}%</b></div>'
-                     f'</div></div></div>')
-
-            agg = {}
-            for it in ranking:
-                for k, v in (it.get("aspect_scores") or {}).items():
-                    agg.setdefault(k, []).append((v, it.get("mentions", 1)))
-            asp_avg = [(k, sum(a * b for a, b in vs) / (sum(b for _, b in vs) or 1)) for k, vs in agg.items()]
-            if not asp_avg and payload.get("aspects"):
-                asp_avg = list(payload["aspects"].items())
-            asp_avg.sort(key=lambda x: -x[1])
-            _ac = ["#22c58a", "#3b82f6", "#8b5cf6", "#f59e0b", "#eab308"]
-            asp_rows = "".join(
-                f'<div class="ov-asp"><span class="lbl">{k.replace("_"," ").title()}</span>'
-                f'<span class="track"><span class="fill" style="width:{round(v/5*100)}%;background:{_ac[i%5]}"></span></span>'
-                f'<span class="v">{round(v/5*100)}%</span></div>'
-                for i, (k, v) in enumerate(asp_avg[:5])) or '<div class="ov-empty">No aspect data</div>'
-            aspects_panel = f'<div class="ov-panel"><div class="ov-ptitle">Top Aspects Discussed</div>{asp_rows}</div>'
-
-            disc = {}
+            # -- 1. SELECT evidence first (deterministic): ONE mixed feed of
+            # discussions — Reddit threads and YouTube videos — ranked by
+            # usefulness (relevant units carried, then engagement), so the AI
+            # brief is grounded in exactly what the page shows. --
+            all_posts = {}
             for r in reviews:
-                disc.setdefault("YouTube" if _is_yt(r) else "Reddit", set()).add(_get(r, "thread_id") or _rid(r))
-            src_rows = "".join(
-                f'<div class="ov-srcrow"><span class="ov-srcic {"yt" if s=="YouTube" else "rd"}">'
-                f'{"▶" if s=="YouTube" else "r/"}</span><div><div class="ov-srcname">{s}</div>'
-                f'<div class="ov-srccnt"><b>{len(t)}</b> discussions</div></div></div>'
-                for s, t in sorted(disc.items()))
-            src_panel = f'<div class="ov-panel"><div class="ov-ptitle">Source Breakdown</div>{src_rows}</div>'
-            st.markdown(f'<div class="ov-3col">{senti}{aspects_panel}{src_panel}</div>', unsafe_allow_html=True)
+                if not _is_yt(r) and _get(r, "unit_type", "comment") == "post":
+                    all_posts.setdefault(_get(r, "thread_id") or _rid(r), r)
 
-            # ── 3. top ranked picks (visual cards) ──
-            if ranking:
-                st.markdown(f'<div class="ov-sechdr">Top Ranked {_ent_word}</div>', unsafe_allow_html=True)
-                picks = ""
-                for i, it in enumerate(ranking[:6], 1):
-                    # Image priority: enriched entity photo → a YouTube video that
-                    # features it → gradient placeholder only when both truly fail.
-                    photo = it.get("image_url")
-                    vid = ent_video.get(it["name"])
-                    if photo:
-                        img = f'<div class="ov-pimg" style="background-image:url({photo})">'
-                    elif vid:
-                        img = f'<div class="ov-pimg" style="background-image:url(https://i.ytimg.com/vi/{vid}/hqdefault.jpg)">'
-                    else:
-                        img = f'<div class="ov-pimg ov-pph" style="background:{_grad_for(it["name"])}"><span>{it["name"][:1].upper()}</span>'
-                    rc = f"g{i}" if i <= 3 else ""
-                    img += f'<span class="ov-rbadge {rc}">{i}</span></div>'
-                    cat = entity_type.replace("_", " ").title() if entity_type else ""
-                    desc = _excerpt(it["quotes"][0], 88) if it.get("quotes") else _entity_verdict(it)
-                    picks += (
-                        f'<div class="ov-pick">{img}<div class="ov-pbody">'
-                        f'<div class="ov-pname">{it["name"]}</div>'
-                        f'<div class="ov-prate">{_stars(it["overall_stars"])}<span class="ov-pscore">{it["overall_stars"]:.1f}</span></div>'
-                        f'<div class="ov-pcat">{cat}</div>'
-                        f'<div class="ov-pdesc">{desc}</div>'
-                        f'<div class="ov-pment">{it["mentions"]} mention{"s" if it["mentions"]!=1 else ""}</div>'
-                        f'</div></div>')
-                st.markdown(f'<div class="ov-picks">{picks}</div>', unsafe_allow_html=True)
-
-            # ── 4. community highlights: YouTube videos + Reddit discussions ──
-            videos = {}
-            for r in reviews:
+            by_tid, by_vid = {}, {}
+            for r in relevant:
                 if _is_yt(r):
                     v = _vid(r)
-                    if v and v not in videos:
-                        m = _get(r, "meta", {}) or {}
-                        videos[v] = {"vid": v, "title": m.get("video_title", "Video"), "ch": m.get("channel_title", ""),
-                                     "thumb": m.get("thumbnail_url") or f"https://i.ytimg.com/vi/{v}/hqdefault.jpg"}
-            threads = {}
-            for r in reviews:
-                if not _is_yt(r):
-                    tid = _get(r, "thread_id") or _rid(r)
-                    up = _get(r, "upvotes", 0) or 0
-                    cur = threads.get(tid)
-                    if not cur:
-                        threads[tid] = {"title": _get(r, "post_title") or _excerpt(_txt(r), 70),
-                                        "up": up, "sub": _subr(r), "perma": _get(r, "permalink")}
+                    if v:
+                        by_vid.setdefault(v, []).append(r)
+                else:
+                    by_tid.setdefault(_get(r, "thread_id") or _rid(r), []).append(r)
+            n_disc = len(by_tid) + len(by_vid)
+
+            def _quotes(units, k=2):
+                us = sorted(units, key=lambda u: -(_get(u, "upvotes", 0) or 0))
+                return [u for u in us if len(_txt(u).strip()) >= 60][:k]
+
+            feed = []
+            for tid, units in by_tid.items():
+                src = all_posts.get(tid) or units[0]
+                title = (_get(src, "post_title") or "").strip()
+                if not title:
+                    continue
+                up = max((_get(u, "upvotes", 0) or 0) for u in units)
+                feed.append({
+                    "kind": "rd", "id": f"rd_{tid}", "title": title, "units": units,
+                    "sub": _subr(src) or _subr(units[0]), "up": up, "eng": up,
+                    "when": _get(src, "created_utc", None) or _get(units[0], "created_utc", None),
+                    "link": f'https://reddit.com{_get(src, "permalink")}',
+                    "quotes": _quotes(units)})
+            for v, units in by_vid.items():
+                m = next(((_get(u, "meta", {}) or {}) for u in units
+                          if (_get(u, "meta", {}) or {}).get("video_title")),
+                         _get(units[0], "meta", {}) or {})
+                cmts = [u for u in units if _get(u, "unit_type", "comment") == "comment"]
+                feed.append({
+                    "kind": "yt", "id": f"yt_{v}", "units": units,
+                    "title": m.get("video_title") or "YouTube video",
+                    "ch": m.get("channel_title", ""), "views": m.get("view_count", 0),
+                    "dur": m.get("duration", ""),
+                    "thumb": m.get("thumbnail_url") or f"https://i.ytimg.com/vi/{v}/hqdefault.jpg",
+                    "eng": sum((_get(u, "upvotes", 0) or 0) for u in cmts),
+                    "when": _get(units[0], "created_utc", None),
+                    "link": f"https://youtube.com/watch?v={v}",
+                    "quotes": _quotes(cmts or units)})
+            # usefulness, not source: discussions carrying the most relevant
+            # units first; ties broken by upvotes / comment likes (views are a
+            # different scale, so they don't enter the sort)
+            feed.sort(key=lambda c: (-len(c["units"]), -c["eng"]))
+            feed = feed[:8]
+
+            # -- 2. ONE cached GPT brief grounded in that selection: display
+            # name + category, the "Internet Consensus" paragraph, pros/cons
+            # with support share, buyer takeaways, per-discussion gists and
+            # related comparisons. All domain judgment stays in GPT; the
+            # fallbacks below only reshape data we already have. --
+            def _generic_brief():
+                ck = f"__gpage__::{query}"
+                if ck in st.session_state:
+                    return st.session_state[ck]
+                summ_plain = _re.sub(r"[#*_]+", " ", payload.get("summary", "") or "")
+                summ_plain = _re.sub(r"\s+", " ", summ_plain).strip()
+                sents = [s.strip() for s in _re.split(r"(?<=[.!?])\s+", summ_plain) if len(s.strip()) > 20]
+                fb = {
+                    "name": query.strip().title() if len(query.split()) <= 6 else query.strip(),
+                    "category": (entity_type or "").replace("_", " ").title() or "Community Analysis",
+                    "consensus": " ".join(sents[:3]) or f"Community analysis of {query}.",
+                    "pros": [{"text": k.replace("_", " ").title(), "pct": None}
+                             for k, v in sorted(aspect_avgs.items(), key=lambda x: -x[1]) if v >= 3.6][:5],
+                    "cons": [{"text": k.replace("_", " ").title(), "pct": None}
+                             for k, v in sorted(aspect_avgs.items(), key=lambda x: x[1]) if v < 3.0][:5],
+                    "takeaways": {}, "cards": {}, "comparisons": [],
+                }
+                out = fb
+                try:
+                    from insighthub.services.llm import _safe_json_loads
+                    id_map, lines = {}, []
+                    for i, c in enumerate(feed, 1):
+                        id_map[f"d{i}"] = c["id"]
+                        if c["kind"] == "rd":
+                            lines.append(f'[d{i}] Reddit thread ({len(c["units"])} relevant comments, '
+                                         f'▲{c["up"]}): "{_excerpt(c["title"], 140)}"')
+                        else:
+                            lines.append(f'[d{i}] YouTube video by {c["ch"] or "?"}: '
+                                         f'"{_excerpt(c["title"], 140)}"')
+                        for u in c["quotes"]:
+                            lines.append(f"  quote: {_excerpt(_txt(u), 260)}")
+                    sysmsg = ("You analyze community evidence (Reddit threads, YouTube videos and their "
+                              "comments) about the subject of a user's query. Ground every statement only "
+                              "in the provided excerpts — no invented details. Reply with JSON only.")
+                    usr = (f"Query: {query}\nSubject type: {entity_type or 'unknown'}\n"
+                           f"Community rating: {overall:.1f}/5\nAspect scores (1-5): {aspect_avgs}\n\n"
+                           "Evidence:\n" + "\n".join(lines) + "\n\nReturn JSON:\n{"
+                           '"name":"canonical display name of the single subject the query asks about",'
+                           '"category":"2-4 word category label for the subject",'
+                           '"consensus":"2-3 sentence internet consensus: what it is widely regarded as '
+                           'and why (its main strengths), then the recurring concerns. Concrete, grounded, '
+                           'no hedging boilerplate.",'
+                           '"pros":[{"text":"specific recurring positive","pct":<0-100 share of discussions '
+                           'supporting it, or null when unclear>},...max 5],'
+                           '"cons":[{"text":"specific recurring concern","pct":<same>},...max 5],'
+                           '"takeaways":{"best_for":"one sentence — who it suits best",'
+                           '"watch_outs":"one sentence — what to check before choosing it",'
+                           '"bottom_line":"one sentence verdict"},'
+                           '"cards":{"d1":{"summary":"1-2 sentence gist of that discussion about the '
+                           'subject","aspects":["short aspect it covers",...max 3]},...one per d# id},'
+                           '"comparisons":["<subject name> vs <named alternative commenters actually '
+                           'compare it to>",...max 4, [] if none]}')
+                    resp = llm_service.chat(sysmsg, usr, temperature=0.25, max_tokens=1200)
+                    data = _safe_json_loads(resp) if resp else None
+                    if isinstance(data, dict) and data.get("consensus"):
+                        def _pcn(seq):
+                            o = []
+                            for e in (seq or []):
+                                if isinstance(e, dict) and str(e.get("text", "")).strip():
+                                    p = e.get("pct")
+                                    o.append({"text": str(e["text"]).strip(),
+                                              "pct": int(p) if isinstance(p, (int, float)) and 0 < p <= 100 else None})
+                                elif isinstance(e, str) and e.strip():
+                                    o.append({"text": e.strip(), "pct": None})
+                            return o[:5]
+                        tk = data.get("takeaways") if isinstance(data.get("takeaways"), dict) else {}
+                        out = {
+                            "name": str(data.get("name") or "").strip() or fb["name"],
+                            "category": str(data.get("category") or "").strip() or fb["category"],
+                            "consensus": str(data["consensus"]).strip(),
+                            "pros": _pcn(data.get("pros")) or fb["pros"],
+                            "cons": _pcn(data.get("cons")) or fb["cons"],
+                            "takeaways": {k: str(tk.get(k)).strip() for k in
+                                          ("best_for", "watch_outs", "bottom_line")
+                                          if str(tk.get(k) or "").strip()},
+                            "cards": {id_map[k]: {"summary": str(v.get("summary", "")).strip(),
+                                                  "aspects": [str(a).strip() for a in
+                                                              (v.get("aspects") or [])[:3] if str(a).strip()]}
+                                      for k, v in (data.get("cards") or {}).items()
+                                      if k in id_map and isinstance(v, dict)},
+                            "comparisons": [str(x).strip() for x in (data.get("comparisons") or [])
+                                            if str(x).strip()][:4],
+                        }
+                except Exception as _e:
+                    logger.warning(f"generic page brief GPT failed: {_e}")
+                st.session_state[ck] = out
+                return out
+
+            brief = _generic_brief()
+            gname = brief["name"]
+
+            # -- 3. hero image via the same enrichment chain the ranking page
+            # uses (GPT category picks places vs generic; disk-cached) --
+            img_ck = f"__gimg__::{query}"
+            if img_ck not in st.session_state:
+                _hero_url = None
+                try:
+                    from insighthub.services.image_enrichment import (
+                        get_image_service, PLACE_PROVIDERS, GENERIC_PROVIDERS)
+                    from insighthub.services.llm import classify_query as _cq
+                    _isp = _cq(query) in ("local_discovery", "service_review")
+                    _hero_url = get_image_service().get_image_url(
+                        gname, query if _isp else (entity_type or "").replace("_", " "),
+                        providers=PLACE_PROVIDERS if _isp else GENERIC_PROVIDERS)
+                except Exception as _e:
+                    logger.warning(f"hero image enrichment skipped: {_e}")
+                st.session_state[img_ck] = _hero_url
+            hero_img = st.session_state[img_ck] or next(
+                (c["thumb"] for c in feed if c["kind"] == "yt"), None)
+
+            main_col, rail = st.columns([2.55, 1.05], gap="medium")
+
+            with main_col:
+                # ── hero: what is this + is it good, before anything else ──
+                himg = (f'<div class="gp-himg" style="background-image:url({hero_img})"></div>' if hero_img
+                        else f'<div class="gp-himg" style="background:{_grad_for(gname)}">'
+                             f'{_h.escape(gname[:1].upper())}</div>')
+                slbl, scol, _sbg = _sentiment_label(overall)
+                rating = (
+                    f'<div class="gp-hstat"><div class="big">{overall:.1f}<span class="of">/5</span></div>'
+                    f'<div class="stars">{_stars(overall)}</div><div class="cap">Community Rating</div></div>'
+                    f'<div class="gp-hsep"></div>'
+                    f'<div class="gp-hstat"><div class="big" style="color:{scol}">{slbl}</div>'
+                    f'<div class="cap">Overall Sentiment</div></div>'
+                    f'<div class="gp-hsep"></div>') if overall else ""
+                etype_lbl = (entity_type or "").replace("_", " ")
+                etype_chip = (f'<span class="gp-chip">{_h.escape(etype_lbl)}</span>'
+                              if etype_lbl and etype_lbl.title() != brief["category"].title() else "")
+                st.markdown(
+                    f'<div class="gp-hero">{himg}<div class="gp-hbody">'
+                    f'<div class="gp-hname">{_h.escape(gname)}</div>'
+                    f'<div class="gp-hchips"><span class="gp-chip acc">{_h.escape(brief["category"])}</span>'
+                    f'{etype_chip}</div>'
+                    f'<div class="gp-hstats">{rating}'
+                    f'<div class="gp-hstat"><div class="big">{n_disc}</div>'
+                    f'<div class="cap">Discussions Analyzed</div></div></div>'
+                    f'<div class="gp-conslbl">Internet Consensus</div>'
+                    f'<p class="gp-cons">{_h.escape(brief["consensus"])}</p>'
+                    f'</div></div>', unsafe_allow_html=True)
+
+                # ── why people like / dislike it — the highest-value section ──
+                def _pcrow(e, ic):
+                    pct = (f'<span class="pct">{e["pct"]}%</span>'
+                           if isinstance(e.get("pct"), int) else "")
+                    return (f'<div class="gp-pcrow"><span class="ic">{ic}</span>'
+                            f'<span>{_h.escape(e["text"])}</span>{pct}</div>')
+                love = ("".join(_pcrow(p, "✓") for p in brief["pros"])
+                        or '<div class="ov-empty">No consistent praise surfaced.</div>')
+                dis = ("".join(_pcrow(c, "✕") for c in brief["cons"])
+                       or '<div class="ov-empty">No consistent complaints surfaced.</div>')
+                love_box = (f'<div class="gp-pcbox gp-love"><div class="gp-pchead">'
+                            f'<span class="gp-pcic">👍</span>What People Love</div>{love}</div>')
+                dis_box = (f'<div class="gp-pcbox gp-dis"><div class="gp-pchead">'
+                           f'<span class="gp-pcic">👎</span>What People Dislike</div>{dis}</div>')
+
+                # aspect scores share the row: where it excels, numeric not donut
+                asp_box = ""
+                if aspect_avgs:
+                    asp_rows = "".join(
+                        f'<div class="gp-asp"><span class="lbl">{k.replace("_", " ")}</span>'
+                        f'<span class="track"><span class="fill" style="width:{max(4, v / 5 * 100):.0f}%;'
+                        f'background:{_score_color(v)}"></span></span>'
+                        f'<span class="v" style="color:{_score_color(v)}">{v:.1f}</span></div>'
+                        for k, v in sorted(aspect_avgs.items(), key=lambda x: -x[1]))
+                    asp_box = (f'<div class="gp-panel"><div class="gp-pchead">Aspect Scores</div>'
+                               f'<div class="gp-plegend" style="margin:-.3rem 0 .35rem">'
+                               f'1 (poor) → 5 (excellent)</div>'
+                               f'<div class="gp-aspgrid">{asp_rows}</div></div>')
+                st.markdown(
+                    (f'<div class="gp-3col">{love_box}{dis_box}{asp_box}</div>' if asp_box
+                     else f'<div class="gp-pc">{love_box}{dis_box}</div>'),
+                    unsafe_allow_html=True)
+
+                # -- second cached GPT pass: REVIEW SYNTHESIS. Turns the top
+                # discussions into buyer-focused summaries (merging same-theme
+                # discussions into one card) and picks the individual comments
+                # that shaped the consensus. This is the "read 50 discussions
+                # in 5 minutes" content the summaries/aspects can't carry. --
+                unit_by_id = {_rid(r): r for r in relevant}
+
+                def _review_brief():
+                    ck = f"__greviews__::{query}"
+                    if ck in st.session_state:
+                        return st.session_state[ck]
+                    fb_revs = []
+                    for c in feed[:4]:
+                        body = max((_txt(u) for u in c["units"]), key=len, default="")
+                        fb_revs.append({"id": c["id"], "also": [], "takeaways": [], "aspects": [],
+                                        "summary": _excerpt(body, 300)})
+                    top_cmts = sorted((u for u in relevant
+                                       if _get(u, "unit_type", "comment") == "comment"
+                                       and 60 <= len(_txt(u).strip()) <= 400),
+                                      key=lambda u: -(_get(u, "upvotes", 0) or 0))
+                    fb = {"reviews": [r for r in fb_revs if r["summary"]],
+                          "highlights": [_rid(u) for u in top_cmts[:4]],
+                          "interpretation": ""}
+                    out = fb
+                    try:
+                        from insighthub.services.llm import _safe_json_loads
+                        id_map, lines = {}, []
+                        for i, c in enumerate(feed, 1):
+                            id_map[f"d{i}"] = c["id"]
+                            if c["kind"] == "rd":
+                                lines.append(f'[d{i}] Reddit thread in r/{c["sub"]} (▲{c["up"]}): '
+                                             f'"{_excerpt(c["title"], 140)}"')
+                            else:
+                                lines.append(f'[d{i}] YouTube video by {c["ch"] or "?"}: '
+                                             f'"{_excerpt(c["title"], 140)}"')
+                            body_u = max(c["units"], key=lambda u: len(_txt(u)))
+                            if len(_txt(body_u)) >= 200 and _get(body_u, "unit_type", "comment") != "comment":
+                                lines.append(f"  content: {_excerpt(_txt(body_u), 500)}")
+                            for u in c["units"]:
+                                if _get(u, "unit_type", "comment") == "comment" and len(_txt(u).strip()) >= 60:
+                                    lines.append(f'  [c:{_rid(u)}] (▲{_get(u, "upvotes", 0) or 0}) '
+                                                 f'{_excerpt(_txt(u), 240)}')
+                        sysmsg = ("You synthesize community reviews (Reddit threads, YouTube videos and "
+                                  "their comments) into a buyer's guide about one subject. Ground every "
+                                  "statement only in the provided excerpts — no invented details. "
+                                  "Reply with JSON only.")
+                        usr = (f"Subject: {gname}\nQuery: {query}\n\nDiscussions:\n" + "\n".join(lines)
+                               + '\n\nReturn JSON:\n{'
+                                 '"reviews":[{"id":"d# this summary is anchored to (the strongest '
+                                 'discussion of its theme)",'
+                                 '"also":["d# of other discussions repeating the same theme",... [] if none],'
+                                 '"summary":"3-5 sentence buyer-focused synthesis of what the reviewer(s) '
+                                 'actually concluded: their experience, what they praise, what they '
+                                 'complain about. When several discussions share a theme, merge them into '
+                                 'this one summary instead of separate cards.",'
+                                 '"takeaways":["short key takeaway",...3-4],'
+                                 '"aspects":["aspect discussed",...max 3]},'
+                                 '...max 4 cards, most helpful for a buyer first, each anchored to a '
+                                 'different discussion],'
+                                 '"highlights":["<id after c:> of a comment that shaped the consensus — '
+                                 'vivid, specific, high-signal owner opinions",...max 4, from different '
+                                 'discussions when possible],'
+                                 '"interpretation":"1-2 sentences: what the highlighted comments '
+                                 'collectively say about the consensus — where owners agree and what '
+                                 'trade-off they accept"}')
+                        resp = llm_service.chat(sysmsg, usr, temperature=0.25, max_tokens=1400)
+                        data = _safe_json_loads(resp) if resp else None
+                        if isinstance(data, dict) and data.get("reviews"):
+                            revs, seen_anchor = [], set()
+                            for rv in data["reviews"]:
+                                if not isinstance(rv, dict):
+                                    continue
+                                did = id_map.get(str(rv.get("id", "")))
+                                summ = str(rv.get("summary") or "").strip()
+                                if not did or not summ or did in seen_anchor:
+                                    continue
+                                seen_anchor.add(did)
+                                revs.append({
+                                    "id": did,
+                                    "also": [id_map[a] for a in map(str, rv.get("also") or [])
+                                             if a in id_map and id_map[a] != did],
+                                    "summary": summ,
+                                    "takeaways": [str(t).strip() for t in (rv.get("takeaways") or [])
+                                                  if str(t).strip()][:4],
+                                    "aspects": [str(a).strip() for a in (rv.get("aspects") or [])
+                                                if str(a).strip()][:3],
+                                })
+                            out = {
+                                "reviews": revs[:4] or fb["reviews"],
+                                "highlights": [str(h) for h in (data.get("highlights") or [])
+                                               if str(h) in unit_by_id][:4] or fb["highlights"],
+                                "interpretation": str(data.get("interpretation") or "").strip(),
+                            }
+                    except Exception as _e:
+                        logger.warning(f"review synthesis GPT failed: {_e}")
+                    st.session_state[ck] = out
+                    return out
+
+                revb = _review_brief()
+                feed_by_id = {c["id"]: c for c in feed}
+
+                # ── most helpful reviews: the AI-summarized buyer's guide core ──
+                rcards = []
+                for rv in revb["reviews"][:4]:
+                    c = feed_by_id.get(rv["id"])
+                    if not c:
+                        continue
+                    scs = [s for s in (_score(u) for u in c["units"]) if s is not None]
+                    avg = sum(scs) / len(scs) if scs else None
+                    stars = (f'<div class="gp-revstars">{_stars(avg)}'
+                             f'<b style="color:#e2e8f0">{avg:.1f}</b></div>') if avg else ""
+                    if c["kind"] == "yt":
+                        top = [_YT_ICON + '<span class="gp-evsrc">YouTube</span>',
+                               f'<span>{_h.escape(c["ch"])}</span>' if c["ch"] else "",
+                               _fmt_views(c["views"])]
+                        thumb = (f'<div class="gp-revthumb" style="background-image:url({c["thumb"]})">'
+                                 + (f'<span class="gp-evdur">{c["dur"]}</span>' if c["dur"] else "")
+                                 + '</div>')
                     else:
-                        cur["up"] = max(cur["up"], up)
-            vids = list(videos.values())[:3]
-            rthreads = sorted(threads.values(), key=lambda x: -x["up"])[:4]
+                        top = [_RD_ICON + '<span class="gp-evsrc">Reddit</span>',
+                               f'<span>r/{_h.escape(c["sub"])}</span>' if c["sub"] else "",
+                               f'▲ {c["up"]:,}']
+                        thumb = ""
+                    top_html = '<span class="ex-evdot">·</span>'.join(t for t in top if t)
+                    tks = "".join(f'<li>{_h.escape(t)}</li>' for t in rv["takeaways"])
+                    tk_html = (f'<div class="gp-revtklbl">Key takeaways</div>'
+                               f'<ul class="gp-revtk">{tks}</ul>') if tks else ""
+                    chips = "".join(f'<span class="gp-evtag">{_h.escape(a)}</span>' for a in rv["aspects"])
+                    merged = (f'<div class="gp-revmerge">Synthesized with {len(rv["also"])} similar '
+                              f'discussion{"s" if len(rv["also"]) != 1 else ""}</div>') if rv["also"] else ""
+                    foot = (f'{chips}<a class="ex-open {"yt" if c["kind"] == "yt" else "rd"}" '
+                            f'style="margin-left:auto" href="{c["link"]}" target="_blank">Open original ↗</a>')
+                    rcards.append(
+                        f'<div class="gp-rev"><div class="gp-revtop">{top_html}</div>{thumb}'
+                        f'<div class="gp-revtitle">{_h.escape(_excerpt(c["title"], 90))}</div>{stars}'
+                        f'<div class="gp-revsum">{_h.escape(rv["summary"])}</div>{tk_html}{merged}'
+                        f'<div class="gp-revfoot">{foot}</div></div>')
+                if rcards:
+                    st.markdown('<div class="gp-phead" style="margin:.4rem 0 .55rem">'
+                                '<span class="gp-ptitle">Most Helpful Reviews</span>'
+                                '<span class="gp-plegend">AI summaries — themes merged across '
+                                'discussions</span></div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="gp-revgrid">{"".join(rcards)}</div>',
+                                unsafe_allow_html=True)
 
-            if vids or rthreads:
-                st.markdown('<div class="ov-sechdr">Community Highlights</div>', unsafe_allow_html=True)
-                colv, colr = st.columns(2)
-                if vids:
-                    vcards = "".join(
-                        f'<a class="ov-vid" href="https://youtube.com/watch?v={v["vid"]}" target="_blank">'
-                        f'<div class="ov-vthumb" style="background-image:url({v["thumb"]})">'
-                        f'<span class="ov-play">▶</span></div>'
-                        f'<div class="ov-vtitle">{v["title"]}</div>'
-                        f'<div class="ov-vch">{v["ch"]}</div></a>' for v in vids)
-                    colv.markdown('<div class="ov-sub2">Top YouTube Videos</div>'
-                                  f'<div class="ov-vgrid">{vcards}</div>', unsafe_allow_html=True)
-                if rthreads:
-                    rrows = "".join(
-                        f'<a class="ov-rd" href="https://reddit.com{t["perma"]}" target="_blank">'
-                        f'<span class="ov-rdic">r/</span><div><div class="ov-rdtitle">{t["title"]}</div>'
-                        f'<div class="ov-rdmeta">{("r/"+t["sub"]+" · ") if t["sub"] else ""}▲ {t["up"]:,} upvotes</div>'
-                        f'</div></a>' for t in rthreads)
-                    colr.markdown('<div class="ov-sub2">Top Reddit Discussions</div>'
-                                  f'<div class="ov-rdlist">{rrows}</div>', unsafe_allow_html=True)
+                # ── community highlights: the comments behind the consensus ──
+                hl_units = [unit_by_id[h] for h in revb["highlights"] if h in unit_by_id]
+                if hl_units:
+                    st.markdown('<div class="gp-phead" style="margin:.2rem 0 .55rem">'
+                                '<span class="gp-ptitle">Top Community Highlights</span>'
+                                '<span class="gp-plegend">the voices that shaped the consensus</span></div>',
+                                unsafe_allow_html=True)
+                    qcards = []
+                    for u in hl_units[:4]:
+                        up = _get(u, "upvotes", 0) or 0
+                        if _is_yt(u):
+                            m = _get(u, "meta", {}) or {}
+                            src = _YT_ICON + f'<span>{_h.escape(m.get("channel_title") or "YouTube")}</span>'
+                            eng = f'👍 {up:,}' if up else ""
+                            link = _get(u, "url")
+                        else:
+                            sub = _subr(u)
+                            src = _RD_ICON + (f'<span>r/{_h.escape(sub)}</span>' if sub else "<span>Reddit</span>")
+                            eng = f'▲ {up:,} upvotes' if up else ""
+                            link = f'https://reddit.com{_get(u, "permalink")}'
+                        meta = '<span class="ex-evdot">·</span>'.join(x for x in (src, eng) if x)
+                        qcards.append(
+                            f'<div class="gp-quote"><div class="gp-qmark">“</div>'
+                            f'<div class="gp-qtxt">{_h.escape(_excerpt(_txt(u), 200))}</div>'
+                            f'<div class="gp-qmeta">{meta}<a class="ex-nopen" style="margin-left:auto" '
+                            f'href="{link}" target="_blank">↗</a></div></div>')
+                    st.markdown(f'<div class="gp-qgrid">{"".join(qcards)}</div>', unsafe_allow_html=True)
+                    if revb["interpretation"]:
+                        st.markdown(f'<div class="gp-interp"><div class="gp-interplbl">AI Interpretation'
+                                    f'</div><p>{_h.escape(revb["interpretation"])}</p></div>',
+                                    unsafe_allow_html=True)
 
-            # ── 5. key takeaways + what's next ──
-            sents = [s.strip() for s in _re.split(r'(?<=[.!?])\s+', payload.get("summary", "")) if len(s.strip()) > 14][:5]
-            colk, coln = st.columns(2)
-            if sents:
-                tk = "".join(f'<div class="ov-tk"><span class="ov-tkchk">✓</span><span>{s}</span></div>' for s in sents)
-                colk.markdown(f'<div class="ov-panel"><div class="ov-ptitle">Key Takeaways</div>{tk}</div>',
-                              unsafe_allow_html=True)
-            nexts = [("❝", "Explore Full Reviews", "Dive into individual reviews and discussions"),
-                     ("▤", "Compare " + _ent_word, "Side-by-side of the top-rated picks"),
-                     ("⇪", "Save & Share", "Export results or share with friends")]
-            nn = "".join(f'<div class="ov-nx"><span class="ov-nxic">{i}</span>'
-                         f'<div><div class="ov-nxt">{t}</div><div class="ov-nxs">{s}</div></div>'
-                         f'<span class="ov-nxarrow">→</span></div>' for i, t, s in nexts)
-            coln.markdown(f'<div class="ov-panel"><div class="ov-ptitle">What\'s Next?</div>{nn}</div>',
-                          unsafe_allow_html=True)
+                # ── all evidence: the unfiltered mixed feed, for diving deeper ──
+                st.markdown('<div class="gp-phead" style="margin:.4rem 0 .1rem">'
+                            '<span class="gp-ptitle">All Evidence</span></div>',
+                            unsafe_allow_html=True)
+                srcf = st.radio("Source", ["All", "Reddit", "YouTube"], key="gp_src",
+                                horizontal=True, label_visibility="collapsed")
+                shown = [c for c in feed if srcf == "All"
+                         or (srcf == "Reddit") == (c["kind"] == "rd")]
+                ev_cards = []
+                for c in shown[:6]:
+                    b = brief["cards"].get(c["id"], {})
+                    summ = b.get("summary") or (_excerpt(_txt(c["quotes"][0]), 150) if c["quotes"] else "")
+                    asp = b.get("aspects") or []
+                    if not asp:   # fallback: aspects the discussion's units actually scored
+                        cnt = _Counter(k for u in c["units"]
+                                       for k in (getattr(anno_map.get(_rid(u)), "aspect_scores", None) or {}))
+                        asp = [k.replace("_", " ") for k, _n in cnt.most_common(3)]
+                    tags = "".join(f'<span class="gp-evtag">{_h.escape(a)}</span>' for a in asp[:3])
+                    tags = (f'<div class="gp-evasp"><span class="k">Key aspects:</span>{tags}</div>'
+                            if tags else "")
+                    when = _rel_time(c.get("when"))
+                    if c["kind"] == "yt":
+                        thumb = (f'<div class="gp-evthumb" style="background-image:url({c["thumb"]})">'
+                                 + (f'<span class="gp-evdur">{c["dur"]}</span>' if c["dur"] else "")
+                                 + '</div>')
+                        meta = [f'<span class="gp-evsrc">{_h.escape(c["ch"])}</span>' if c["ch"] else "",
+                                _fmt_views(c["views"]), when]
+                        icon = _YT_ICON
+                    else:
+                        thumb = (f'<div class="gp-evthumb" style="background:{_grad_for(c["title"])}">'
+                                 f'<span class="gp-evn">💬 {len(c["units"])}</span></div>')
+                        meta = [f'<span class="gp-evsrc">r/{_h.escape(c["sub"])}</span>' if c["sub"] else "",
+                                f'▲ {c["up"]:,} upvotes', when]
+                        icon = _RD_ICON
+                    meta_html = '<span class="ex-evdot">·</span>'.join(x for x in meta if x)
+                    ev_cards.append(
+                        f'<a class="gp-ev" href="{c["link"]}" target="_blank">{thumb}'
+                        f'<div class="gp-evbody"><div class="gp-evtop">{icon}{meta_html}</div>'
+                        f'<div class="gp-evtitle">{_h.escape(_excerpt(c["title"], 110))}</div>'
+                        + (f'<div class="gp-evsum">{_h.escape(summ)}</div>' if summ else "")
+                        + f'{tags}</div></a>')
+                # parent <div> first: an <a> opening the markdown block would be
+                # parsed inside a <p>, and the browser then shreds the first card
+                # re-wrapping each child <div> in its own anchor
+                st.markdown(f'<div class="gp-feed">{"".join(ev_cards)}</div>' if ev_cards
+                            else '<div class="ov-empty">No evidence to show.</div>',
+                            unsafe_allow_html=True)
+                st.markdown('<div class="gp-foot">All evidence with filters lives in the Reviews tab '
+                            '· AI analysis of community discussions from Reddit and YouTube — not '
+                            'affiliated with the subject.</div>', unsafe_allow_html=True)
+
+            with rail:
+                # ── At a Glance: the old metric cards, demoted to metadata ──
+                gl_rows = "".join(
+                    f'<div class="gp-glrow"><span class="gp-glic">{ic}</span>'
+                    f'<div><div class="gp-glval">{val}</div><div class="gp-gllbl">{lbl}</div></div></div>'
+                    for ic, val, lbl in (
+                        ("◈", n_disc, "Discussions Analyzed"),
+                        ("❝", len(meaningful), "Detailed Reviews"),
+                        ("⬡", len(platform_breakdown), f"Sources · {plat_str}"),
+                        ("◷", f"{search_time:.1f}s", "Analysis Time"),
+                        ("↻", ts.split(" at ")[0], "Last Updated")))
+                st.markdown(f'<div class="gp-panel"><div class="gp-ptitle" style="margin-bottom:.4rem">'
+                            f'At a Glance</div>{gl_rows}</div>', unsafe_allow_html=True)
+
+                src_rows = "".join(
+                    f'<div class="ov-srcrow"><span class="ov-srcic {cls}">{icch}</span>'
+                    f'<div><div class="ov-srcname">{nme}</div>'
+                    f'<div class="ov-srccnt"><b>{cnt}</b> discussions ({cnt / max(1, n_disc):.0%})</div>'
+                    f'</div></div>'
+                    for nme, cnt, cls, icch in (("Reddit", len(by_tid), "rd", "r/"),
+                                                ("YouTube", len(by_vid), "yt", "▶")) if cnt)
+                if src_rows:
+                    st.markdown(f'<div class="gp-panel"><div class="gp-ptitle" style="margin-bottom:.7rem">'
+                                f'Source Breakdown</div>{src_rows}</div>', unsafe_allow_html=True)
+
+                tk_rows = "".join(
+                    f'<div class="gp-tkrow"><span class="ck">✓</span>'
+                    f'<span><b>{lbl}:</b> {_h.escape(txt)}</span></div>'
+                    for lbl, txt in (("Best For", brief["takeaways"].get("best_for")),
+                                     ("Watch Outs", brief["takeaways"].get("watch_outs")),
+                                     ("Bottom Line", brief["takeaways"].get("bottom_line"))) if txt)
+                if overall:
+                    tk_rows = (f'<div class="gp-tkrow"><span class="ck">✓</span>'
+                               f'<span><b>Overall Rating:</b> {overall:.1f}/5</span></div>') + tk_rows
+                if tk_rows:
+                    st.markdown(f'<div class="gp-panel"><div class="gp-ptitle" style="margin-bottom:.4rem">'
+                                f'Takeaways</div>{tk_rows}</div>', unsafe_allow_html=True)
+
+                # ── related comparisons: the natural next step, replaces CTAs ──
+                if brief["comparisons"]:
+                    st.markdown('<div class="gp-ptitle" style="margin:.2rem 0 .5rem">Related Comparisons</div>',
+                                unsafe_allow_html=True)
+                    for _ci, _cq_txt in enumerate(brief["comparisons"]):
+                        if st.button(_cq_txt, key=f"gp_cmp_{_ci}", use_container_width=True):
+                            st.session_state["pending_query"] = _cq_txt
+                            st.session_state["run_analysis"] = True
+                            st.rerun()
+
+                with st.expander("Analysis Details"):
+                    _scraped = sum(len(v) for v in platform_breakdown.values())
+                    st.markdown(
+                        f"- **Units scraped:** {_scraped}\n"
+                        f"- **Relevant units analyzed:** {len(comments)}\n"
+                        f"- **Detailed reviews:** {len(meaningful)}\n"
+                        f"- **Platforms:** {plat_str}\n"
+                        f"- **Analysis time:** {search_time:.1f}s\n"
+                        f"- **Completed:** {ts}"
+                        + (f"\n- **Subreddits:** {', '.join('r/' + s for s in subreddits)}"
+                           if subreddits else ""))
 
     # ═══ RANKINGS ═══
     with tabs[1]:
@@ -2609,18 +3123,25 @@ if run_analysis and query.strip():
                 ranking = [e for e in ranking if e.name in valid]
             ranking = llm_service.validate_entity_locations(ranking, query)
 
-            # Enrich place-like entities with a real photo (Google Places → Yelp,
-            # cached). Gated to place categories so we don't burn quota resolving
-            # products; the category comes from GPT (no hardcoded keyword rules).
-            if _qcat in ("local_discovery", "service_review"):
-                try:
-                    from insighthub.services.image_enrichment import get_image_service
-                    _img = get_image_service()
-                    if _img.enabled:
-                        for e in ranking:
-                            e.image_url = _img.get_image_url(e.name, query)
-                except Exception as _e:
-                    logger.warning(f"Image enrichment skipped: {_e}")
+            # Enrich entities with a real photo (cached, incl. misses). Place
+            # categories use Google Places → Yelp so we don't burn quota resolving
+            # products; everything else falls back to the free keyless Wikipedia
+            # lead image. The category comes from GPT (no hardcoded keyword rules).
+            try:
+                from insighthub.services.image_enrichment import (
+                    get_image_service, PLACE_PROVIDERS, GENERIC_PROVIDERS)
+                _img = get_image_service()
+                _is_place = _qcat in ("local_discovery", "service_review")
+                _chain = PLACE_PROVIDERS if _is_place else GENERIC_PROVIDERS
+                # context: places get the query (location matters); generic
+                # entities get the GPT-derived entity type, which disambiguates
+                # single-word names ("Storm" → the Marvel character, not weather)
+                # while keeping cache entries shared across queries
+                _ctx = query if _is_place else (intent_schema.entity_type or "").replace("_", " ")
+                for e in ranking:
+                    e.image_url = _img.get_image_url(e.name, _ctx, providers=_chain)
+            except Exception as _e:
+                logger.warning(f"Image enrichment skipped: {_e}")
 
             _insufficient = ConfidenceConfig.TIER_LABELS["insufficient"]
             # Primary picks vs. low-confidence long tail surfaced by the sparse-rescue path.
