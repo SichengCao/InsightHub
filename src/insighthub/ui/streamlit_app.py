@@ -1693,8 +1693,21 @@ _GENPAGE_CSS = """
 .gp-revtk li{list-style:none;display:flex;gap:.45rem;font-size:.76rem;color:#c2ccd8;line-height:1.5;
   margin:.18rem 0;}
 .gp-revtk li::before{content:"•";color:#818cf8;font-weight:800;}
-.gp-revmerge{font-size:.66rem;color:#8a93a3;font-style:italic;margin-top:.4rem;}
 .gp-revfoot{display:flex;align-items:center;gap:.35rem;margin-top:auto;padding-top:.6rem;flex-wrap:wrap;}
+/* why this source matters — selection rationale + consensus influence */
+.gp-whybox{background:rgba(129,140,248,.07);border:1px solid rgba(129,140,248,.18);border-radius:8px;
+  padding:.5rem .7rem;margin-top:.55rem;font-size:.75rem;color:#c7d2fe;line-height:1.5;}
+.gp-whybox .wl{display:block;font-size:.6rem;font-weight:800;letter-spacing:.08em;
+  text-transform:uppercase;color:#818cf8;margin-bottom:.2rem;}
+.gp-whybox b{color:#dbe3fe;}
+/* themed community highlights */
+.gp-theme{margin-bottom:1rem;}
+.gp-themehead{display:flex;align-items:center;gap:.6rem;margin-bottom:.5rem;flex-wrap:wrap;}
+.gp-themename{font-size:.92rem;font-weight:800;color:#e8edf4;}
+.gp-themechip{font-size:.66rem;font-weight:800;padding:.14rem .55rem;border-radius:14px;white-space:nowrap;}
+.gp-themechip.pos{color:#22d3a0;background:rgba(34,211,160,.12);}
+.gp-themechip.neg{color:#f87171;background:rgba(248,113,113,.11);}
+.gp-themechip.mix{color:#f59e0b;background:rgba(245,158,11,.11);}
 /* community highlights — the comments that shaped the consensus */
 .gp-qgrid{display:grid;grid-template-columns:1fr 1fr;gap:.7rem;}
 .gp-quote{background:#12161d;border:1px solid rgba(255,255,255,.07);border-radius:13px;padding:.85rem 1rem;}
@@ -2519,22 +2532,57 @@ def render_results(R):
                 # in 5 minutes" content the summaries/aspects can't carry. --
                 unit_by_id = {_rid(r): r for r in relevant}
 
+                # Real per-aspect coverage across ALL discussions (not just the
+                # top-8 feed): every "mentioned in N discussions" count on this
+                # page is derived from these statistics — GPT is only allowed to
+                # pick from them, never to invent a number.
+                disc_map = dict(by_tid)
+                for _v, _us in by_vid.items():
+                    disc_map[f"v_{_v}"] = _us
+                _ad = {}
+                for _did, _us in disc_map.items():
+                    for u in _us:
+                        a = anno_map.get(_rid(u))
+                        for k, s in (getattr(a, "aspect_scores", None) or {}).items():
+                            _ad.setdefault(k, {}).setdefault(_did, []).append(s)
+                asp_stats = []          # (aspect, n_discussions, avg_score, disc_ids)
+                for k, dd in _ad.items():
+                    means = [sum(v) / len(v) for v in dd.values()]
+                    asp_stats.append((k, len(dd), sum(means) / len(means), set(dd)))
+                asp_stats.sort(key=lambda x: (-x[1], x[0]))
+
+                def _sent_word(avg):
+                    return ("positive", "pos") if avg >= 3.5 else \
+                           ("negative", "neg") if avg < 3.0 else ("mixed", "mix")
+
                 def _review_brief():
-                    ck = f"__greviews__::{query}"
+                    ck = f"__greviews2__::{query}"
                     if ck in st.session_state:
                         return st.session_state[ck]
                     fb_revs = []
                     for c in feed[:4]:
                         body = max((_txt(u) for u in c["units"]), key=len, default="")
                         fb_revs.append({"id": c["id"], "also": [], "takeaways": [], "aspects": [],
-                                        "summary": _excerpt(body, 300)})
-                    top_cmts = sorted((u for u in relevant
-                                       if _get(u, "unit_type", "comment") == "comment"
-                                       and 60 <= len(_txt(u).strip()) <= 400),
-                                      key=lambda u: -(_get(u, "upvotes", 0) or 0))
+                                        "summary": _excerpt(body, 300),
+                                        "why": "", "influence": "", "represents": None})
+                    # fallback themes come straight from the aspect statistics:
+                    # real counts, real sentiment, top-upvoted on-aspect quotes
+                    fb_themes, _fb_used = [], set()
+                    for k, n, avg, dids in asp_stats[:3]:
+                        cands = sorted((u for _d in dids for u in disc_map[_d]
+                                        if _get(u, "unit_type", "comment") == "comment"
+                                        and 60 <= len(_txt(u).strip()) <= 400
+                                        and _rid(u) not in _fb_used
+                                        and k in (getattr(anno_map.get(_rid(u)), "aspect_scores", None) or {})),
+                                       key=lambda u: -(_get(u, "upvotes", 0) or 0))
+                        if not cands:
+                            continue
+                        _fb_used.update(_rid(u) for u in cands[:2])
+                        fb_themes.append({"name": k.replace("_", " ").title(),
+                                          "sentiment": _sent_word(avg)[0], "count": n,
+                                          "quotes": [_rid(u) for u in cands[:2]]})
                     fb = {"reviews": [r for r in fb_revs if r["summary"]],
-                          "highlights": [_rid(u) for u in top_cmts[:4]],
-                          "interpretation": ""}
+                          "themes": fb_themes, "interpretation": ""}
                     out = fb
                     try:
                         from insighthub.services.llm import _safe_json_loads
@@ -2554,11 +2602,17 @@ def render_results(R):
                                 if _get(u, "unit_type", "comment") == "comment" and len(_txt(u).strip()) >= 60:
                                     lines.append(f'  [c:{_rid(u)}] (▲{_get(u, "upvotes", 0) or 0}) '
                                                  f'{_excerpt(_txt(u), 240)}')
+                        stats_line = " | ".join(f"{k}: {n} discussions, avg {avg:.1f}/5"
+                                                for k, n, avg, _ds in asp_stats[:8]) or "none"
                         sysmsg = ("You synthesize community reviews (Reddit threads, YouTube videos and "
                                   "their comments) into a buyer's guide about one subject. Ground every "
-                                  "statement only in the provided excerpts — no invented details. "
-                                  "Reply with JSON only.")
-                        usr = (f"Subject: {gname}\nQuery: {query}\n\nDiscussions:\n" + "\n".join(lines)
+                                  "statement only in the provided excerpts. Every NUMBER you output must "
+                                  "come from the provided statistics or from counting the listed "
+                                  "discussions — never invent counts. Reply with JSON only.")
+                        usr = (f"Subject: {gname}\nQuery: {query}\n"
+                               f"Total discussions analyzed: {n_disc}\n"
+                               f"Aspect coverage across ALL discussions: {stats_line}\n\n"
+                               "Discussions:\n" + "\n".join(lines)
                                + '\n\nReturn JSON:\n{'
                                  '"reviews":[{"id":"d# this summary is anchored to (the strongest '
                                  'discussion of its theme)",'
@@ -2568,18 +2622,35 @@ def render_results(R):
                                  'complain about. When several discussions share a theme, merge them into '
                                  'this one summary instead of separate cards.",'
                                  '"takeaways":["short key takeaway",...3-4],'
-                                 '"aspects":["aspect discussed",...max 3]},'
+                                 '"aspects":["aspect discussed",...max 3],'
+                                 '"why":"1 sentence: why this source earned its spot — the unique '
+                                 'perspective it adds that the other discussions lack",'
+                                 '"influence":"short sentence: the consensus point this source most '
+                                 "strongly supports or challenges, e.g. 'One of the strongest sources "
+                                 "behind the charging-experience consensus.'\","
+                                 f'"represents":<int 1-{n_disc}: how many analyzed discussions echo this '
+                                 'source\'s main theme, derived from the aspect coverage stats or by '
+                                 'counting the listed discussions; null if unclear>},'
                                  '...max 4 cards, most helpful for a buyer first, each anchored to a '
                                  'different discussion],'
-                                 '"highlights":["<id after c:> of a comment that shaped the consensus — '
-                                 'vivid, specific, high-signal owner opinions",...max 4, from different '
-                                 'discussions when possible],'
-                                 '"interpretation":"1-2 sentences: what the highlighted comments '
-                                 'collectively say about the consensus — where owners agree and what '
-                                 'trade-off they accept"}')
-                        resp = llm_service.chat(sysmsg, usr, temperature=0.25, max_tokens=1400)
+                                 '"themes":[{"name":"2-4 word theme the community keeps returning to",'
+                                 '"sentiment":"positive"|"negative"|"mixed" (from the avg score of the '
+                                 'matching aspect: >=3.5 positive, <3.0 negative, else mixed),'
+                                 f'"count":<int 1-{n_disc}: distinct discussions mentioning it — take it '
+                                 'from the aspect coverage stats>,'
+                                 '"quotes":["<id after c:> of the most representative comment for this '
+                                 'theme",...1-2]},'
+                                 '...max 4 themes ordered by count desc, each quote id used only once],'
+                                 '"interpretation":"1-2 sentences: how these themes combine into the '
+                                 'overall consensus — where owners agree and what trade-off they accept"}')
+                        resp = llm_service.chat(sysmsg, usr, temperature=0.25, max_tokens=1600)
                         data = _safe_json_loads(resp) if resp else None
                         if isinstance(data, dict) and data.get("reviews"):
+                            def _clamp_n(v):
+                                try:
+                                    return max(1, min(int(v), n_disc))
+                                except (TypeError, ValueError):
+                                    return None
                             revs, seen_anchor = [], set()
                             for rv in data["reviews"]:
                                 if not isinstance(rv, dict):
@@ -2598,11 +2669,30 @@ def render_results(R):
                                                   if str(t).strip()][:4],
                                     "aspects": [str(a).strip() for a in (rv.get("aspects") or [])
                                                 if str(a).strip()][:3],
+                                    "why": str(rv.get("why") or "").strip(),
+                                    "influence": str(rv.get("influence") or "").strip(),
+                                    "represents": _clamp_n(rv.get("represents")),
+                                })
+                            themes, _q_used = [], set()
+                            for th in (data.get("themes") or []):
+                                if not isinstance(th, dict) or not str(th.get("name") or "").strip():
+                                    continue
+                                qs = [str(q) for q in (th.get("quotes") or [])
+                                      if str(q) in unit_by_id and str(q) not in _q_used][:2]
+                                if not qs:
+                                    continue
+                                _q_used.update(qs)
+                                themes.append({
+                                    "name": str(th["name"]).strip(),
+                                    "sentiment": (str(th.get("sentiment") or "").strip().lower()
+                                                  if str(th.get("sentiment") or "").strip().lower()
+                                                  in ("positive", "negative", "mixed") else "mixed"),
+                                    "count": _clamp_n(th.get("count")),
+                                    "quotes": qs,
                                 })
                             out = {
                                 "reviews": revs[:4] or fb["reviews"],
-                                "highlights": [str(h) for h in (data.get("highlights") or [])
-                                               if str(h) in unit_by_id][:4] or fb["highlights"],
+                                "themes": themes[:4] or fb["themes"],
                                 "interpretation": str(data.get("interpretation") or "").strip(),
                             }
                     except Exception as _e:
@@ -2640,14 +2730,24 @@ def render_results(R):
                     tk_html = (f'<div class="gp-revtklbl">Key takeaways</div>'
                                f'<ul class="gp-revtk">{tks}</ul>') if tks else ""
                     chips = "".join(f'<span class="gp-evtag">{_h.escape(a)}</span>' for a in rv["aspects"])
-                    merged = (f'<div class="gp-revmerge">Synthesized with {len(rv["also"])} similar '
-                              f'discussion{"s" if len(rv["also"]) != 1 else ""}</div>') if rv["also"] else ""
+                    # why this source: selection rationale, coverage, consensus influence
+                    rep = rv.get("represents") or (len(rv["also"]) + 1 if rv["also"] else None)
+                    why_bits = []
+                    if rep and rep > 1:
+                        why_bits.append(f'<b>Represents {rep} similar discussions.</b>')
+                    for t in (rv.get("why"), rv.get("influence")):
+                        t = (t or "").strip()
+                        if t:
+                            t = t[0].upper() + t[1:]
+                            why_bits.append(_h.escape(t if t.endswith((".", "!", "?")) else t + "."))
+                    whybox = (f'<div class="gp-whybox"><span class="wl">Why this source</span>'
+                              f'{" ".join(why_bits)}</div>') if why_bits else ""
                     foot = (f'{chips}<a class="ex-open {"yt" if c["kind"] == "yt" else "rd"}" '
                             f'style="margin-left:auto" href="{c["link"]}" target="_blank">Open original ↗</a>')
                     rcards.append(
                         f'<div class="gp-rev"><div class="gp-revtop">{top_html}</div>{thumb}'
                         f'<div class="gp-revtitle">{_h.escape(_excerpt(c["title"], 90))}</div>{stars}'
-                        f'<div class="gp-revsum">{_h.escape(rv["summary"])}</div>{tk_html}{merged}'
+                        f'<div class="gp-revsum">{_h.escape(rv["summary"])}</div>{whybox}{tk_html}'
                         f'<div class="gp-revfoot">{foot}</div></div>')
                 if rcards:
                     st.markdown('<div class="gp-phead" style="margin:.4rem 0 .55rem">'
@@ -2657,33 +2757,51 @@ def render_results(R):
                     st.markdown(f'<div class="gp-revgrid">{"".join(rcards)}</div>',
                                 unsafe_allow_html=True)
 
-                # ── community highlights: the comments behind the consensus ──
-                hl_units = [unit_by_id[h] for h in revb["highlights"] if h in unit_by_id]
-                if hl_units:
-                    st.markdown('<div class="gp-phead" style="margin:.2rem 0 .55rem">'
-                                '<span class="gp-ptitle">Top Community Highlights</span>'
-                                '<span class="gp-plegend">the voices that shaped the consensus</span></div>',
-                                unsafe_allow_html=True)
-                    qcards = []
-                    for u in hl_units[:4]:
-                        up = _get(u, "upvotes", 0) or 0
-                        if _is_yt(u):
-                            m = _get(u, "meta", {}) or {}
-                            src = _YT_ICON + f'<span>{_h.escape(m.get("channel_title") or "YouTube")}</span>'
-                            eng = f'👍 {up:,}' if up else ""
-                            link = _get(u, "url")
-                        else:
-                            sub = _subr(u)
-                            src = _RD_ICON + (f'<span>r/{_h.escape(sub)}</span>' if sub else "<span>Reddit</span>")
-                            eng = f'▲ {up:,} upvotes' if up else ""
-                            link = f'https://reddit.com{_get(u, "permalink")}'
-                        meta = '<span class="ex-evdot">·</span>'.join(x for x in (src, eng) if x)
-                        qcards.append(
-                            f'<div class="gp-quote"><div class="gp-qmark">“</div>'
+                # ── community highlights, organized by THEME: each block names a
+                # recurring topic, states how many discussions raised it (real
+                # counts from the aspect statistics), then quotes the voices
+                # that best represent it — consensus explanation, not a feed ──
+                def _quote_card(u):
+                    up = _get(u, "upvotes", 0) or 0
+                    if _is_yt(u):
+                        m = _get(u, "meta", {}) or {}
+                        src = _YT_ICON + f'<span>{_h.escape(m.get("channel_title") or "YouTube")}</span>'
+                        eng = f'👍 {up:,}' if up else ""
+                        link = _get(u, "url")
+                    else:
+                        sub = _subr(u)
+                        src = _RD_ICON + (f'<span>r/{_h.escape(sub)}</span>' if sub else "<span>Reddit</span>")
+                        eng = f'▲ {up:,} upvotes' if up else ""
+                        link = f'https://reddit.com{_get(u, "permalink")}'
+                    meta = '<span class="ex-evdot">·</span>'.join(x for x in (src, eng) if x)
+                    return (f'<div class="gp-quote"><div class="gp-qmark">“</div>'
                             f'<div class="gp-qtxt">{_h.escape(_excerpt(_txt(u), 200))}</div>'
                             f'<div class="gp-qmeta">{meta}<a class="ex-nopen" style="margin-left:auto" '
                             f'href="{link}" target="_blank">↗</a></div></div>')
-                    st.markdown(f'<div class="gp-qgrid">{"".join(qcards)}</div>', unsafe_allow_html=True)
+
+                _chip_words = {"positive": ("Mentioned positively in", "pos"),
+                               "negative": ("Mentioned negatively in", "neg"),
+                               "mixed": ("Mixed views across", "mix")}
+                theme_blocks = []
+                for th in (revb.get("themes") or [])[:4]:
+                    qcards = [_quote_card(unit_by_id[q]) for q in th["quotes"] if q in unit_by_id]
+                    if not qcards:
+                        continue
+                    chip = ""
+                    if th.get("count"):
+                        lead, cls = _chip_words.get(th["sentiment"], ("Mentioned in", "mix"))
+                        chip = (f'<span class="gp-themechip {cls}">{lead} {th["count"]} '
+                                f'discussion{"s" if th["count"] != 1 else ""}</span>')
+                    theme_blocks.append(
+                        f'<div class="gp-theme"><div class="gp-themehead">'
+                        f'<span class="gp-themename">{_h.escape(th["name"])}</span>{chip}</div>'
+                        f'<div class="gp-qgrid">{"".join(qcards)}</div></div>')
+                if theme_blocks:
+                    st.markdown('<div class="gp-phead" style="margin:.2rem 0 .55rem">'
+                                '<span class="gp-ptitle">Top Community Highlights</span>'
+                                '<span class="gp-plegend">the voices behind the consensus, '
+                                'organized by theme</span></div>', unsafe_allow_html=True)
+                    st.markdown("".join(theme_blocks), unsafe_allow_html=True)
                     if revb["interpretation"]:
                         st.markdown(f'<div class="gp-interp"><div class="gp-interplbl">AI Interpretation'
                                     f'</div><p>{_h.escape(revb["interpretation"])}</p></div>',
