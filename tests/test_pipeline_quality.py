@@ -149,11 +149,11 @@ class TestRelevanceFilter:
         result = llm.filter_relevant_comments([], QUERY_GOLF)
         assert result == []
 
-    def test_fail_open_on_bad_response(self, llm, monkeypatch):
-        """If GPT returns garbage, all comments should be kept (fail-open)."""
+    def test_fail_closed_on_bad_response(self, llm, monkeypatch):
+        """If GPT returns garbage, all comments in that batch should be dropped (fail-closed)."""
         monkeypatch.setattr(llm, "chat", lambda **kw: "this is not json at all!!!")
         result = llm.filter_relevant_comments(RELEVANT_COMMENTS[:2], QUERY_GOLF)
-        assert len(result) == 2, "Should fail-open and keep all comments when GPT fails"
+        assert len(result) == 0, "Should fail-closed and drop all comments when GPT fails"
 
 
 class TestLocationValidator:

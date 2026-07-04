@@ -315,12 +315,13 @@ class TestAggregateGeneric:
         overall, _ = aggregate_generic(["quality"], annos, upvotes)
         assert overall < 3.0, "High-upvote 1-star review should pull score below 3"
 
-    def test_aspect_missing_returns_3(self):
+    def test_aspect_missing_not_fabricated(self):
+        """Aspects with no signal should be absent, not filled with a 3.0 placeholder."""
         annos = [make_anno("c1", overall_score=4.0, aspect_scores={})]
         upvotes = {"c1": 1}
         _, aspects = aggregate_generic(["quality", "price"], annos, upvotes)
-        assert aspects.get("quality") == 3.0
-        assert aspects.get("price") == 3.0
+        assert aspects.get("quality") is None, "Missing aspect must not be fabricated as 3.0"
+        assert aspects.get("price") is None,   "Missing aspect must not be fabricated as 3.0"
 
     def test_aspect_weighted_correctly(self):
         annos = [
@@ -593,6 +594,33 @@ class TestEntityDeduplication:
         merged = result[0]
         assert merged.mentions == 7, \
             f"Merged entity should have 3+4=7 mentions, got {merged.mentions}"
+
+    def test_spaceless_alias_merged(self):
+        """'Yakini Q' and 'YakiniQ' differ only in spacing — one entity."""
+        annos = (
+            [make_anno(f"s{i}", entities=[make_entity("Yakini Q")]) for i in range(3)]
+            + [make_anno(f"l{i}", entities=[make_entity("YakiniQ")]) for i in range(2)]
+        )
+        result = _rank(annos)
+        yakini = [e for e in result if "yakini" in e.name.lower()]
+        assert len(yakini) == 1, \
+            f"Spacing-only aliases should merge into one entity, got: {[e.name for e in result]}"
+        assert yakini[0].mentions == 5
+
+    def test_spaceless_alias_chain_into_longer_name(self):
+        """Spaceless merge target absorbed by a prefix pass — stats must survive the chain."""
+        annos = (
+            [make_anno(f"a{i}", entities=[make_entity("YakiniQ")]) for i in range(2)]
+            + [make_anno(f"b{i}", entities=[make_entity("Yakini Q")]) for i in range(3)]
+            + [make_anno(f"c{i}", entities=[make_entity("Yakini Q Korean BBQ")]) for i in range(2)]
+        )
+        result = _rank(annos)
+        yakini = [e for e in result if "yakini" in e.name.lower()]
+        assert len(yakini) == 1, \
+            f"All three variants should collapse to one entity, got: {[e.name for e in result]}"
+        assert yakini[0].name == "Yakini Q Korean BBQ"
+        assert yakini[0].mentions == 7, \
+            f"Chained merge should keep all 2+3+2=7 mentions, got {yakini[0].mentions}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

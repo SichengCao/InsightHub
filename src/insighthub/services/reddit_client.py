@@ -193,6 +193,40 @@ def passes_quality(comment, settings) -> bool:
     """Legacy wrapper for backward compatibility"""
     return _passes_quality(comment, "", settings)
 
+
+_SUPPORT_TITLE_PATTERNS = re.compile(
+    r"\b("
+    r"won'?t|doesn'?t|can'?t|isn'?t|aren'?t|not working|not turning|not charging|"
+    r"help(ing)?|issue|problem|broken|broke|fix(ing)?|repair|replace|warranty|"
+    r"how (do|to|can)|why (is|does|won'?t)|anyone else|please help|need help|"
+    r"stuck|dead|died|fail(ed|ing)?|error|crash(ing|ed)?|glitch|bug|"
+    r"won'?t turn on|screen (is )?(black|blank|frozen)|battery drain|"
+    r"data loss|factory reset|bricked|lost my|stole|stolen|lost"
+    r")\b",
+    re.IGNORECASE,
+)
+
+def _is_support_thread(title: str) -> bool:
+    """Return True if a post title signals a support/troubleshooting thread.
+
+    These threads contain users with broken devices — their comments skew
+    sentiment downward and pollute product review rankings.
+    """
+    return bool(_SUPPORT_TITLE_PATTERNS.search(title))
+
+
+class _SyntheticUnit:
+    """A lightweight stand-in for a PRAW comment so a Reddit *post* (title +
+    selftext) can flow through the same filtering/mapping pipeline as comments.
+
+    Only ``__dict__`` access is used downstream (the pipeline reads everything
+    via ``c.__dict__.get(...)``), so this carries the same keys a comment would.
+    """
+
+    def __init__(self, **attrs):
+        self.__dict__.update(attrs)
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -201,6 +235,7 @@ class RedditService:
     
     def __init__(self):
         self.reddit = None
+        self._last_plan = None
         self._init_reddit()
     
     def _init_reddit(self):
@@ -318,9 +353,54 @@ class RedditService:
                     if score >= plan.min_comment_score and len(body) > SearchConstants.MIN_COMMENT_LENGTH:
                         flat.append((c, score))
                 
-                # Sort by score and take top N per post
-                flat.sort(key=lambda x: x[1], reverse=True)
+                # Sort by score, breaking ties by comment id so the top-N per post
+                # is deterministic (score ties would otherwise depend on Reddit's
+                # iteration order and shuffle run-to-run).
+                flat.sort(key=lambda x: (-x[1], str(x[0].__dict__.get("id", ""))))
+                sub_title = getattr(sub, "title", "") or ""
+
+                # Skip entire thread if title signals support/troubleshooting context.
+                # These threads pull sentiment down and don't reflect product quality.
+                if _is_support_thread(sub_title):
+                    logger.debug(f"Skipping support thread: {sub_title[:80]}")
+                    continue
+
+                # Stamp each comment with the thread it came from so the scorer can
+                # detect when a post and its comments corroborate the same entity.
+                for c, _ in flat[:plan.per_post_top_n]:
+                    try:
+                        c.__dict__["_post_title"] = sub_title
+                        c.__dict__["_post_id"] = sid
+                        # Which sort strategy surfaced this thread. Relevance-matched
+                        # units get selection priority: upvote-sorted pooling otherwise
+                        # lets high-karma off-topic megathreads crowd out on-topic ones.
+                        c.__dict__["_from_relevance"] = strategy == "relevance"
+                    except Exception:
+                        pass
                 comments.extend([c for c, _ in flat[:plan.per_post_top_n]])
+
+                # Emit the post itself (title + body) as an analyzable unit so
+                # recommendations made in the OP — not just the comments — count.
+                selftext = getattr(sub, "selftext", "") or ""
+                post_body = (sub_title + "\n\n" + selftext).strip()
+                if len(post_body) > SearchConstants.MIN_COMMENT_LENGTH:
+                    try:
+                        post_score = int(getattr(sub, "score", 0) or 0)
+                    except Exception:
+                        post_score = 0
+                    comments.append(_SyntheticUnit(
+                        id=f"post_{sid}",
+                        body=post_body,
+                        score=post_score,
+                        upvotes=post_score,
+                        permalink=getattr(sub, "permalink", "") or "",
+                        created_utc=getattr(sub, "created_utc", None),
+                        author=str(getattr(sub, "author", "") or "u/[deleted]"),
+                        _post_title=sub_title,
+                        _post_id=sid,
+                        _unit_type="post",
+                        _from_relevance=strategy == "relevance",
+                    ))
             
             return (comments, submissions_processed, search_id)
             
@@ -328,30 +408,34 @@ class RedditService:
             logger.debug(f"Search failed {search_id}: {e}")
             return ([], 0, search_id)
 
-    def _plan_search(self, query: str, max_subreddits: int = 4) -> SearchPlan:
+    def _plan_search(self, query: str, max_subreddits: int = SearchConstants.DEFAULT_SUBREDDITS_UI) -> SearchPlan:
         """Plan search using LLM with fallback to API-only discovery."""
         try:
             # Import LLM service
             from .llm import LLMServiceFactory
             llm = LLMServiceFactory.create()
             plan = llm.plan_reddit_search(query, max_subreddits)
-            return SearchPlan(**plan)
+            self._last_plan = SearchPlan(**plan)
+            return self._last_plan
         except Exception as e:
             logger.warning(f"LLM planning failed, using fallback: {e}")
-            return self._fallback_plan(query)
+            self._last_plan = self._fallback_plan(query)
+            return self._last_plan
     
     @retry(
         stop=stop_after_attempt(settings.max_retries),
         wait=wait_exponential(multiplier=settings.retry_delay, max=settings.retry_backoff * 10)
     )
-    def scrape(self, query: str, limit: int = 50, max_subreddits: int = 4) -> List[Review]:
+    def scrape(self, query: str, limit: int = 50,
+               max_subreddits: int = SearchConstants.DEFAULT_SUBREDDITS_UI) -> List[Review]:
         """Scrape Reddit for reviews."""
         if self.reddit:
             return self._scrape_real(query, limit, max_subreddits)
         else:
             return self._scrape_mock(query, limit)
     
-    def _scrape_real(self, query: str, limit: int, max_subreddits: int = 4) -> List[Review]:
+    def _scrape_real(self, query: str, limit: int,
+                     max_subreddits: int = SearchConstants.DEFAULT_SUBREDDITS_UI) -> List[Review]:
         """
         Scrape real Reddit data using universal search planning.
         
@@ -401,43 +485,63 @@ class RedditService:
             start_time = time.time()
             logger.info(f"🚀 Starting {total_searches} parallel Reddit API searches...")
             
-            # Execute searches in parallel using ThreadPoolExecutor.
-            # A shared stop_event lets completed workers signal queued ones to skip.
-            stop_event = threading.Event()
-            target_raw = limit * 4  # stop collecting once we have 4× the target
-            max_workers = min(8, total_searches)
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_to_task = {
-                    executor.submit(self._execute_single_search, bucket, term, strategy, plan, seen_posts, stop_event): (bucket, term, strategy)
-                    for bucket, term, strategy in search_tasks
-                }
+            # Execute ALL searches to completion (no race-based early cancel). The
+            # previous early-stop cancelled whichever searches happened to still be
+            # running when a raw-count target was hit, so the contributing set — and
+            # thus the candidate pool — changed every run. Running the full fixed set
+            # makes the union of retrieved threads deterministic; we bound cost by
+            # deterministically selecting the top threads afterwards.
+            #
+            # Two phases: ALL relevance-sorted searches complete before any other
+            # strategy runs. seen_posts dedupes threads across searches, so phase
+            # order decides which strategy "claims" a thread — running relevance
+            # first makes the _from_relevance tag deterministic instead of
+            # network-timing dependent.
+            stop_event = threading.Event()  # retained for signature; never set
+            phase1 = [t for t in search_tasks if t[2] == "relevance"]
+            phase2 = [t for t in search_tasks if t[2] != "relevance"]
+            for phase_tasks in (phase1, phase2):
+                if not phase_tasks:
+                    continue
+                max_workers = min(8, max(1, len(phase_tasks)))
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    future_to_task = {
+                        executor.submit(self._execute_single_search, bucket, term, strategy, plan, seen_posts, stop_event): (bucket, term, strategy)
+                        for bucket, term, strategy in phase_tasks
+                    }
 
-                for future in as_completed(future_to_task):
-                    bucket, term, strategy = future_to_task[future]
-                    search_count += 1
-                    elapsed = time.time() - start_time
-
-                    try:
-                        comments, submissions_processed, search_id = future.result()
-                        raw_comments.extend(comments)
-                        logger.info(f"🔍 [{search_count}/{total_searches}] {search_id} | Posts: {submissions_processed} | Comments: {len(raw_comments)} | {elapsed:.1f}s")
-
-                        # True early termination: signal remaining queued tasks to skip.
-                        if len(raw_comments) >= target_raw and not stop_event.is_set():
-                            stop_event.set()
-                            for f in future_to_task:
-                                f.cancel()
-                            logger.info(f"⚡ Early stop: {len(raw_comments)} raw comments ≥ target {target_raw}")
-
-                    except Exception as e:
-                        logger.debug(f"Search task failed for r/{bucket} '{term}' ({strategy}): {e}")
-                        continue
+                    for future in as_completed(future_to_task):
+                        bucket, term, strategy = future_to_task[future]
+                        search_count += 1
+                        elapsed = time.time() - start_time
+                        try:
+                            comments, submissions_processed, search_id = future.result()
+                            raw_comments.extend(comments)
+                            logger.info(f"🔍 [{search_count}/{total_searches}] {search_id} | Posts: {submissions_processed} | Comments: {len(raw_comments)} | {elapsed:.1f}s")
+                        except Exception as e:
+                            logger.debug(f"Search task failed for r/{bucket} '{term}' ({strategy}): {e}")
+                            continue
 
             elapsed_final = time.time() - start_time
             logger.info(f"✅ {search_count} searches done in {elapsed_final:.1f}s")
         except Exception as e:
             logger.error(f"Reddit scraping failed: {e}")
             return self._scrape_mock(query, limit)
+
+        # Deterministic ordering BEFORE selection: the parallel searches finish in
+        # network-timing order, so sort the pooled units by a stable key so the
+        # same threads/comments are always chosen for a given corpus. Relevance-
+        # matched units come FIRST: a pure upvote sort let the subreddits' most-
+        # upvoted (often off-topic, e.g. city-news megathread) comments fill the
+        # selection buffer and starve the actually on-topic threads.
+        def _sort_key(c):
+            try:
+                score = int(c.__dict__.get("score", 0) or c.__dict__.get("upvotes", 0) or 0)
+            except Exception:
+                score = 0
+            rel_first = 0 if c.__dict__.get("_from_relevance") else 1
+            return (rel_first, -score, str(c.__dict__.get("id", "")))
+        raw_comments.sort(key=_sort_key)
 
         # Step 5: OPTIMIZED multi-stage filtering pipeline with early termination
         filter_start = time.time()
@@ -456,8 +560,11 @@ class RedditService:
         pattern_filtered = 0
         dedupe_filtered = 0
         
-        # OPTIMIZATION: Early termination when we have enough comments
-        target_buffer = limit * 2  # Collect 2x the target for better quality
+        # Over-retrieve, filter later: the GPT relevance filter downstream is the
+        # quality gate, so starving it here (old 2x buffer, then a hard [:limit]
+        # slice) silently cost most of the recall. 8x (capped) lets the filter see
+        # nearly the whole relevance-first-sorted pool at default depth.
+        target_buffer = min(limit * 8, 1200)
         
         # Apply multi-stage filtering with early exit
         for c in raw_comments:
@@ -472,17 +579,22 @@ class RedditService:
                 if not body:
                     quality_filtered += 1
                     continue
-                
+
+                # Post-units (the OP itself) are first-class content from the thread
+                # author — they skip the comment-oriented quality/pattern gates but
+                # still go through dedup below.
+                _is_post = c.__dict__.get("_unit_type") == "post"
+
                 # Stage 1: Quality filtering (OPTIMIZED - fast checks first)
-                if not _passes_quality(c, query, settings, body): 
+                if not _is_post and not _passes_quality(c, query, settings, body):
                     quality_filtered += 1
                     continue
-                
+
                 # Stage 2: Pattern filtering (cached patterns, optimized search)
-                if not ok(body) and not any(p.search(body) for p in query_patterns):
+                if not _is_post and not ok(body) and not any(p.search(body) for p in query_patterns):
                     pattern_filtered += 1
                     continue
-                
+
                 # Stage 3: Deduplication (exact hash matching - fast)
                 h = _text_hash(body)
                 if h in seen: 
@@ -503,9 +615,12 @@ class RedditService:
                 quality_filtered += 1
                 continue
 
-        # Canonical mapping - OPTIMIZED to avoid ALL lazy loading
+        # Canonical mapping - OPTIMIZED to avoid ALL lazy loading.
+        # NOTE: the whole oversampled buffer is returned (no [:limit] slice) —
+        # the GPT relevance filter prunes with actual topical judgment, which a
+        # positional cut cannot.
         reviews = []
-        for c in filtered[:limit]:
+        for c in filtered:
             # Use __dict__ for ALL attributes to prevent lazy API calls
             rid = str(c.__dict__.get("id", ""))
             
@@ -533,13 +648,27 @@ class RedditService:
                 "url": url,
                 "author": author_name,
                 "upvotes": score,
+                "post_title": c.__dict__.get("_post_title", "") or "",
+                "unit_type": c.__dict__.get("_unit_type", "comment"),
+                "thread_id": str(c.__dict__.get("_post_id", "") or ""),
             })
         
-        # Log detailed timing breakdown
+        # Log detailed timing breakdown + stash per-stage stats for profiling
         filter_time = time.time() - filter_start
         elapsed_time = time.time() - start_time
+        _uniq_threads = len({c.__dict__.get("_post_id") for c in raw_comments if c.__dict__.get("_post_id")})
+        self._last_stats = {
+            "searches": search_count,
+            "raw_units": len(raw_comments),
+            "unique_threads": _uniq_threads,
+            "relevance_tagged": sum(1 for c in raw_comments if c.__dict__.get("_from_relevance")),
+            "quality_filtered": quality_filtered,
+            "pattern_filtered": pattern_filtered,
+            "dedupe_filtered": dedupe_filtered,
+            "selected": len(reviews),
+        }
         logger.info(f"✅ Filtering completed in {filter_time:.1f}s | Mapping to Review objects completed")
-        logger.info(f"🎉 Search completed in {elapsed_time:.1f}s: {len(raw_comments)} raw -> quality_filtered={quality_filtered} -> pattern_filtered={pattern_filtered} -> dedupe_filtered={dedupe_filtered} -> {len(filtered)} filtered -> {len(reviews)} final")
+        logger.info(f"🎉 Search completed in {elapsed_time:.1f}s: {len(raw_comments)} raw ({_uniq_threads} threads) -> quality_filtered={quality_filtered} -> pattern_filtered={pattern_filtered} -> dedupe_filtered={dedupe_filtered} -> {len(reviews)} returned")
         logger.info(f"📊 API calls made: {search_count}/{total_searches} searches | Avg: {elapsed_time/search_count:.2f}s per search")
         return reviews
     
