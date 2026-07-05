@@ -711,22 +711,14 @@ h1, h2, h3 {
 .ih-plat-count { font-weight: 700; color: #94a3b8; margin-right: 0.3rem; }
 .ih-plat-sub { color: #475569; }
 
-/* ── Homepage search area ── */
-.ih-search-area { padding: 3.25rem 1rem 1.5rem; text-align: center; }
+/* ── Homepage search area (search-first: the hero IS the product) ── */
+.ih-search-area { padding: 9rem 1rem 3.25rem; text-align: center; }
 .ih-search-heading {
-  font-size: 2.1rem; font-weight: 800; color: #f1f5f9;
-  letter-spacing: -0.045em; line-height: 1.15; margin-bottom: 0.5rem;
+  font-size: 4.1rem; font-weight: 800; color: #f1f5f9;
+  letter-spacing: -0.045em; line-height: 1.08; margin-bottom: 1.15rem;
 }
 .ih-search-heading em { color: #6366f1; font-style: normal; }
-.ih-search-sub { font-size: 0.875rem; color: #475569; margin-bottom: 1.75rem; line-height: 1.5; }
-.ih-live-bar {
-  display: inline-flex; align-items: center; gap: 0.5rem;
-  font-size: 0.68rem; color: #475569; font-family: 'JetBrains Mono', monospace;
-  letter-spacing: 0.07em; border: 1px solid rgba(255,255,255,0.07);
-  border-radius: 20px; padding: 0.28rem 0.8rem; background: rgba(255,255,255,0.02);
-  margin-bottom: 1.5rem;
-}
-.ih-live-dot { width: 5px; height: 5px; border-radius: 50%; background: #22d3a0; animation: pulse-dot 2s ease-in-out infinite; }
+.ih-search-sub { font-size: 1.15rem; color: #64748b; margin-bottom: 2rem; line-height: 1.6; }
 
 /* ── Homepage section label ── */
 .ih-home-lbl {
@@ -736,84 +728,58 @@ h1, h2, h3 {
 }
 .ih-home-lbl::after { content: ''; flex: 1; height: 1px; background: rgba(255,255,255,0.07); }
 
-/* ── Hero insight card (full-width, image bg) ── */
-.ih-hero-card {
-  position: relative; border-radius: 12px; overflow: hidden;
-  height: 220px; margin-bottom: 0.5rem; cursor: pointer;
-  border: 1px solid rgba(255,255,255,0.1);
-  transition: border-color 0.2s;
-}
-.ih-hero-card:hover { border-color: rgba(99,102,241,0.4); }
-.ih-hero-card-img {
-  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
-  filter: brightness(0.38) saturate(0.85);
-}
-.ih-hero-card-body {
-  position: absolute; inset: 0; padding: 1.5rem 1.75rem;
-  background: linear-gradient(135deg, rgba(13,15,22,0.65) 0%, transparent 60%),
-              linear-gradient(to top, rgba(13,15,22,0.9) 0%, transparent 55%);
-  display: flex; flex-direction: column; justify-content: space-between;
-}
-.ih-hero-card-top { display: flex; align-items: center; gap: 0.6rem; }
-.ih-hero-card-cat {
-  font-size: 0.6rem; font-weight: 700; text-transform: uppercase;
-  letter-spacing: 0.12em; font-family: 'JetBrains Mono', monospace;
-  padding: 0.18rem 0.55rem; border-radius: 3px;
-  background: rgba(99,102,241,0.25); color: #a5b4fc; border: 1px solid rgba(99,102,241,0.4);
-}
-.ih-hero-card-sources { font-size: 0.63rem; color: #64748b; font-family: 'JetBrains Mono', monospace; }
-.ih-hero-card-bottom { }
-.ih-hero-card-title { font-size: 1.45rem; font-weight: 800; color: #f1f5f9; letter-spacing: -0.03em; line-height: 1.15; margin-bottom: 0.35rem; }
-.ih-hero-card-insight { font-size: 0.82rem; color: #94a3b8; line-height: 1.55; margin-bottom: 0.75rem; max-width: 70%; }
-.ih-hero-card-stats { display: flex; align-items: center; gap: 1.25rem; }
-.ih-hero-score { font-family: 'JetBrains Mono', monospace; font-size: 1.5rem; font-weight: 800; letter-spacing: -0.04em; }
-.ih-hero-stars { font-size: 0.8rem; color: #c89b3c; letter-spacing: 0.09em; }
-.ih-sentiment-strip { display: flex; gap: 0.75rem; align-items: center; }
-.ih-sent-seg { display: flex; align-items: center; gap: 0.3rem; font-size: 0.68rem; font-family: 'JetBrains Mono', monospace; }
-.ih-sent-bar { width: 28px; height: 3px; border-radius: 2px; }
-
-/* ── Small insight cards (grid) ── */
-.ih-insight-card {
-  border-radius: 10px; overflow: hidden; position: relative;
-  border: 1px solid rgba(255,255,255,0.08);
+/* ── Example search cards (capability showcase; whole card clickable via
+      invisible overlay button, same pattern as the explorer's expick cards) ── */
+div[data-testid="stColumn"]:has(div[class*="st-key-exhome"]) { position: relative; }
+div[class*="st-key-exhome"] { position: absolute; inset: 0; z-index: 6; margin: 0; width: 100% !important; height: 100% !important; }
+div[class*="st-key-exhome"] button { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+.ih-excard {
+  height: 208px; border-radius: 14px; overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.09);
+  background: rgba(255,255,255,0.02);
+  display: flex; flex-direction: column;
   transition: border-color 0.15s, transform 0.15s;
-  background: rgba(255,255,255,0.025);
 }
-.ih-insight-card:hover { border-color: rgba(99,102,241,0.35); transform: translateY(-2px); }
-.ih-insight-card-img { width: 100%; height: 110px; object-fit: cover; display: block; filter: brightness(0.45) saturate(0.8); }
-.ih-insight-card-body { padding: 0.8rem 0.9rem 0.65rem; }
-.ih-insight-card-cat {
-  font-size: 0.58rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.11em;
-  color: #6366f1; font-family: 'JetBrains Mono', monospace; margin-bottom: 0.3rem;
+div[data-testid="stColumn"]:has(div[class*="st-key-exhome"]):hover .ih-excard {
+  border-color: rgba(99,102,241,0.45); transform: translateY(-2px);
 }
-.ih-insight-card-title { font-size: 0.87rem; font-weight: 700; color: #e2e8f0; margin-bottom: 0.3rem; letter-spacing: -0.015em; line-height: 1.3; }
-.ih-insight-card-insight { font-size: 0.74rem; color: #64748b; line-height: 1.5; margin-bottom: 0.5rem; }
-.ih-insight-card-foot { display: flex; align-items: center; gap: 0.6rem; }
-.ih-insight-card-score { font-family: 'JetBrains Mono', monospace; font-size: 1rem; font-weight: 700; }
-.ih-insight-card-meta { font-size: 0.63rem; color: #475569; font-family: 'JetBrains Mono', monospace; }
+.ih-excard-img {
+  flex: none; height: 152px; position: relative;
+  background-size: cover; background-position: center;
+}
+.ih-excard-tag {
+  position: absolute; top: 9px; left: 9px; z-index: 1;
+  font-size: 0.52rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em;
+  font-family: 'JetBrains Mono', monospace;
+  padding: 0.14rem 0.42rem; border-radius: 3px;
+  background: rgba(13,15,22,0.72); color: #a5b4fc; border: 1px solid rgba(99,102,241,0.35);
+}
+.ih-excard-title {
+  flex: 1; display: flex; align-items: center; padding: 0.3rem 0.75rem;
+  font-size: 0.8rem; font-weight: 700; color: #e2e8f0; line-height: 1.3;
+  letter-spacing: -0.01em;
+}
 
-/* ── Active debates feed ── */
-.ih-debate-item {
-  display: flex; align-items: flex-start; gap: 1rem; padding: 0.85rem 0;
-  border-bottom: 1px solid rgba(255,255,255,0.05);
+/* ── How it works (lightweight — must not compete with search) ── */
+.ih-hiw-row { display: flex; gap: 0.9rem; margin-top: 0.3rem; }
+.ih-hiw-step { flex: 1; text-align: center; padding: 0.4rem 0.4rem; }
+.ih-hiw-ic {
+  width: 36px; height: 36px; margin: 0 auto 0.5rem; border-radius: 50%;
+  background: rgba(99,102,241,0.08); border: 1px solid rgba(99,102,241,0.2);
+  display: flex; align-items: center; justify-content: center; font-size: 0.9rem;
 }
-.ih-debate-item:last-child { border-bottom: none; }
-.ih-debate-left { display: flex; flex-direction: column; align-items: center; gap: 0.3rem; flex-shrink: 0; }
-.ih-debate-icon {
-  width: 32px; height: 32px; border-radius: 7px; display: flex;
-  align-items: center; justify-content: center; font-size: 0.85rem;
-  flex-shrink: 0;
+.ih-hiw-t { font-size: 0.78rem; font-weight: 700; color: #e2e8f0; margin-bottom: 0.25rem; }
+.ih-hiw-d { font-size: 0.68rem; color: #64748b; line-height: 1.5; max-width: 210px; margin: 0 auto; }
+.ih-hiw-strip {
+  display: flex; margin-top: 1.25rem; border-radius: 12px;
+  background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.05);
+  padding: 0.85rem 0.5rem;
 }
-.ih-debate-body { flex: 1; min-width: 0; }
-.ih-debate-title { font-size: 0.88rem; font-weight: 600; color: #e2e8f0; margin-bottom: 0.2rem; line-height: 1.35; }
-.ih-debate-sub { font-size: 0.72rem; color: #475569; font-family: 'JetBrains Mono', monospace; line-height: 1.4; }
-.ih-debate-right { flex-shrink: 0; text-align: right; }
-.ih-debate-stat { font-family: 'JetBrains Mono', monospace; font-size: 0.95rem; font-weight: 700; line-height: 1; }
-.ih-debate-stat-lbl { font-size: 0.6rem; color: #475569; font-family: 'JetBrains Mono', monospace; margin-top: 0.15rem; text-transform: uppercase; letter-spacing: 0.08em; }
-.ih-debate-tag {
-  font-size: 0.55rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em;
-  padding: 0.1rem 0.38rem; border-radius: 3px; font-family: 'JetBrains Mono', monospace;
-}
+.ih-hiw-fact { flex: 1; display: flex; gap: 0.7rem; padding: 0 1rem; align-items: flex-start; }
+.ih-hiw-fact + .ih-hiw-fact { border-left: 1px solid rgba(255,255,255,0.06); }
+.ih-hiw-fact-ic { font-size: 1rem; margin-top: 0.05rem; }
+.ih-hiw-fact-t { font-size: 0.76rem; font-weight: 700; color: #cbd5e1; margin-bottom: 0.15rem; }
+.ih-hiw-fact-d { font-size: 0.67rem; color: #64748b; line-height: 1.5; }
 
 /* ── Sidebar ── */
 [data-testid="stSidebar"] { background: #0a0c12 !important; border-right: 1px solid rgba(255,255,255,0.06) !important; }
@@ -826,28 +792,29 @@ h1, h2, h3 {
 
 /* ── Streamlit overrides ── */
 .stTextInput > div > div > input {
-  background: rgba(255,255,255,0.035) !important;
-  border: 1px solid rgba(255,255,255,0.1) !important;
-  border-radius: 10px !important;
+  background: rgba(255,255,255,0.045) !important;
+  border: 1px solid rgba(255,255,255,0.14) !important;
+  border-radius: 16px !important;
   color: #f1f5f9 !important;
-  font-size: 0.97rem !important;
-  padding: 0.75rem 1.1rem !important;
+  font-size: 1.2rem !important;
+  padding: 1.45rem 1.75rem !important;
+  box-shadow: 0 10px 36px rgba(0,0,0,0.35), 0 0 0 1px rgba(99,102,241,0.08) !important;
   transition: border-color 0.15s, box-shadow 0.15s !important;
 }
 .stTextInput > div > div > input:focus {
-  border-color: rgba(99,102,241,0.55) !important;
-  box-shadow: 0 0 0 3px rgba(99,102,241,0.1) !important;
+  border-color: rgba(99,102,241,0.6) !important;
+  box-shadow: 0 10px 36px rgba(0,0,0,0.35), 0 0 0 3px rgba(99,102,241,0.14) !important;
   outline: none !important;
 }
 .stTextInput > div > div > input::placeholder { color: #334155 !important; }
 .stButton > button[kind="primary"] {
   background: #6366f1 !important;
   border: none !important;
-  border-radius: 10px !important;
+  border-radius: 16px !important;
   color: #fff !important;
   font-weight: 700 !important;
-  font-size: 0.9rem !important;
-  padding: 0.72rem 1.4rem !important;
+  font-size: 1.08rem !important;
+  padding: 1.38rem 1.5rem !important;
   box-shadow: 0 0 0 0 rgba(99,102,241,0) !important;
   transition: background 0.15s, transform 0.1s, box-shadow 0.2s !important;
 }
@@ -965,9 +932,9 @@ hr { border-color: rgba(255,255,255,0.06) !important; }
   .block-container { padding-left: 0.75rem !important; padding-right: 0.75rem !important; padding-bottom: 3rem !important; }
 
   /* Search area */
-  .ih-search-area { padding: 2.75rem 0.25rem 1rem; }
-  .ih-search-heading { font-size: 1.45rem; letter-spacing: -0.03em; }
-  .ih-search-sub { font-size: 0.82rem; margin-bottom: 1.25rem; }
+  .ih-search-area { padding: 4rem 0.25rem 1.5rem; }
+  .ih-search-heading { font-size: 2.15rem; letter-spacing: -0.03em; }
+  .ih-search-sub { font-size: 0.88rem; margin-bottom: 1.1rem; }
 
   /* Stats strip: 2-column grid instead of 5-in-a-row */
   .ih-stats-strip { flex-wrap: wrap; }
@@ -999,23 +966,15 @@ hr { border-color: rgba(255,255,255,0.06) !important; }
   /* Aspect bars: shrink label */
   .ih-aspect-label { min-width: 72px; font-size: 0.68rem; }
 
-  /* Hero image card */
-  .ih-hero-card { height: 185px; }
-  .ih-hero-card-body { padding: 1rem 1.1rem; }
-  .ih-hero-card-title { font-size: 1.05rem; }
-  .ih-hero-card-insight { max-width: 100%; font-size: 0.75rem; display: none; }
-  .ih-hero-card-stats { gap: 0.85rem; }
-  .ih-hero-score { font-size: 1.2rem; }
+  /* Example cards: columns stack full-width */
+  .ih-excard { height: 232px; }
+  .ih-excard-img { height: 176px; }
+  .ih-excard-title { font-size: 0.92rem; }
 
-  /* Insight grid cards */
-  .ih-insight-card-img { height: 90px; }
-  .ih-insight-card-title { font-size: 0.8rem; }
-  .ih-insight-card-insight { display: none; }
-
-  /* Debates */
-  .ih-debate-title { font-size: 0.8rem; }
-  .ih-debate-sub { font-size: 0.62rem; }
-  .ih-debate-stat { font-size: 0.82rem; }
+  /* How it works: stack steps and trust facts vertically */
+  .ih-hiw-row { flex-direction: column; gap: 1.1rem; }
+  .ih-hiw-strip { flex-direction: column; gap: 0.9rem; }
+  .ih-hiw-fact + .ih-hiw-fact { border-left: none; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 0.9rem; }
 
   /* Evidence */
   .ih-ev-text { font-size: 0.82rem; line-height: 1.62; }
@@ -1087,12 +1046,11 @@ with st.sidebar:
 st.markdown("""
 <div class="ih-search-area">
   <div class="ih-search-heading">What does the internet<br><em>actually</em> think?</div>
-  <p class="ih-search-sub">AI-extracted consensus from Reddit &amp; YouTube — scored, ranked, and explained.</p>
-  <div class="ih-live-bar"><div class="ih-live-dot"></div>Live analysis &nbsp;·&nbsp; Reddit + YouTube &nbsp;·&nbsp; GPT-4 powered</div>
+  <p class="ih-search-sub">AI-extracted consensus from Reddit &amp; YouTube.<br>Scored, ranked, and explained with evidence.</p>
 </div>
 """, unsafe_allow_html=True)
 
-_, col_q, col_btn, _ = st.columns([0.15, 5.6, 1.1, 0.15])
+_, col_q, col_btn, _ = st.columns([0.7, 5.6, 1.0, 0.7])
 with col_q:
     st.text_input(
         "query", key="search_input", label_visibility="collapsed",
@@ -1104,183 +1062,83 @@ with col_btn:
 st.session_state["query"] = st.session_state.get("search_input", "")
 run_analysis = st.session_state.pop("run_analysis", False) or analyze_clicked
 
-# ── Homepage editorial content (shown only before any analysis) ───────────────
+# ── Homepage content (shown only before any analysis) ─────────────────────────
 
-# Editorial sample cards — illustrate query types, not real analysis data
-FEATURED = [
+# Static example searches — a capability showcase spanning query types, NOT live
+# or trending data. Swap for real trending analyses once persistent storage exists.
+EXAMPLES = [
+    {
+        "title": "Best Korean food in New York",
+        "tag": "Local",
+        "img": "https://images.unsplash.com/photo-1590301157890-4810ed352733?w=600&q=70",
+        "query": "best Korean food in New York",
+    },
     {
         "title": "Tesla Model Y",
-        "cat": "RANKING · AUTOMOTIVE",
-        "img": "https://images.unsplash.com/photo-1560958089-b8a1929cea89?w=1200&q=80",
-        "insight": "Long-term owners love the tech and range — but quality control debates persist across r/TeslaMotors and YouTube owner reviews.",
+        "tag": "Product",
+        "img": "https://images.unsplash.com/photo-1560958089-b8a1929cea89?w=600&q=70",
         "query": "Tesla Model Y",
     },
-]
-
-GRID_CARDS = [
     {
-        "title": "Sony WH-1000XM5",
-        "cat": "HEADPHONES",
-        "img": "https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=600&q=80",
-        "insight": "Near-universal praise. Community consensus: best ANC headphones available.",
-        "score": None, "score_color": "#6366f1",
-        "meta": "Example analysis",
-        "query": "Sony WH-1000XM5 headphones",
+        "title": "Top hotels in Las Vegas",
+        "tag": "Travel",
+        "img": "https://images.unsplash.com/photo-1581351721010-8cf859cb14a4?w=600&q=70",
+        "query": "top hotels in Las Vegas",
     },
     {
-        "title": "Best Espresso Machine <$500",
-        "cat": "HOME · COFFEE",
-        "img": "https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?w=600&q=80",
-        "insight": "Breville Barista Express dominates. Gaggia Classic Pro is the budget favourite.",
-        "score": None, "score_color": "#6366f1",
-        "meta": "Example analysis",
+        "title": "Best espresso machine under $500",
+        "tag": "Shopping",
+        "img": "https://images.unsplash.com/photo-1511920170033-f8396924c348?w=600&q=70",
         "query": "best espresso machine under $500",
     },
     {
-        "title": "Best Golf Courses — Bay Area",
-        "cat": "SPORTS · LOCAL",
-        "img": "https://images.unsplash.com/photo-1535131749006-b7f58c99034b?w=600&q=80",
-        "insight": "Locals debate Harding Park vs TPC Harding. Pasatiempo named hidden gem.",
-        "score": None, "score_color": "#6366f1",
-        "meta": "Example analysis",
-        "query": "best golf course in bay area",
+        "title": "Best golf courses in Bay Area",
+        "tag": "Local",
+        "img": "https://images.unsplash.com/photo-1535131749006-b7f58c99034b?w=600&q=70",
+        "query": "best golf courses in bay area",
     },
     {
-        "title": "MacBook Air M3",
-        "cat": "TECH · LAPTOPS",
-        "img": "https://images.unsplash.com/photo-1517336714731-489689fd1ca8?w=600&q=80",
-        "insight": "Reddit's most recommended laptop. M3 chip upgrade called a meaningful step.",
-        "score": None, "score_color": "#6366f1",
-        "meta": "Example analysis",
-        "query": "MacBook Air M3",
-    },
-]
-
-DEBATES = [
-    {
-        "icon": "🎮", "icon_bg": "rgba(99,102,241,0.15)", "icon_border": "rgba(99,102,241,0.3)",
-        "tag": "HOT", "tag_color": "#f87171", "tag_bg": "rgba(248,113,113,0.12)",
-        "title": "Nintendo Switch 2 — Is the $449 price tag justified?",
-        "sub": "r/NintendoSwitch · r/gaming · YouTube reviews",
-        "stat": "→", "stat_color": "#475569", "stat_lbl": "analyze",
+        "title": "Nintendo Switch 2",
+        "tag": "Consumer Tech",
+        "img": "https://images.unsplash.com/photo-1578303512597-81e6cc155b3e?w=600&q=70",
         "query": "Nintendo Switch 2",
-    },
-    {
-        "icon": "🎧", "icon_bg": "rgba(34,211,160,0.12)", "icon_border": "rgba(34,211,160,0.25)",
-        "tag": "CONSENSUS", "tag_color": "#22d3a0", "tag_bg": "rgba(34,211,160,0.1)",
-        "title": "Sony WH-1000XM5 vs Bose QC45 — ANC debate has a clear winner",
-        "sub": "r/headphones · r/audiophile · YouTube shootouts",
-        "stat": "→", "stat_color": "#475569", "stat_lbl": "analyze",
-        "query": "Sony WH-1000XM5 headphones",
-    },
-    {
-        "icon": "🚗", "icon_bg": "rgba(245,158,11,0.12)", "icon_border": "rgba(245,158,11,0.25)",
-        "tag": "DEBATED", "tag_color": "#f59e0b", "tag_bg": "rgba(245,158,11,0.1)",
-        "title": "Tesla Model Y long-term reliability — owners divided after 2 years",
-        "sub": "r/TeslaMotors · r/electricvehicles · YouTube vlogs",
-        "stat": "→", "stat_color": "#475569", "stat_lbl": "analyze",
-        "query": "Tesla Model Y",
-    },
-    {
-        "icon": "☕", "icon_bg": "rgba(99,102,241,0.1)", "icon_border": "rgba(99,102,241,0.2)",
-        "tag": "TRENDING", "tag_color": "#818cf8", "tag_bg": "rgba(99,102,241,0.12)",
-        "title": "Breville vs Gaggia espresso machines — which wins under $500?",
-        "sub": "r/espresso · r/Coffee · YouTube reviews",
-        "stat": "→", "stat_color": "#475569", "stat_lbl": "analyze",
-        "query": "best espresso machine under $500",
-    },
-    {
-        "icon": "🖥️", "icon_bg": "rgba(34,211,160,0.1)", "icon_border": "rgba(34,211,160,0.2)",
-        "tag": "STRONG BUY", "tag_color": "#22d3a0", "tag_bg": "rgba(34,211,160,0.1)",
-        "title": "MacBook Air M3 — Reddit's most recommended laptop three months running",
-        "sub": "r/apple · r/macbook · r/laptops · YouTube reviews",
-        "stat": "→", "stat_color": "#475569", "stat_lbl": "analyze",
-        "query": "MacBook Air M3",
     },
 ]
 
 if not run_analysis and not st.session_state.get("results"):
-    # ── Hero insight card ─────────────────────────────────────────────────────
-    st.markdown('<div class="ih-home-lbl">Featured Intelligence</div>', unsafe_allow_html=True)
+    # Homepage only: let the landing breathe on wide screens; results pages keep
+    # the 960px width they were designed and verified at.
+    st.markdown('<style>.block-container{max-width:1280px !important;}</style>', unsafe_allow_html=True)
 
-    feat = FEATURED[0]
-    st.markdown(f"""
-<div class="ih-hero-card">
-  <img class="ih-hero-card-img" src="{feat['img']}" alt="{feat['title']}"/>
-  <div class="ih-hero-card-body">
-    <div class="ih-hero-card-top">
-      <span class="ih-hero-card-cat">{feat['cat']}</span>
-      <span class="ih-hero-card-sources" style="color:#475569;font-size:0.7rem;font-style:italic">Example — run your own analysis below</span>
-    </div>
-    <div class="ih-hero-card-bottom">
-      <div class="ih-hero-card-title">{feat['title']}</div>
-      <div class="ih-hero-card-insight">{feat['insight']}</div>
-    </div>
-  </div>
-</div>
-""", unsafe_allow_html=True)
+    # ── Example searches: whole card clickable via invisible overlay button ───
+    st.markdown('<div class="ih-home-lbl" style="margin-top:3.5rem">Start with an example</div>', unsafe_allow_html=True)
 
-    if st.button(f"Analyze {feat['title']} →", key="hero_btn", type="secondary"):
-        st.session_state["pending_query"] = feat["query"]
+    def _run_example(q: str):
+        st.session_state["pending_query"] = q
         st.session_state["run_analysis"] = True
-        st.rerun()
 
-    # ── Insight grid ──────────────────────────────────────────────────────────
-    st.markdown('<div class="ih-home-lbl" style="margin-top:1.5rem">Recent Analyses</div>', unsafe_allow_html=True)
-    grow = [st.columns(2), st.columns(2)]
-    for idx, card in enumerate(GRID_CARDS):
-        with grow[idx // 2][idx % 2]:
-            score_html = (
-                f'<div class="ih-insight-card-score {_score_cls(card["score"])}" style="color:{card["score_color"]}">{card["score"]}</div>'
-                if card["score"] else
-                f'<div class="ih-insight-card-score" style="color:{card["score_color"]}">◈</div>'
-            )
-            st.markdown(f"""
-<div class="ih-insight-card">
-  <img class="ih-insight-card-img" src="{card['img']}" alt="{card['title']}"/>
-  <div class="ih-insight-card-body">
-    <div class="ih-insight-card-cat">{card['cat']}</div>
-    <div class="ih-insight-card-title">{card['title']}</div>
-    <div class="ih-insight-card-insight">{card['insight']}</div>
-    <div class="ih-insight-card-foot">
-      {score_html}
-      <span class="ih-insight-card-meta">{card['meta']}</span>
-    </div>
-  </div>
-</div>
-""", unsafe_allow_html=True)
-            if st.button("Analyze →", key=f"grid_{idx}", use_container_width=True, type="secondary"):
-                st.session_state["pending_query"] = card["query"]
-                st.session_state["run_analysis"] = True
-                st.rerun()
-
-    # ── Active internet debates ───────────────────────────────────────────────
-    st.markdown('<div class="ih-home-lbl" style="margin-top:1.75rem">Active Internet Debates</div>', unsafe_allow_html=True)
-
-    for idx, d in enumerate(DEBATES):
-        col_card, col_btn = st.columns([13, 1])
-        with col_card:
-            st.markdown(f"""
-<div class="ih-debate-item">
-  <div class="ih-debate-left">
-    <div class="ih-debate-icon" style="background:{d['icon_bg']};border:1px solid {d['icon_border']}">{d['icon']}</div>
-    <span class="ih-debate-tag" style="color:{d['tag_color']};background:{d['tag_bg']}">{d['tag']}</span>
-  </div>
-  <div class="ih-debate-body">
-    <div class="ih-debate-title">{d['title']}</div>
-    <div class="ih-debate-sub">{d['sub']}</div>
-  </div>
-  <div class="ih-debate-right">
-    <div class="ih-debate-stat" style="color:{d['stat_color']}">{d['stat']}</div>
-    <div class="ih-debate-stat-lbl">{d['stat_lbl']}</div>
-  </div>
+    ex_cols = st.columns(len(EXAMPLES))
+    for idx, (col, ex) in enumerate(zip(ex_cols, EXAMPLES)):
+        col.markdown(f"""
+<div class="ih-excard">
+  <div class="ih-excard-img" style="background-image:url({ex['img']})"><span class="ih-excard-tag">{ex['tag']}</span></div>
+  <div class="ih-excard-title">{ex['title']}</div>
 </div>""", unsafe_allow_html=True)
-        with col_btn:
-            st.markdown('<div style="padding-top:0.75rem"></div>', unsafe_allow_html=True)
-            if st.button("→", key=f"deb_{idx}", use_container_width=True, type="secondary"):
-                st.session_state["pending_query"] = d["query"]
-                st.session_state["run_analysis"] = True
-                st.rerun()
+        col.button(ex["title"], key=f"exhome_{idx}", on_click=_run_example, args=(ex["query"],))
+
+    # ── How it works ──────────────────────────────────────────────────────────
+    st.markdown('<div class="ih-home-lbl" style="margin-top:1.75rem">How it works</div>', unsafe_allow_html=True)
+    st.markdown("""
+<div class="ih-hiw-row">
+  <div class="ih-hiw-step"><div class="ih-hiw-ic">📡</div><div class="ih-hiw-t">1. Collect</div><div class="ih-hiw-d">We scan thousands of real discussions across Reddit and YouTube.</div></div>
+  <div class="ih-hiw-step"><div class="ih-hiw-ic">✨</div><div class="ih-hiw-t">2. Analyze</div><div class="ih-hiw-d">AI extracts opinions and sentiment, then scores the consensus.</div></div>
+  <div class="ih-hiw-step"><div class="ih-hiw-ic">💬</div><div class="ih-hiw-t">3. Explain</div><div class="ih-hiw-d">You get ranked insights backed by real quotes and sources.</div></div>
+</div>
+<div class="ih-hiw-strip">
+  <div class="ih-hiw-fact"><div class="ih-hiw-fact-ic">🛡️</div><div><div class="ih-hiw-fact-t">Real discussions</div><div class="ih-hiw-fact-d">No blogs. No ads. Just real people sharing real opinions.</div></div></div>
+  <div class="ih-hiw-fact"><div class="ih-hiw-fact-ic">🎯</div><div><div class="ih-hiw-fact-t">Unbiased AI</div><div class="ih-hiw-fact-d">Our AI finds consensus, not just popular posts or loud opinions.</div></div></div>
+  <div class="ih-hiw-fact"><div class="ih-hiw-fact-ic">🔍</div><div><div class="ih-hiw-fact-t">Transparent</div><div class="ih-hiw-fact-d">See sources, quotes, and scores behind every insight.</div></div></div>
+</div>""", unsafe_allow_html=True)
 
 # ── Results renderer (tabbed dashboard) ────────────────────────────────────────
 
