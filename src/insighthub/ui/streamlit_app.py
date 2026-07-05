@@ -1700,6 +1700,24 @@ _GENPAGE_CSS = """
 .gp-whybox .wl{display:block;font-size:.6rem;font-weight:800;letter-spacing:.08em;
   text-transform:uppercase;color:#818cf8;margin-bottom:.2rem;}
 .gp-whybox b{color:#dbe3fe;}
+/* per-card agreement / debate lines */
+.gp-agdg{margin-top:.5rem;font-size:.75rem;line-height:1.55;}
+.gp-agdg .ag{color:#b9e6d3;} .gp-agdg .dg{color:#f3d9a4;}
+.gp-agdg b{font-weight:800;}
+.gp-agdg .ag b{color:#22d3a0;} .gp-agdg .dg b{color:#f59e0b;}
+/* expandable original comments — evidence on demand, no rerun */
+details.gp-oc{margin-top:.6rem;}
+details.gp-oc summary{list-style:none;cursor:pointer;font-size:.72rem;font-weight:700;color:#818cf8;
+  padding:.35rem .65rem;border:1px solid rgba(129,140,248,.25);border-radius:8px;
+  background:rgba(129,140,248,.06);display:inline-block;}
+details.gp-oc summary::-webkit-details-marker{display:none;}
+details.gp-oc summary::after{content:" ▾";}
+details.gp-oc[open] summary::after{content:" ▴";}
+.gp-ocitem{background:rgba(255,255,255,.025);border-left:2px solid #5b6b7f;border-radius:8px;
+  padding:.5rem .7rem;margin-top:.45rem;}
+.gp-och{display:flex;gap:.45rem;align-items:center;font-size:.68rem;color:#9aa5b4;flex-wrap:wrap;}
+.gp-och .up{color:#ff8a5f;font-weight:800;}
+.gp-oct{font-size:.79rem;color:#c8d2dd;line-height:1.55;margin-top:.25rem;}
 /* themed community highlights */
 .gp-theme{margin-bottom:1rem;}
 .gp-themehead{display:flex;align-items:center;gap:.6rem;margin-bottom:.5rem;flex-wrap:wrap;}
@@ -2556,7 +2574,7 @@ def render_results(R):
                            ("negative", "neg") if avg < 3.0 else ("mixed", "mix")
 
                 def _review_brief():
-                    ck = f"__greviews2__::{query}"
+                    ck = f"__greviews3__::{query}"
                     if ck in st.session_state:
                         return st.session_state[ck]
                     fb_revs = []
@@ -2564,7 +2582,8 @@ def render_results(R):
                         body = max((_txt(u) for u in c["units"]), key=len, default="")
                         fb_revs.append({"id": c["id"], "also": [], "takeaways": [], "aspects": [],
                                         "summary": _excerpt(body, 300),
-                                        "why": "", "influence": "", "represents": None})
+                                        "why": "", "influence": "", "represents": None,
+                                        "agreements": [], "disagreements": []})
                     # fallback themes come straight from the aspect statistics:
                     # real counts, real sentiment, top-upvoted on-aspect quotes
                     fb_themes, _fb_used = [], set()
@@ -2623,6 +2642,10 @@ def render_results(R):
                                  'this one summary instead of separate cards.",'
                                  '"takeaways":["short key takeaway",...3-4],'
                                  '"aspects":["aspect discussed",...max 3],'
+                                 '"agreements":["short point most commenters in this discussion agree '
+                                 'on",...max 2],'
+                                 '"disagreements":["short point commenters debate or push back on",'
+                                 '...max 2, [] if none],'
                                  '"why":"1 sentence: why this source earned its spot — the unique '
                                  'perspective it adds that the other discussions lack",'
                                  '"influence":"short sentence: the consensus point this source most '
@@ -2669,6 +2692,10 @@ def render_results(R):
                                                   if str(t).strip()][:4],
                                     "aspects": [str(a).strip() for a in (rv.get("aspects") or [])
                                                 if str(a).strip()][:3],
+                                    "agreements": [str(x).strip() for x in (rv.get("agreements") or [])
+                                                   if str(x).strip()][:2],
+                                    "disagreements": [str(x).strip() for x in (rv.get("disagreements") or [])
+                                                      if str(x).strip()][:2],
                                     "why": str(rv.get("why") or "").strip(),
                                     "influence": str(rv.get("influence") or "").strip(),
                                     "represents": _clamp_n(rv.get("represents")),
@@ -2742,13 +2769,43 @@ def render_results(R):
                             why_bits.append(_h.escape(t if t.endswith((".", "!", "?")) else t + "."))
                     whybox = (f'<div class="gp-whybox"><span class="wl">Why this source</span>'
                               f'{" ".join(why_bits)}</div>') if why_bits else ""
+                    # where the discussion agrees vs. debates — one line each
+                    agdg = ""
+                    if rv.get("agreements") or rv.get("disagreements"):
+                        ag = "; ".join(_h.escape(x.rstrip(".")) for x in rv["agreements"])
+                        dg = "; ".join(_h.escape(x.rstrip(".")) for x in rv["disagreements"])
+                        agdg = ('<div class="gp-agdg">'
+                                + (f'<div class="ag"><b>✓ Agree:</b> {ag}</div>' if ag else "")
+                                + (f'<div class="dg"><b>⚡ Debated:</b> {dg}</div>' if dg else "")
+                                + '</div>')
+                    # original comments: supporting evidence on demand, not
+                    # primary content — collapsed pure-CSS <details>, no rerun
+                    oc_units = sorted((u for u in c["units"]
+                                       if _get(u, "unit_type", "comment") == "comment"
+                                       and len(_txt(u).strip()) >= 60),
+                                      key=lambda u: -(_get(u, "upvotes", 0) or 0))[:4]
+                    oc_html = ""
+                    if oc_units:
+                        items = []
+                        for u in oc_units:
+                            up = _get(u, "upvotes", 0) or 0
+                            author = str(_get(u, "author", "") or "").removeprefix("u/")
+                            who = (f'{_h.escape(author)}' if c["kind"] == "yt"
+                                   else f'u/{_h.escape(author)}') if author else ""
+                            mark = "👍" if c["kind"] == "yt" else "▲"
+                            head = '<span class="ex-evdot">·</span>'.join(
+                                x for x in (who, f'<span class="up">{mark} {up:,}</span>' if up else "") if x)
+                            items.append(f'<div class="gp-ocitem"><div class="gp-och">{head}</div>'
+                                         f'<div class="gp-oct">{_h.escape(_excerpt(_txt(u), 320))}</div></div>')
+                        oc_html = (f'<details class="gp-oc"><summary>Original comments '
+                                   f'({len(oc_units)})</summary>{"".join(items)}</details>')
                     foot = (f'{chips}<a class="ex-open {"yt" if c["kind"] == "yt" else "rd"}" '
                             f'style="margin-left:auto" href="{c["link"]}" target="_blank">Open original ↗</a>')
                     rcards.append(
                         f'<div class="gp-rev"><div class="gp-revtop">{top_html}</div>{thumb}'
                         f'<div class="gp-revtitle">{_h.escape(_excerpt(c["title"], 90))}</div>{stars}'
-                        f'<div class="gp-revsum">{_h.escape(rv["summary"])}</div>{whybox}{tk_html}'
-                        f'<div class="gp-revfoot">{foot}</div></div>')
+                        f'<div class="gp-revsum">{_h.escape(rv["summary"])}</div>{whybox}{tk_html}{agdg}'
+                        f'{oc_html}<div class="gp-revfoot">{foot}</div></div>')
                 if rcards:
                     st.markdown('<div class="gp-phead" style="margin:.4rem 0 .55rem">'
                                 '<span class="gp-ptitle">Most Helpful Reviews</span>'
